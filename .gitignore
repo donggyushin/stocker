@@ -1,0 +1,31 @@
+# Secrets & local config
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
+
+# Runtime data (SQLite, caches, reports)
+data/
+logs/
+*.sqlite
+*.sqlite-journal
+*.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.eggs/
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# OS & editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
