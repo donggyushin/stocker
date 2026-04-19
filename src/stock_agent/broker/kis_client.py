@@ -30,6 +30,7 @@ from typing import Any, Literal
 
 from loguru import logger
 
+from stock_agent.broker.rate_limiter import OrderRateLimiter
 from stock_agent.config import Settings
 from stock_agent.safety import install_paper_mode_guard
 
@@ -95,8 +96,8 @@ class KisClient:
     """KIS Developers API 얇은 래퍼.
 
     공개 메서드는 `ensure_token`, `get_balance`, `place_buy`, `place_sell`,
-    `get_pending_orders`, `close` + 컨텍스트 매니저. 주문 취소와 rate limiter 는
-    후속 PR 범위.
+    `get_pending_orders`, `close` + 컨텍스트 매니저. 주문 경로는 `OrderRateLimiter`
+    를 주입받아 계좌·TR 단위 보수적 상한을 얹는다. 주문 취소는 후속 PR 범위.
     """
 
     def __init__(
@@ -104,6 +105,7 @@ class KisClient:
         settings: Settings,
         *,
         pykis_factory: PyKisFactory | None = None,
+        order_rate_limiter: OrderRateLimiter | None = None,
     ) -> None:
         """
         Args:
@@ -111,9 +113,13 @@ class KisClient:
             pykis_factory: `PyKis` 와 동일한 키워드 인자 계약을 만족하는 팩토리.
                 테스트에서 `lambda **kw: MagicMock()` 을 주입. `None` 이면 실제
                 `pykis.PyKis` 를 지연 import 해 사용.
+            order_rate_limiter: 주문 경로에 적용할 리미터. `None` 이면 기본값
+                (`max_calls=2, period_s=1.0, min_interval_s=0.35`) 인스턴스를
+                새로 생성. 조회 경로에는 적용되지 않는다.
         """
         self._settings = settings
         self._closed = False
+        self._order_rate_limiter = order_rate_limiter or OrderRateLimiter()
         self._kis = self._build_pykis(pykis_factory)
 
     def _build_pykis(self, factory: PyKisFactory | None) -> Any:
@@ -205,6 +211,11 @@ class KisClient:
     ) -> OrderTicket:
         if qty <= 0:
             raise KisClientError(f"주문 수량은 양의 정수여야 합니다 (qty={qty})")
+
+        # 사전 가드 통과분만 슬롯을 소비한다. 리미터 이후의 _call 네트워크
+        # 구간에서 실패해도 해당 호출은 "실제로 KIS 에 접촉된 주문" 이므로
+        # 윈도우 한도에 잡히는 것이 맞다.
+        self._order_rate_limiter.acquire(f"{side} {symbol}")
 
         def _do() -> Any:
             account = self._kis.account()

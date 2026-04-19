@@ -12,12 +12,14 @@ from stock_agent.broker.kis_client import (
     OrderTicket,
     PendingOrder,
 )
+from stock_agent.broker.rate_limiter import OrderRateLimiter
 
 __all__ = [
     "BalanceSnapshot",
     "Holding",
     "KisClient",
     "KisClientError",
+    "OrderRateLimiter",
     "OrderTicket",
     "PendingOrder",
 ]

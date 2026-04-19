@@ -16,6 +16,7 @@ from stock_agent.broker.kis_client import (
     OrderTicket,
     PendingOrder,
 )
+from stock_agent.broker.rate_limiter import OrderRateLimiter
 from stock_agent.config import Settings, reset_settings_cache
 
 # ---------------------------------------------------------------------------
@@ -581,3 +582,107 @@ def test_place_buy는_주문번호가_비면_KisClientError를_raise한다(
     fake_kis.account.return_value.sell.return_value = mock_order
     with pytest.raises(KisClientError, match="주문번호"):
         kc.place_sell("005930", qty=1)
+
+
+# ---------------------------------------------------------------------------
+# 테스트 16: acquire 가 account().buy/sell 보다 먼저 1 회 호출된다
+# ---------------------------------------------------------------------------
+
+
+def test_주문_경로에서_acquire가_account_buy보다_먼저_호출된다(
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: MockerFixture,
+    fake_kis,
+    pykis_factory,
+    guard_patch,
+) -> None:
+    """place_buy / place_sell 에서 acquire 가 account().buy/sell 보다 선행하는지 검증."""
+    settings = _make_settings(monkeypatch)
+
+    mock_limiter = mocker.MagicMock(spec=OrderRateLimiter)
+
+    mock_buy_order = mocker.MagicMock()
+    mock_buy_order.number = "ORD-B01"
+    mock_sell_order = mocker.MagicMock()
+    mock_sell_order.number = "ORD-S01"
+    fake_kis.account.return_value.buy.return_value = mock_buy_order
+    fake_kis.account.return_value.sell.return_value = mock_sell_order
+
+    kc = KisClient(settings, pykis_factory=pykis_factory, order_rate_limiter=mock_limiter)
+
+    # --- place_buy 검증 ---
+    # attach_mock 으로 acquire 와 account().buy 호출 순서를 하나의 manager 로 추적한다.
+    manager = mocker.MagicMock()
+    manager.attach_mock(mock_limiter.acquire, "acquire")
+    manager.attach_mock(fake_kis.account.return_value.buy, "buy")
+
+    kc.place_buy("005930", qty=5, price=None)
+
+    # acquire 가 정확히 1 회, label 에 "buy" 와 "005930" 포함
+    mock_limiter.acquire.assert_called_once()
+    buy_label: str = mock_limiter.acquire.call_args[0][0]
+    assert "buy" in buy_label
+    assert "005930" in buy_label
+
+    # 호출 순서: acquire → buy
+    call_names = [c[0] for c in manager.mock_calls]
+    acquire_idx = next(i for i, n in enumerate(call_names) if n == "acquire")
+    buy_idx = next(i for i, n in enumerate(call_names) if n == "buy")
+    assert acquire_idx < buy_idx, "acquire 가 account().buy 보다 먼저 호출되어야 한다"
+
+    # --- place_sell 검증 ---
+    mock_limiter.reset_mock()
+    manager2 = mocker.MagicMock()
+    manager2.attach_mock(mock_limiter.acquire, "acquire")
+    manager2.attach_mock(fake_kis.account.return_value.sell, "sell")
+
+    kc.place_sell("000660", qty=3, price=None)
+
+    mock_limiter.acquire.assert_called_once()
+    sell_label: str = mock_limiter.acquire.call_args[0][0]
+    assert "sell" in sell_label
+    assert "000660" in sell_label
+
+    call_names2 = [c[0] for c in manager2.mock_calls]
+    acquire_idx2 = next(i for i, n in enumerate(call_names2) if n == "acquire")
+    sell_idx2 = next(i for i, n in enumerate(call_names2) if n == "sell")
+    assert acquire_idx2 < sell_idx2, "acquire 가 account().sell 보다 먼저 호출되어야 한다"
+
+
+# ---------------------------------------------------------------------------
+# 테스트 17: qty<=0 가드가 rate limiter 보다 먼저 작동한다
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "qty",
+    [0, -1],
+    ids=["qty=0", "qty=-1"],
+)
+def test_qty_0이하_가드가_rate_limiter보다_먼저_작동한다(
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: MockerFixture,
+    fake_kis,
+    pykis_factory,
+    guard_patch,
+    qty: int,
+) -> None:
+    """qty <= 0 인 경우 KisClientError 가 발생하고,
+    rate limiter.acquire 와 account().buy 는 모두 호출되지 않아야 한다."""
+    settings = _make_settings(monkeypatch)
+
+    mock_limiter = mocker.MagicMock(spec=OrderRateLimiter)
+    kc = KisClient(settings, pykis_factory=pykis_factory, order_rate_limiter=mock_limiter)
+
+    with pytest.raises(KisClientError, match="주문 수량"):
+        kc.place_buy("005930", qty=qty, price=None)
+
+    mock_limiter.acquire.assert_not_called()
+    fake_kis.account.return_value.buy.assert_not_called()
+
+    # place_sell 도 동일하게 검증
+    with pytest.raises(KisClientError, match="주문 수량"):
+        kc.place_sell("005930", qty=qty, price=None)
+
+    mock_limiter.acquire.assert_not_called()
+    fake_kis.account.return_value.sell.assert_not_called()

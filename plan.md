@@ -225,11 +225,11 @@ python scripts/healthcheck.py
 Phase 0 완료 (2026-04-19). Phase 1 진행 중 — 브로커 래퍼 + 데이터 파이프라인 구현. 첫 산출물 완료 (2026-04-19).
 
 1. [x] `src/stock_agent/broker/kis_client.py` — 완료. DTO 정규화, pykis_factory 주입, paper 전용, live는 defer.
-2. `src/stock_agent/broker/rate_limiter.py` — KIS 초당 호출 제한 대응
+2. [x] `src/stock_agent/broker/rate_limiter.py` — 완료. 주문 경로 전용 `OrderRateLimiter`(기본 2 req/s + 최소 간격 350 ms). 조회 경로는 python-kis 내장 리미터에 그대로 위임.
 3. `src/stock_agent/data/historical.py` — pykrx로 KOSPI 200 구성종목 + 분봉/일봉 수집 & SQLite 캐시
 4. `src/stock_agent/data/realtime.py` — 장중 분봉 폴링(우선) 또는 WebSocket 실시간 체결가(후순위)
 5. 단위 테스트 작성 + `healthcheck.py`에서 특정 종목(예: 삼성전자 005930) 현재가 조회 성공 확인
 
 **Phase 1 PASS 기준**: `pytest tests/test_kis_client.py` 통과, 삼성전자(005930) 현재가 조회 OK.
 
-현재 진척: `kis_client.py`와 healthcheck 엔드투엔드 통과(pytest 22건 green). 다음은 rate_limiter → data/historical → data/realtime 순.
+현재 진척: `kis_client.py` + `rate_limiter.py` 완료(pytest 43건 green, 1.14s). 다음은 data/historical → data/realtime 순.
