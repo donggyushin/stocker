@@ -149,38 +149,61 @@ class HistoricalDataStore:
     def _init_schema(self) -> None:
         """스키마를 최신 버전(`_SCHEMA_VERSION`) 으로 맞춘다.
 
+        분기
         - 빈 DB: `daily_bars` 생성 + 버전 기록.
-        - v1 → v3: `daily_bars` DROP+재생성(컬럼 변경), `kospi200_constituents` DROP.
-        - v2 → v3: `kospi200_constituents` DROP. `daily_bars` 는 그대로 유지.
-        - v3 이상: no-op.
+        - v1 → v3: `daily_bars` DROP+재생성(`value` 컬럼 제거), `kospi200_constituents` DROP.
+        - v2 → v3: `kospi200_constituents` DROP. `daily_bars` 는 스키마 동일하므로 DDL
+          은 `CREATE ... IF NOT EXISTS` 로 사실상 no-op 이고 기존 행이 보존된다.
+        - v3 이상: 테이블 확인용 DDL(IF NOT EXISTS) 만 실행, 상태 변경 없음.
 
-        `.gitignore` 된 로컬 캐시라 레코드 유실 영향은 작다.
+        트랜잭션
+        - `BEGIN IMMEDIATE` 로 감싸 DROP + CREATE 사이 실패 시 "스키마 찢김" 을 방지.
+        - SQLite 는 DDL 을 트랜잭션 안에 포함할 수 있으므로 atomicity 가 유지된다.
+        - 실패 시 ROLLBACK 후 `HistoricalDataError` 로 래핑해 상위가 `HistoricalDataError`
+          단일 계층으로 "데이터 계층 실패" 를 잡을 수 있게 한다.
+
+        `.gitignore` 된 로컬 캐시라 v1→v3 재생성 시 레코드 유실 영향은 작다.
         """
         cur = self._conn.cursor()
         try:
             cur.execute(_CREATE_SCHEMA_VERSION_SQL)
-
             row = cur.execute("SELECT MAX(version) FROM schema_version").fetchone()
             current = row[0] if row and row[0] is not None else 0
 
-            if current == 0:
-                cur.execute(_CREATE_DAILY_BARS_SQL)
-            elif current < _SCHEMA_VERSION:
-                logger.info(f"historical 스키마 v{current} → v{_SCHEMA_VERSION} 마이그레이션")
-                if current < 2:
-                    # v1 의 daily_bars 는 `value` 컬럼을 포함하므로 재생성이 필요.
-                    cur.execute("DROP TABLE IF EXISTS daily_bars")
-                cur.execute(_CREATE_DAILY_BARS_SQL)
-                # v3 에서 `kospi200_constituents` 테이블은 완전 제거.
-                cur.execute("DROP TABLE IF EXISTS kospi200_constituents")
-            else:
-                # current >= _SCHEMA_VERSION: 최신 또는 미래 버전. 다운그레이드는 금지.
-                cur.execute(_CREATE_DAILY_BARS_SQL)
+            cur.execute("BEGIN IMMEDIATE")
+            try:
+                if current == 0:
+                    cur.execute(_CREATE_DAILY_BARS_SQL)
+                elif current < _SCHEMA_VERSION:
+                    logger.info(f"historical 스키마 v{current} → v{_SCHEMA_VERSION} 마이그레이션")
+                    if current < 2:
+                        # v1 의 daily_bars 는 `value` 컬럼을 포함하므로 재생성 필요.
+                        cur.execute("DROP TABLE IF EXISTS daily_bars")
+                    cur.execute(_CREATE_DAILY_BARS_SQL)
+                    # v3 에서 `kospi200_constituents` 테이블은 완전 제거.
+                    cur.execute("DROP TABLE IF EXISTS kospi200_constituents")
+                else:
+                    # current >= _SCHEMA_VERSION: 최신 또는 미래 버전 — 다운그레이드 금지.
+                    # IF NOT EXISTS 로 사실상 상태 변경 없음(미존재 시에만 생성).
+                    cur.execute(_CREATE_DAILY_BARS_SQL)
 
-            cur.execute(
-                "INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
-                (_SCHEMA_VERSION,),
-            )
+                cur.execute(
+                    "INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
+                    (_SCHEMA_VERSION,),
+                )
+                cur.execute("COMMIT")
+            except Exception as e:
+                cur.execute("ROLLBACK")
+                logger.exception(
+                    f"historical 스키마 초기화 실패 — 롤백 "
+                    f"(current={current}, target={_SCHEMA_VERSION}): "
+                    f"{e.__class__.__name__}: {e}"
+                )
+                raise HistoricalDataError(
+                    f"HistoricalDataStore 스키마 초기화 실패 "
+                    f"(current=v{current}, target=v{_SCHEMA_VERSION}): "
+                    f"{e.__class__.__name__}: {e}"
+                ) from e
         finally:
             cur.close()
 

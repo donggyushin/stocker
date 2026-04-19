@@ -66,7 +66,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **Phase 1 진행 중** — Phase 0 환경 준비 완료(2026-04-19). broker(KisClient + rate_limiter) + data/historical + data/universe 완료. data/realtime 구현이 다음 단계. 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
 
-**운영 주의**: KOSPI 200 구성종목은 `config/universe.yaml`에 수동 관리합니다. 분기 리밸런싱 때 운영자가 직접 갱신해야 합니다. 현재는 대형주 10개 seed 상태이며, 실전 투입 전 200개 전량 채움이 필수입니다.
+**운영 주의**: KOSPI 200 구성종목은 `config/universe.yaml`에 수동 관리합니다. KRX KOSPI 200 정기변경(연 2회 — 매년 6월·12월의 선물·옵션 동시만기일 익영업일 기준)에 맞춰 운영자가 직접 갱신해야 합니다. 현재 KRX 정보데이터시스템 [11006] 기준 199/200 반영(2026-04-17 조회, 임시 가상 코드 1건 제외). 정식 티커 발급 후 다음 갱신에 추가 예정.
 
 ### Phase 0 체크리스트 (완료 2026-04-19)
 
@@ -93,7 +93,7 @@ stock-agent/
 ├── README.md
 ├── plan.md
 ├── config/
-│   └── universe.yaml          # KOSPI 200 종목코드 (수동 관리, 분기 갱신)
+│   └── universe.yaml          # KOSPI 200 종목코드 (수동 관리, 연 2회 정기변경)
 ├── src/stock_agent/
 │   ├── __init__.py
 │   ├── config.py              # pydantic-settings Settings + get_settings() 캐시

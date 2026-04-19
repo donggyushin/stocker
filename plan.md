@@ -81,7 +81,7 @@ stock-agent/
 ├── .gitignore                  # .env, data/, logs/
 ├── README.md
 ├── config/
-│   ├── universe.yaml           # KOSPI 200 종목코드 (수동 관리, 분기 갱신)
+│   ├── universe.yaml           # KOSPI 200 종목코드 (수동 관리, 연 2회 정기변경)
 │   └── strategy.yaml           # ORB 파라미터, 리스크 한도
 ├── src/stock_agent/
 │   ├── __init__.py
@@ -164,7 +164,7 @@ stock-agent/
 - 2번째 전략 추가 (예: VWAP 반등) 후 A/B
 - 장시간 안정성 요구되면 네이버클라우드/AWS Seoul VPS 이전 (월 5천~2만원)
 - 종목 선정 로직 고도화 (거래대금 상위, 변동성 필터)
-- `scripts/update_universe.py` — CSV 기반 `config/universe.yaml` 갱신 자동화. 분기 수동 갱신 워크플로우의 휴먼 에러 제거. `data/universe_imports/*.csv` 최신 파일 자동 선택(또는 `--csv <path>`), 인코딩 자동 감지, 로더 정규식과 동일한 티커 검증, 임시 가상 코드(`NNNNZ0` 등) 자동 제외 + 주석 기록, 티커 수 ±20% 편차 가드, 기본 드라이런(diff 출력) + 명시적 `--apply` 플래그로만 YAML 덮어쓰기. 부팅 시 자동 스캔은 지양(결정론성 보호 — 장중에 파일이 떨어져 유니버스가 바뀌는 사고 방지). git add/commit 은 운영자 책임.
+- `scripts/update_universe.py` — CSV 기반 `config/universe.yaml` 갱신 자동화. 연 2회 정기변경 수동 갱신 워크플로우의 휴먼 에러 제거. `data/universe_imports/*.csv` 최신 파일 자동 선택(또는 `--csv <path>`), 인코딩 자동 감지, 로더 정규식과 동일한 티커 검증, 임시 가상 코드(`NNNNZ0` 등) 자동 제외 + 주석 기록, 티커 수 ±20% 편차 가드, 기본 드라이런(diff 출력) + 명시적 `--apply` 플래그로만 YAML 덮어쓰기. 부팅 시 자동 스캔은 지양(결정론성 보호 — 장중에 파일이 떨어져 유니버스가 바뀌는 사고 방지). git add/commit 은 운영자 책임.
 - 성능 모니터링 대시보드 (Streamlit 또는 Grafana)
 
 ---
@@ -220,7 +220,7 @@ python scripts/healthcheck.py
 | `python-kis` paper-only 초기화 우회 | 설계가 라이브러리 내부 구현에 의존 | Phase 4 실전 전환 시 실전 APP_KEY/SECRET 별도 발급 및 슬롯 분리 (`PyKis.virtual` 프로퍼티로 라우팅 확인) |
 | 회귀 코드 머지 | 실거래 자금 시스템에 결함 유입 | GitHub Actions CI 자동 실행 + main 브랜치 보호로 CI 통과 필수 |
 | pykrx 분봉 미지원 | 백테스트용 과거 분봉 데이터 확보 경로 미정 | Phase 2 착수 시점에 KIS 과거 분봉 API 추가 or realtime.py 누적본 재활용 중 선택. 현재는 `data/realtime.py` 가 장중 분봉을 폴링으로 수집·누적하는 경로 유지. |
-| pykrx 1.2.7 지수 API(`get_index_portfolio_deposit_file` 등) KRX 서버 호환성 깨짐 + KIS Developers 인덱스 구성종목 API 미제공 | 자동 유니버스 갱신 불가 | `config/universe.yaml` 로 수동 관리. 분기 리밸런싱 때마다 운영자 갱신. Phase 5 에서 자동화 경로(pykrx 수정 릴리스 대기 또는 KRX 정보데이터시스템 스크래핑) 재도입. |
+| pykrx 1.2.7 지수 API(`get_index_portfolio_deposit_file` 등) KRX 서버 호환성 깨짐 + KIS Developers 인덱스 구성종목 API 미제공 | 자동 유니버스 갱신 불가 | `config/universe.yaml` 로 수동 관리. 연 2회 정기변경(6월·12월)마다 운영자 갱신. Phase 5 에서 자동화 경로(pykrx 수정 릴리스 대기 또는 KRX 정보데이터시스템 스크래핑) 재도입. |
 
 ---
 
@@ -231,7 +231,7 @@ Phase 0 완료 (2026-04-19). Phase 1 진행 중 — 브로커 래퍼 + 데이터
 1. [x] `src/stock_agent/broker/kis_client.py` — 완료. DTO 정규화, pykis_factory 주입, paper 전용, live는 defer.
 2. [x] `src/stock_agent/broker/rate_limiter.py` — 완료. 주문 경로 전용 `OrderRateLimiter`(기본 2 req/s + 최소 간격 350 ms). 조회 경로는 python-kis 내장 리미터에 그대로 위임.
 3. [x] `src/stock_agent/data/historical.py` — 완료. pykrx 일봉 + SQLite 캐시 (KOSPI 200 구성종목 조회는 분리). `HistoricalDataStore`는 `fetch_daily_ohlcv` 전용으로 축소. SQLite 스키마 v3 (v2→v3 자동 마이그레이션).
-3a. [x] `src/stock_agent/data/universe.py` + `config/universe.yaml` — 완료. KOSPI 200 유니버스 YAML 하드코딩. pykrx 지수 API·KIS Developers 모두 미제공으로 수동 관리. 분기 리밸런싱 때 운영자 갱신. 의존성 추가: `pyyaml 6.0.3`.
+3a. [x] `src/stock_agent/data/universe.py` + `config/universe.yaml` — 완료. KOSPI 200 유니버스 YAML 하드코딩. pykrx 지수 API·KIS Developers 모두 미제공으로 수동 관리. 정기변경(연 2회, 6월·12월) 때 운영자 갱신. 현재 199/200 반영. 의존성 추가: `pyyaml 6.0.3`.
 4. [ ] `src/stock_agent/data/realtime.py` — 장중 분봉 폴링(우선) 또는 WebSocket 실시간 체결가(후순위)
 5. 단위 테스트 작성 + `healthcheck.py`에서 특정 종목(예: 삼성전자 005930) 현재가 조회 성공 확인
 
