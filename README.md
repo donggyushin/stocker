@@ -40,7 +40,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 - **언어**: Python 3.11+
 - **의존성 관리**: `uv`
 - **브로커 API**: `python-kis 2.x` (KIS Developers REST/WebSocket)
-- **시장 데이터**: `pykrx` (KRX 공식 과거 OHLCV)
+- **시장 데이터**: `pykrx` (KRX 공식 과거 OHLCV), `pyyaml` (유니버스 설정 파일 로드)
 - **백테스팅**: `backtesting.py`
 - **스케줄링**: `APScheduler`
 - **알림**: `python-telegram-bot 22.x`
@@ -64,7 +64,9 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 ## 현재 상태
 
-**Phase 1 진행 중** — Phase 0 환경 준비 완료(2026-04-19). 브로커 래퍼 및 데이터 파이프라인 구현 단계. 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
+**Phase 1 진행 중** — Phase 0 환경 준비 완료(2026-04-19). broker(KisClient + rate_limiter) + data/historical + data/universe 완료. data/realtime 구현이 다음 단계. 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
+
+**운영 주의**: KOSPI 200 구성종목은 `config/universe.yaml`에 수동 관리합니다. KRX KOSPI 200 정기변경(연 2회 — 매년 6월·12월의 선물·옵션 동시만기일 익영업일 기준)에 맞춰 운영자가 직접 갱신해야 합니다. 현재 KRX 정보데이터시스템 [11006] 기준 199/200 반영(2026-04-17 조회, 임시 가상 코드 1건 제외). 정식 티커 발급 후 다음 갱신에 추가 예정.
 
 ### Phase 0 체크리스트 (완료 2026-04-19)
 
@@ -76,7 +78,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 ## 디렉토리 구조
 
-현재 존재하는 파일 (Phase 0 완료 기준):
+현재 존재하는 파일 (Phase 1 진행 중 기준):
 
 ```text
 stock-agent/
@@ -84,20 +86,39 @@ stock-agent/
 │   └── ci.yml                 # PR·main push 시 ruff/black/pytest 자동 실행
 ├── .python-version            # 3.11
 ├── pyproject.toml             # uv 기반, ruff/black/pytest 설정 포함
-├── uv.lock                    # 47개 패키지 잠금
+├── uv.lock                    # 패키지 잠금 (pykrx 1.2.7, pyyaml 6.0.3 포함)
 ├── .pre-commit-config.yaml    # ruff, black, 기본 훅
 ├── .env.example               # KIS·텔레그램 키 placeholder (.env는 .gitignore)
 ├── .gitignore
 ├── README.md
 ├── plan.md
+├── config/
+│   └── universe.yaml          # KOSPI 200 종목코드 (수동 관리, 연 2회 정기변경)
 ├── src/stock_agent/
 │   ├── __init__.py
-│   └── config.py              # pydantic-settings Settings + get_settings() 캐시
+│   ├── config.py              # pydantic-settings Settings + get_settings() 캐시
+│   ├── broker/
+│   │   ├── __init__.py
+│   │   ├── kis_client.py      # KisClient — 토큰 관리, 잔고/주문/조회 DTO
+│   │   ├── rate_limiter.py    # OrderRateLimiter — 주문 경로 전용 (2 req/s, 350ms)
+│   │   └── CLAUDE.md          # 모듈 세부 문서
+│   └── data/
+│       ├── __init__.py        # HistoricalDataStore, HistoricalDataError, DailyBar export
+│       ├── historical.py      # pykrx 일봉 SQLite 캐시 (fetch_daily_ohlcv 전용, 스키마 v3)
+│       ├── universe.py        # KOSPI 200 유니버스 YAML 로더 (load_kospi200_universe)
+│       └── CLAUDE.md          # 모듈 세부 문서
+├── tests/
+│   ├── test_config.py
+│   ├── test_kis_client.py
+│   ├── test_safety.py
+│   ├── test_rate_limiter.py
+│   ├── test_historical.py     # 14 케이스
+│   └── test_universe.py       # 11 케이스 (pytest 68건 green)
 └── scripts/
     └── healthcheck.py         # KIS 모의 잔고 조회 + 텔레그램 hello (실주문 없음)
 ```
 
-Phase 1 이후 추가될 구조(`broker/`, `data/`, `strategy/`, `risk/`, `execution/`, `backtest/`, `monitor/`, `storage/`, `tests/` 등)는 [`plan.md`](./plan.md)의 디렉토리 구조 청사진 참조.
+`strategy/`, `risk/`, `execution/`, `backtest/`, `monitor/`, `storage/` 등 미구현 모듈의 청사진은 [`plan.md`](./plan.md)의 디렉토리 구조 섹션 참조.
 
 ## 설치 및 실행
 
