@@ -33,6 +33,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from loguru import logger
+
 _BLOCKED_REAL_PATH_PATTERNS: tuple[str, ...] = ("/trading/order",)
 """paper 모드에서 real 도메인으로 호출되면 차단할 path 부분 문자열.
 
@@ -42,11 +44,35 @@ _BLOCKED_REAL_PATH_PATTERNS: tuple[str, ...] = ("/trading/order",)
 조회 경로(`/trading/inquire-*`, `/quotations/*`) 는 접두가 달라 매칭되지 않는다.
 """
 
+GUARD_MARKER_ATTR = "_sa_installed_guard"
+"""PyKis 인스턴스에 설치된 가드 이름을 기록하는 속성명.
+
+가드가 설치되면 이 속성에 `"paper_mode_guard"` 또는 `"order_block_guard"` 문자열이
+기록된다. 같은 인스턴스에 두 번째 가드를 설치하려 하면 이중 래핑(`original` 이
+이미 가드된 `request` 를 참조)이 되어 호출 경로가 예측 불가능해지므로, 설치 전
+이 속성을 확인하고 이미 있으면 `RuntimeError` 로 거부한다.
+"""
+
 
 class _RequestableKis(Protocol):
     """가드 설치에 필요한 최소 인터페이스. PyKis 와 테스트용 더블 모두 만족."""
 
     def request(self, *args: Any, **kwargs: Any) -> Any: ...
+
+
+def _reject_if_already_guarded(kis: Any, new_guard: str) -> None:
+    """이미 다른 가드가 설치되어 있으면 재설치 거부.
+
+    동일 가드를 두 번 설치하면 `original` 캡처가 꼬여 외부 래퍼의 `original` 이
+    이전 래퍼를 참조하게 되고, 차단 조건이 두 번 평가되며 호출 스택이 깊어진다.
+    더 큰 문제는 "이미 뭔가 설치되어 있다" 는 운영 가시성이 사라지는 것이다.
+    """
+    existing = getattr(kis, GUARD_MARKER_ATTR, None)
+    if existing is not None:
+        raise RuntimeError(
+            f"PyKis 인스턴스에 이미 {existing!r} 가 설치되어 있어 "
+            f"{new_guard!r} 재설치를 거부합니다. 가드는 인스턴스당 1회만 설치해야 합니다."
+        )
 
 
 def install_paper_mode_guard(kis: _RequestableKis) -> None:
@@ -62,13 +88,18 @@ def install_paper_mode_guard(kis: _RequestableKis) -> None:
     메서드로 그대로 위임한다. paper 도메인에 API 가 없어 python-kis 가 real 로
     보내는 read-only 조회(시세·종목정보 등)가 막히지 않도록 하기 위함이다.
 
+    설치 시 `GUARD_MARKER_ATTR` 속성을 `"paper_mode_guard"` 로 설정하며, 이미
+    다른 가드가 설치된 인스턴스에는 재설치를 거부한다(`RuntimeError`). 이중
+    래핑으로 호출 경로가 예측 불가능해지는 것을 구조적으로 차단.
+
     Args:
         kis: `request` 를 가진 PyKis (또는 테스트 더블) 인스턴스.
 
     Raises:
-        설치 자체는 예외를 던지지 않음. 실제 차단은 추후 가드된 `request`
-        호출이 일어났을 때 `RuntimeError` 로 발생.
+        RuntimeError: 이미 가드가 설치된 인스턴스에 재설치하려 한 경우.
+            실제 주문 차단은 가드된 `request` 호출이 일어났을 때 발생.
     """
+    _reject_if_already_guarded(kis, "paper_mode_guard")
     original: Callable[..., Any] = kis.request
 
     def guarded(*args: Any, **kwargs: Any) -> Any:
@@ -83,6 +114,8 @@ def install_paper_mode_guard(kis: _RequestableKis) -> None:
         return original(*args, **kwargs)
 
     kis.request = guarded  # type: ignore[method-assign]
+    setattr(kis, GUARD_MARKER_ATTR, "paper_mode_guard")
+    logger.debug("install_paper_mode_guard 설치 완료")
 
 
 def install_order_block_guard(kis: _RequestableKis) -> None:
@@ -93,9 +126,17 @@ def install_order_block_guard(kis: _RequestableKis) -> None:
     `install_paper_mode_guard` 와 동일한 `/trading/order` 패턴이지만, 도메인
     조건을 제거해 virtual·real·미지정 전부 막는다.
 
+    설치 시 `GUARD_MARKER_ATTR` 속성을 `"order_block_guard"` 로 설정하며, 이미
+    다른 가드가 설치된 인스턴스에는 재설치를 거부한다(`RuntimeError`).
+
     Args:
         kis: `request` 를 가진 PyKis (또는 테스트 더블) 인스턴스.
+
+    Raises:
+        RuntimeError: 이미 가드가 설치된 인스턴스에 재설치하려 한 경우.
+            실제 주문 차단은 가드된 `request` 호출이 일어났을 때 발생.
     """
+    _reject_if_already_guarded(kis, "order_block_guard")
     original: Callable[..., Any] = kis.request
 
     def guarded(*args: Any, **kwargs: Any) -> Any:
@@ -109,3 +150,5 @@ def install_order_block_guard(kis: _RequestableKis) -> None:
         return original(*args, **kwargs)
 
     kis.request = guarded  # type: ignore[method-assign]
+    setattr(kis, GUARD_MARKER_ATTR, "order_block_guard")
+    logger.debug("install_order_block_guard 설치 완료")

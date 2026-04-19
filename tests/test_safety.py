@@ -16,7 +16,11 @@ from typing import Any
 
 import pytest
 
-from stock_agent.safety import install_order_block_guard, install_paper_mode_guard
+from stock_agent.safety import (
+    GUARD_MARKER_ATTR,
+    install_order_block_guard,
+    install_paper_mode_guard,
+)
 
 
 class _FakeKis:
@@ -332,3 +336,68 @@ def test_order_block_guard_에러_메시지에_read_only_및_path_포함() -> No
     assert path in error_msg
     # "read-only" 또는 "주문 경로" 중 하나 이상 포함
     assert "read-only" in error_msg or "주문 경로" in error_msg
+
+
+# ===========================================================================
+# GUARD_MARKER_ATTR 및 재설치 거부 테스트
+# ===========================================================================
+
+
+def test_paper_mode_guard_설치_후_GUARD_MARKER_ATTR이_paper_mode_guard로_설정() -> None:
+    """install_paper_mode_guard 성공 후 GUARD_MARKER_ATTR 이 "paper_mode_guard" 로 기록된다."""
+    kis = _FakeKis()
+    install_paper_mode_guard(kis)
+
+    assert getattr(kis, GUARD_MARKER_ATTR) == "paper_mode_guard"
+
+
+def test_order_block_guard_설치_후_GUARD_MARKER_ATTR이_order_block_guard로_설정() -> None:
+    """install_order_block_guard 성공 후 GUARD_MARKER_ATTR 이 "order_block_guard" 로 기록된다."""
+    kis = _FakeKis()
+    install_order_block_guard(kis)
+
+    assert getattr(kis, GUARD_MARKER_ATTR) == "order_block_guard"
+
+
+def test_paper_mode_guard_중복_설치시_RuntimeError() -> None:
+    """같은 인스턴스에 install_paper_mode_guard 를 두 번 호출하면 RuntimeError.
+    메시지에 가드 이름 포함."""
+    kis = _FakeKis()
+    install_paper_mode_guard(kis)
+
+    with pytest.raises(RuntimeError, match="paper_mode_guard"):
+        install_paper_mode_guard(kis)
+
+
+def test_paper_mode_guard_설치후_order_block_guard_설치시_RuntimeError() -> None:
+    """paper_mode_guard 설치 후 order_block_guard 설치 시도 → RuntimeError.
+
+    에러 메시지에 이미 설치된 가드 이름("paper_mode_guard") 과
+    신규 가드 이름("order_block_guard") 이 모두 포함된다.
+    """
+    kis = _FakeKis()
+    install_paper_mode_guard(kis)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        install_order_block_guard(kis)
+
+    error_msg = str(exc_info.value)
+    assert "paper_mode_guard" in error_msg
+    assert "order_block_guard" in error_msg
+
+
+def test_order_block_guard_설치후_paper_mode_guard_설치시_RuntimeError() -> None:
+    """order_block_guard 설치 후 paper_mode_guard 설치 시도 → RuntimeError.
+
+    에러 메시지에 이미 설치된 가드 이름("order_block_guard") 과
+    신규 가드 이름("paper_mode_guard") 이 모두 포함된다.
+    """
+    kis = _FakeKis()
+    install_order_block_guard(kis)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        install_paper_mode_guard(kis)
+
+    error_msg = str(exc_info.value)
+    assert "order_block_guard" in error_msg
+    assert "paper_mode_guard" in error_msg

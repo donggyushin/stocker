@@ -52,6 +52,15 @@ KST = timezone(timedelta(hours=9))
 _SYMBOL_RE = re.compile(r"^\d{6}$")
 _DEFAULT_POLLING_INTERVAL_S = 1.0
 _DEFAULT_WS_CONNECT_TIMEOUT_S = 5.0
+_POLLING_FAILURE_ALERT_THRESHOLD = 5
+"""폴링 루프 sweep 단위 연속 실패 임계. 이 값에 도달하면 `logger.critical`.
+
+한 sweep 은 "구독 중 전 종목을 순회" 한다. sweep 내 단 한 종목이라도 틱 갱신에
+성공하면 카운터는 0 으로 리셋된다. 임계 도달 시 로그 레벨은 `critical` 로
+텔레그램 알림(Phase 3) 의 훅 지점을 겸하며, `polling_consecutive_failures`
+프로퍼티로도 상태를 노출해 상위 레이어(전략·스케줄러)가 매매 중단을 판정할 수
+있게 한다.
+"""
 
 Mode = Literal["idle", "websocket", "polling"]
 
@@ -104,11 +113,13 @@ class RealtimeDataStore:
     """실시간 체결가 공급 스토어.
 
     공개 API: `start`, `subscribe`, `unsubscribe`, `get_current_price`,
-    `get_minute_bars`, `get_current_bar`, `close`, `mode` + 컨텍스트 매니저.
+    `get_minute_bars`, `get_current_bar`, `close`, `mode`,
+    `polling_consecutive_failures` + 컨텍스트 매니저.
 
-    단일 프로세스 전용. `KisClient` 와 별도의 `PyKis` 인스턴스를 생성하며
-    (`use_websocket=True`), paper 모드에서는 `install_paper_mode_guard` 를 동일
-    설치해 실전 도메인 접촉을 차단한다.
+    단일 프로세스 전용. **시세 전용 live 키**로 별도 `PyKis` 인스턴스를 생성하며
+    (`use_websocket=True`, `virtual_*` 슬롯 없음), `install_order_block_guard` 로
+    주문 경로(`/trading/order*`)를 도메인 무관 차단해 read-only 를 구조적으로
+    강제한다. `KisClient`(paper 주문·잔고) 와 완전히 분리된 인스턴스다.
     """
 
     def __init__(
@@ -152,6 +163,7 @@ class RealtimeDataStore:
         self._kis: Any | None = None
         self._stop_event = threading.Event()
         self._polling_thread: threading.Thread | None = None
+        self._polling_consecutive_failures: int = 0
 
     # ---- 수명 주기 ------------------------------------------------------
 
@@ -159,6 +171,17 @@ class RealtimeDataStore:
     def mode(self) -> Mode:
         """현재 구동 모드. `start()` 전에는 `"idle"`."""
         return self._mode
+
+    @property
+    def polling_consecutive_failures(self) -> int:
+        """폴링 루프의 sweep 단위 연속 실패 카운터.
+
+        한 sweep(구독 전 종목 1회 순회)에서 어떤 종목도 틱을 갱신하지 못하면 +1,
+        최소 한 종목이라도 갱신되면 0 으로 리셋. WebSocket 모드에서는 항상 0
+        (폴링 루프가 돌지 않음). 상위 레이어가 `_POLLING_FAILURE_ALERT_THRESHOLD`
+        이상인지 확인해 매매 중단을 결정할 수 있다.
+        """
+        return self._polling_consecutive_failures
 
     def start(self) -> None:
         """PyKis 인스턴스 생성 + WebSocket 연결 시도. 실패 시 폴링 모드로 확정.
@@ -431,11 +454,15 @@ class RealtimeDataStore:
 
         `_stop_event` 가 세팅될 때까지 `polling_interval_s` 주기로 현재 구독 중인
         전 종목의 현재가를 REST 로 조회한다. 단일 종목 실패는 로그만 남기고
-        다음 주기로 넘어간다.
+        다음 주기로 넘어가지만, 한 sweep 전체가 실패한 경우
+        `_polling_consecutive_failures` 를 증가시키고
+        `_POLLING_FAILURE_ALERT_THRESHOLD` 도달 시 `logger.critical` 로 경보한다.
+        상위 레이어는 `polling_consecutive_failures` 프로퍼티로 헬스를 감시.
         """
         while not self._stop_event.is_set():
             with self._lock:
                 symbols = list(self._accumulators.keys())
+            sweep_succeeded = False
             for sym in symbols:
                 if self._stop_event.is_set():
                     break
@@ -446,7 +473,29 @@ class RealtimeDataStore:
                     continue
                 if tick is not None:
                     self._on_tick(tick)
+                    sweep_succeeded = True
+            self._record_sweep_outcome(symbols, sweep_succeeded)
             self._stop_event.wait(self._polling_interval_s)
+
+    def _record_sweep_outcome(self, symbols: list[str], sweep_succeeded: bool) -> None:
+        """sweep 성공·실패를 카운터에 반영. 임계 도달 시 critical 경보."""
+        if not symbols:
+            # 구독 종목이 없으면 성공·실패 판정 대상 아님.
+            return
+        if sweep_succeeded:
+            if self._polling_consecutive_failures > 0:
+                logger.info(
+                    f"폴링 루프 복구 — 연속 실패 {self._polling_consecutive_failures}회 리셋"
+                )
+            self._polling_consecutive_failures = 0
+            return
+        self._polling_consecutive_failures += 1
+        if self._polling_consecutive_failures == _POLLING_FAILURE_ALERT_THRESHOLD:
+            logger.critical(
+                f"폴링 루프 연속 {self._polling_consecutive_failures}회 실패 — "
+                "데이터 소스 이상 가능성. 상위 레이어에서 매매 중단 판정 필요. "
+                f"(symbols={symbols})"
+            )
 
     def _poll_once(self, symbol: str) -> TickQuote | None:
         assert self._kis is not None

@@ -10,6 +10,7 @@ live 키 정책 변경(paper+live 하이브리드) 이후 기준:
 
 from __future__ import annotations
 
+import itertools
 import time
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
@@ -600,6 +601,166 @@ def test_live_키_미설정_start시_RealtimeDataError(
     )
     with pytest.raises(RealtimeDataError, match="KIS_LIVE_"):
         rt.start()
+
+
+# ---------------------------------------------------------------------------
+# _build_pykis live 키 factory 인자 검증
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# 폴링 연속 실패 카운터 테스트
+# ---------------------------------------------------------------------------
+
+
+def test_polling_consecutive_failures_초기값은_0(
+    monkeypatch: pytest.MonkeyPatch,
+    pykis_factory,
+    guard_patch,
+) -> None:
+    """생성 직후, start() 호출 전에 polling_consecutive_failures == 0."""
+    settings = _make_settings_with_live_keys(monkeypatch)
+    rt = RealtimeDataStore(
+        settings,
+        pykis_factory=pykis_factory,
+        clock=_fixed_clock(_kst(9, 30)),
+    )
+    assert rt.polling_consecutive_failures == 0
+    rt.close()
+
+
+def test_polling_연속_실패시_카운터_증가(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_kis,
+    pykis_factory,
+    guard_patch,
+) -> None:
+    """폴링 모드에서 quote() 가 계속 None 을 반환하면 카운터가 2 이상으로 올라간다."""
+    settings = _make_settings_with_live_keys(monkeypatch)
+    # WebSocket 연결 실패 → 폴링 폴백
+    fake_kis.websocket.ensure_connected.side_effect = TimeoutError("ws 없음")
+    # quote 가 항상 None-price 를 반환 → _poll_once 가 None 반환 → sweep 실패
+    mock_quote = MagicMock()
+    mock_quote.price = None
+    fake_kis.stock.return_value.quote.return_value = mock_quote
+
+    rt = RealtimeDataStore(
+        settings,
+        pykis_factory=pykis_factory,
+        clock=_fixed_clock(_kst(9, 30)),
+        polling_interval_s=0.01,
+    )
+    rt.start()
+    rt.subscribe(_SYMBOL)
+
+    # 폴링 루프가 최소 2회 돌 수 있도록 대기
+    deadline = time.monotonic() + 2.0
+    while rt.polling_consecutive_failures < 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+    assert rt.polling_consecutive_failures >= 2
+
+    rt.close()
+    if rt._polling_thread is not None:
+        rt._polling_thread.join(timeout=1.0)
+        assert not rt._polling_thread.is_alive()
+
+
+def test_polling_sweep_중_한_종목이라도_성공하면_카운터_리셋(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_kis,
+    pykis_factory,
+    guard_patch,
+) -> None:
+    """두 종목 중 하나가 성공하면 sweep 성공으로 간주해 카운터가 0 을 유지한다."""
+    settings = _make_settings_with_live_keys(monkeypatch)
+    fake_kis.websocket.ensure_connected.side_effect = TimeoutError("ws 없음")
+
+    symbol2 = "000660"
+
+    # quote() 호출마다 번갈아: 정상 → 예외 → 정상 → 예외 ... (무한 순환)
+    mock_good = MagicMock()
+    mock_good.price = Decimal("70000")
+    fake_kis.stock.return_value.quote.side_effect = itertools.cycle(
+        [mock_good, Exception("일시 오류")]
+    )
+
+    rt = RealtimeDataStore(
+        settings,
+        pykis_factory=pykis_factory,
+        clock=_fixed_clock(_kst(9, 30)),
+        polling_interval_s=0.01,
+    )
+    rt.start()
+    rt.subscribe(_SYMBOL)
+    rt.subscribe(symbol2)
+
+    # 폴링 루프가 최소 2 sweep 돌 수 있도록 대기
+    time.sleep(0.1)
+
+    # 적어도 한 종목이 매 sweep 마다 성공하므로 카운터는 0 이거나 매우 낮아야 한다
+    assert rt.polling_consecutive_failures == 0
+
+    rt.close()
+    if rt._polling_thread is not None:
+        rt._polling_thread.join(timeout=1.0)
+        assert not rt._polling_thread.is_alive()
+
+
+def test_polling_연속_실패_임계_도달시_critical_로그(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_kis,
+    pykis_factory,
+    guard_patch,
+) -> None:
+    """연속 실패가 임계(_POLLING_FAILURE_ALERT_THRESHOLD)에 도달하면 CRITICAL 로그가 남는다.
+
+    monkeypatch 로 임계를 2 로 낮춰 테스트 대기 시간을 최소화한다.
+    """
+    # 임계를 2로 낮춰 빠르게 도달
+    monkeypatch.setattr("stock_agent.data.realtime._POLLING_FAILURE_ALERT_THRESHOLD", 2)
+
+    settings = _make_settings_with_live_keys(monkeypatch)
+    fake_kis.websocket.ensure_connected.side_effect = TimeoutError("ws 없음")
+
+    # quote 가 항상 예외를 던져 sweep 실패 유도
+    fake_kis.stock.return_value.quote.side_effect = RuntimeError("조회 불가")
+
+    # loguru 캡처용 싱크
+    captured: list[str] = []
+
+    def _sink(message) -> None:  # type: ignore[no-untyped-def]
+        captured.append(message)
+
+    from loguru import logger as _logger
+
+    sink_id = _logger.add(_sink, level="CRITICAL", format="{message}")
+
+    try:
+        rt = RealtimeDataStore(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(9, 30)),
+            polling_interval_s=0.01,
+        )
+        rt.start()
+        rt.subscribe(_SYMBOL)
+
+        # 임계(2) 도달까지 대기
+        deadline = time.monotonic() + 3.0
+        while rt.polling_consecutive_failures < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+        rt.close()
+        if rt._polling_thread is not None:
+            rt._polling_thread.join(timeout=1.0)
+    finally:
+        _logger.remove(sink_id)
+
+    # CRITICAL 레벨 메시지가 캡처되어야 한다
+    assert len(captured) >= 1, "CRITICAL 로그가 최소 1건 이상 기록되어야 한다"
+    combined = " ".join(captured)
+    assert "연속" in combined or "실패" in combined
 
 
 # ---------------------------------------------------------------------------
