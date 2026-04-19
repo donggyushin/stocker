@@ -89,6 +89,29 @@ def guard_patch(mocker: MockerFixture):
     return mocker.patch("stock_agent.broker.kis_client.install_paper_mode_guard")
 
 
+def _make_pending_order_mock(
+    mocker: MockerFixture,
+    *,
+    number: str = "PO-000",
+    symbol: str = "005930",
+    side: str | None = "buy",
+    qty: int = 1,
+    qty_remaining: int = 1,
+    price: int | None = 70_000,
+):
+    """PendingOrder 변환 대상이 될 PyKis order mock 생성. time/created_at 은 None 고정."""
+    order = mocker.MagicMock()
+    order.number = number
+    order.symbol = symbol
+    order.side = side
+    order.qty = qty
+    order.qty_remaining = qty_remaining
+    order.price = price
+    order.time = None
+    order.created_at = None
+    return order
+
+
 # ---------------------------------------------------------------------------
 # 테스트 1: paper 모드에서 install_paper_mode_guard 가 호출된다
 # ---------------------------------------------------------------------------
@@ -96,7 +119,6 @@ def guard_patch(mocker: MockerFixture):
 
 def test_paper_모드에서_install_paper_mode_guard가_호출된다(
     monkeypatch: pytest.MonkeyPatch,
-    mocker: MockerFixture,
     fake_kis,
     pykis_factory,
     guard_patch,
@@ -113,7 +135,6 @@ def test_paper_모드에서_install_paper_mode_guard가_호출된다(
 
 def test_live_모드는_NotImplementedError를_발생시킨다(
     monkeypatch: pytest.MonkeyPatch,
-    mocker: MockerFixture,
     pykis_factory,
     guard_patch,
 ) -> None:
@@ -132,7 +153,6 @@ def test_live_모드는_NotImplementedError를_발생시킨다(
 
 def test_paper_모드에서_PyKis_생성자_양쪽_슬롯에_동일키가_주입된다(
     monkeypatch: pytest.MonkeyPatch,
-    mocker: MockerFixture,
     pykis_factory,
     guard_patch,
 ) -> None:
@@ -310,25 +330,24 @@ def test_get_pending_orders는_KisOrder_iterable을_list_PendingOrder로_변환�
 ) -> None:
     settings = _make_settings(monkeypatch)
 
-    buy_order = mocker.MagicMock()
-    buy_order.number = "PO-001"
-    buy_order.symbol = "005930"
-    buy_order.side = "buy"
-    buy_order.qty = 10
-    buy_order.qty_remaining = 10
-    buy_order.price = 70_000
-    buy_order.time = None
-    buy_order.created_at = None
-
-    sell_order = mocker.MagicMock()
-    sell_order.number = "PO-002"
-    sell_order.symbol = "000660"
-    sell_order.side = "sell"
-    sell_order.qty = 5
-    sell_order.qty_remaining = 3
-    sell_order.price = 150_000
-    sell_order.time = None
-    sell_order.created_at = None
+    buy_order = _make_pending_order_mock(
+        mocker,
+        number="PO-001",
+        symbol="005930",
+        side="buy",
+        qty=10,
+        qty_remaining=10,
+        price=70_000,
+    )
+    sell_order = _make_pending_order_mock(
+        mocker,
+        number="PO-002",
+        symbol="000660",
+        side="sell",
+        qty=5,
+        qty_remaining=3,
+        price=150_000,
+    )
 
     fake_kis.account.return_value.pending_orders.return_value = [buy_order, sell_order]
 
@@ -366,7 +385,6 @@ def test_get_pending_orders는_KisOrder_iterable을_list_PendingOrder로_변환�
 
 def test_라이브러리_예외는_KisClientError로_래핑되며_원본은_cause로_보존된다(
     monkeypatch: pytest.MonkeyPatch,
-    mocker: MockerFixture,
     fake_kis,
     pykis_factory,
     guard_patch,
@@ -389,7 +407,6 @@ def test_라이브러리_예외는_KisClientError로_래핑되며_원본은_caus
 
 def test_paper_guard_RuntimeError는_래핑되지_않고_그대로_전파된다(
     monkeypatch: pytest.MonkeyPatch,
-    mocker: MockerFixture,
     fake_kis,
     pykis_factory,
     guard_patch,
@@ -413,7 +430,6 @@ def test_paper_guard_RuntimeError는_래핑되지_않고_그대로_전파된다(
 
 def test_close_후_재사용시_KisClientError가_발생한다(
     monkeypatch: pytest.MonkeyPatch,
-    mocker: MockerFixture,
     fake_kis,
     pykis_factory,
     guard_patch,
@@ -478,7 +494,6 @@ def test_컨텍스트_매니저가_close를_호출하고_원본_예외가_전파
 
 def test_place_buy_qty_0이하는_KisClientError를_raise하고_account_호출되지_않는다(
     monkeypatch: pytest.MonkeyPatch,
-    mocker: MockerFixture,
     fake_kis,
     pykis_factory,
     guard_patch,
@@ -514,15 +529,12 @@ def test_get_pending_orders는_side_미상이면_KisClientError를_raise한다(
 ) -> None:
     settings = _make_settings(monkeypatch)
 
-    bad_order = mocker.MagicMock()
-    bad_order.number = "PO-999"
-    bad_order.symbol = "005930"
-    bad_order.side = "unknown"  # "buy"/"sell" 어디에도 해당하지 않음
-    bad_order.qty = 1
-    bad_order.qty_remaining = 1
-    bad_order.price = 70_000
-    bad_order.time = None
-    bad_order.created_at = None
+    bad_order = _make_pending_order_mock(
+        mocker,
+        number="PO-999",
+        symbol="005930",
+        side="unknown",  # "buy"/"sell" 어디에도 해당하지 않음
+    )
     fake_kis.account.return_value.pending_orders.return_value = [bad_order]
 
     kc = KisClient(settings, pykis_factory=pykis_factory)

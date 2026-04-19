@@ -249,7 +249,7 @@ class KisClient:
         try:
             close_method()
         except Exception as e:  # noqa: BLE001 — close 실패는 부수 정보로만 기록
-            logger.warning(f"PyKis close 중 예외 발생 (무시): {e.__class__.__name__}: {e}")
+            logger.warning(f"PyKis close 중 예외 발생 (무시): {e!r}")
 
     def __enter__(self) -> KisClient:
         return self
