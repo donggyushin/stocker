@@ -4,9 +4,9 @@
 !.env.example
 .claude/settings.local.json
 
-# Runtime data (SQLite, caches, reports)
-data/
-logs/
+# Runtime data (SQLite, caches, reports) — 프로젝트 루트 한정 (src/stock_agent/data/ 와 충돌 방지)
+/data/
+/logs/
 *.sqlite
 *.sqlite-journal
 *.db

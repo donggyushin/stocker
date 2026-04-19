@@ -131,7 +131,7 @@ stock-agent/
 
 ### Phase 1 — 데이터 파이프라인 & 브로커 래퍼 (4~5일)
 - `broker/kis_client.py`: 토큰 발급/갱신, 잔고 조회, 매수/매도 주문, 미체결 조회
-- `data/historical.py`: pykrx로 KOSPI 200 구성종목 + 과거 분봉/일봉 수집 & SQLite 캐시
+- `data/historical.py`: pykrx로 KOSPI 200 구성종목 + 일봉 수집 & SQLite 캐시 (pykrx는 분봉 OHLCV 미지원. 분봉은 `data/realtime.py` 장중 폴링 누적 범위)
 - `data/realtime.py`: 장중 분봉 폴링(우선) 또는 WebSocket 실시간 체결가 (후순위)
 - 레이트 리미터 (KIS 초당 ~20회 제한 대응)
 - **산출물**: 단위 테스트 + `healthcheck.py`에서 특정 종목 현재가 조회 성공
@@ -217,6 +217,7 @@ python scripts/healthcheck.py
 | 감정적 개입 (수동 매매 섞임) | 시스템 검증 불가 | 실전 전환 후 **최소 1개월 수동 개입 금지**, 개선은 코드 반영으로만 |
 | `python-kis` paper-only 초기화 우회 | 설계가 라이브러리 내부 구현에 의존 | Phase 4 실전 전환 시 실전 APP_KEY/SECRET 별도 발급 및 슬롯 분리 (`PyKis.virtual` 프로퍼티로 라우팅 확인) |
 | 회귀 코드 머지 | 실거래 자금 시스템에 결함 유입 | GitHub Actions CI 자동 실행 + main 브랜치 보호로 CI 통과 필수 |
+| pykrx 분봉 미지원 | 백테스트용 과거 분봉 데이터 확보 경로 미정 | Phase 2 착수 시점에 KIS 과거 분봉 API 추가 or realtime.py 누적본 재활용 중 선택. 현재는 `data/realtime.py` 가 장중 분봉을 폴링으로 수집·누적하는 경로 유지. |
 
 ---
 
@@ -226,10 +227,10 @@ Phase 0 완료 (2026-04-19). Phase 1 진행 중 — 브로커 래퍼 + 데이터
 
 1. [x] `src/stock_agent/broker/kis_client.py` — 완료. DTO 정규화, pykis_factory 주입, paper 전용, live는 defer.
 2. [x] `src/stock_agent/broker/rate_limiter.py` — 완료. 주문 경로 전용 `OrderRateLimiter`(기본 2 req/s + 최소 간격 350 ms). 조회 경로는 python-kis 내장 리미터에 그대로 위임.
-3. `src/stock_agent/data/historical.py` — pykrx로 KOSPI 200 구성종목 + 분봉/일봉 수집 & SQLite 캐시
+3. [x] `src/stock_agent/data/historical.py` — 완료. pykrx 일봉 + KOSPI 200 구성종목 SQLite 캐시. 분봉은 realtime.py 로 분리.
 4. `src/stock_agent/data/realtime.py` — 장중 분봉 폴링(우선) 또는 WebSocket 실시간 체결가(후순위)
 5. 단위 테스트 작성 + `healthcheck.py`에서 특정 종목(예: 삼성전자 005930) 현재가 조회 성공 확인
 
 **Phase 1 PASS 기준**: `pytest tests/test_kis_client.py` 통과, 삼성전자(005930) 현재가 조회 OK.
 
-현재 진척: `kis_client.py` + `rate_limiter.py` 완료(pytest 43건 green, 1.14s). 다음은 data/historical → data/realtime 순.
+현재 진척: broker(kis_client + rate_limiter) + data/historical 완료(pytest 60건 green, 1.41s). 다음은 data/realtime.

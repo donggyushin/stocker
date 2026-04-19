@@ -10,6 +10,7 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "loguru>=0.7",
+    "pykrx>=1.0.45",
 ]
 
 [dependency-groups]
