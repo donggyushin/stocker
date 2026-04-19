@@ -469,3 +469,103 @@ def test_컨텍스트_매니저가_close를_호출하고_원본_예외가_전파
     with KisClient(settings, pykis_factory=factory_2):
         pass  # 정상 종료
     fake_kis_2.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 테스트 13: _place_order 의 qty<=0 사전 가드 (C-3)
+# ---------------------------------------------------------------------------
+
+
+def test_place_buy_qty_0이하는_KisClientError를_raise하고_account_호출되지_않는다(
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: MockerFixture,
+    fake_kis,
+    pykis_factory,
+    guard_patch,
+) -> None:
+    settings = _make_settings(monkeypatch)
+    kc = KisClient(settings, pykis_factory=pykis_factory)
+
+    with pytest.raises(KisClientError, match="주문 수량"):
+        kc.place_buy("005930", qty=0)
+    with pytest.raises(KisClientError, match="주문 수량"):
+        kc.place_buy("005930", qty=-1)
+    with pytest.raises(KisClientError, match="주문 수량"):
+        kc.place_sell("005930", qty=0)
+    with pytest.raises(KisClientError, match="주문 수량"):
+        kc.place_sell("005930", qty=-5)
+
+    # 사전 가드라 account.buy / account.sell 까지 전파되지 않아야 한다
+    fake_kis.account.return_value.buy.assert_not_called()
+    fake_kis.account.return_value.sell.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 테스트 14: _to_pending_order 는 side 판별 실패 시 KisClientError 로 실패한다 (C-1)
+# ---------------------------------------------------------------------------
+
+
+def test_get_pending_orders는_side_미상이면_KisClientError를_raise한다(
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: MockerFixture,
+    fake_kis,
+    pykis_factory,
+    guard_patch,
+) -> None:
+    settings = _make_settings(monkeypatch)
+
+    bad_order = mocker.MagicMock()
+    bad_order.number = "PO-999"
+    bad_order.symbol = "005930"
+    bad_order.side = "unknown"  # "buy"/"sell" 어디에도 해당하지 않음
+    bad_order.qty = 1
+    bad_order.qty_remaining = 1
+    bad_order.price = 70_000
+    bad_order.time = None
+    bad_order.created_at = None
+    fake_kis.account.return_value.pending_orders.return_value = [bad_order]
+
+    kc = KisClient(settings, pykis_factory=pykis_factory)
+    with pytest.raises(KisClientError, match="side"):
+        kc.get_pending_orders()
+
+    # side 가 None 인 케이스도 동일하게 실패해야 한다
+    bad_order.side = None
+    with pytest.raises(KisClientError, match="side"):
+        kc.get_pending_orders()
+
+
+# ---------------------------------------------------------------------------
+# 테스트 15: _place_order 는 주문번호가 비면 KisClientError 로 실패한다 (C-2)
+# ---------------------------------------------------------------------------
+
+
+def test_place_buy는_주문번호가_비면_KisClientError를_raise한다(
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: MockerFixture,
+    fake_kis,
+    pykis_factory,
+    guard_patch,
+) -> None:
+    settings = _make_settings(monkeypatch)
+
+    # 빈 문자열 케이스
+    mock_order = mocker.MagicMock()
+    mock_order.number = ""
+    fake_kis.account.return_value.buy.return_value = mock_order
+
+    kc = KisClient(settings, pykis_factory=pykis_factory)
+    with pytest.raises(KisClientError, match="주문번호"):
+        kc.place_buy("005930", qty=1)
+
+    # None 케이스
+    mock_order_none = mocker.MagicMock()
+    mock_order_none.number = None
+    fake_kis.account.return_value.buy.return_value = mock_order_none
+    with pytest.raises(KisClientError, match="주문번호"):
+        kc.place_buy("005930", qty=1)
+
+    # place_sell 도 동일 계약
+    fake_kis.account.return_value.sell.return_value = mock_order
+    with pytest.raises(KisClientError, match="주문번호"):
+        kc.place_sell("005930", qty=1)

@@ -213,8 +213,17 @@ class KisClient:
             return method(market="KRX", symbol=symbol, qty=qty, price=price)
 
         order = self._call(f"{side} 주문 제출", _do)
+        raw_number = getattr(order, "number", None)
+        order_number = str(raw_number) if raw_number else ""
+        if not order_number:
+            # 주문번호가 없으면 체결·취소·재조회 경로가 끊겨 유령 포지션이 된다.
+            # 상위 레이어가 "주문 성공" 으로 오인하지 않도록 명시적 실패 처리.
+            raise KisClientError(
+                f"{side} 주문 제출은 성공했으나 주문번호가 비어 있음 — 체결/취소 추적 불가. "
+                f"symbol={symbol}, qty={qty}, price={price}"
+            )
         return OrderTicket(
-            order_number=str(getattr(order, "number", "") or ""),
+            order_number=order_number,
             symbol=symbol,
             side=side,
             qty=qty,
@@ -276,15 +285,18 @@ def _to_pending_order(order: Any) -> PendingOrder:
     """python-kis `KisOrder` 유사 객체 → `PendingOrder` 변환.
 
     python-kis 의 미체결 표현은 속성명이 증권사 응답 필드에 따라 변동 가능성이
-    있어 `getattr` 로 방어적으로 접근한다. 알 수 없는 매수/매도 구분은
-    안전측으로 "buy" 로 기록하고 로그.
+    있어 `getattr` 로 방어적으로 접근한다. 단 `side` 판별 실패는 **절대**
+    조용히 넘기지 않는다 — 매도 미체결을 매수로 오인하면 상위 리스크·청산
+    로직이 포지션을 잘못 집계해 자금 손실로 직결되기 때문. `KisClientError`
+    로 실패시켜 상위에서 재조회·중단을 강제한다.
     """
     side_raw = getattr(order, "side", None)
-    if side_raw in ("buy", "sell"):
-        side: Literal["buy", "sell"] = side_raw
-    else:
-        logger.debug(f"미체결 주문 side 판별 불가 (기본값 buy 로 기록): order={order!r}")
-        side = "buy"
+    if side_raw not in ("buy", "sell"):
+        raise KisClientError(
+            "미체결 주문 side 판별 불가 — 매수/매도 오인 방지를 위해 실패 처리. "
+            f"order_number={getattr(order, 'number', '?')!r}, side_raw={side_raw!r}"
+        )
+    side: Literal["buy", "sell"] = side_raw
 
     price_raw = getattr(order, "price", None)
     price: int | None = None if price_raw in (None, 0) else int(price_raw)
