@@ -64,7 +64,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 ## 현재 상태
 
-**Phase 1 코드 완료 / Phase 2 착수 대기** — Phase 0 환경 준비 완료(2026-04-19). broker(KisClient + rate_limiter) + data(historical + universe + realtime) 모두 완료. **paper 주문 + live 시세 하이브리드 키 정책 도입**: KIS paper 도메인에 시세 API가 없어 `RealtimeDataStore`는 별도 실전 APP_KEY로 실전 도메인을 호출하며, 실전 키 PyKis 인스턴스에는 `install_order_block_guard`를 설치해 주문 경로를 구조적으로 차단한다. 운영자 `.env` 실전 키 3종 설정 + `scripts/healthcheck.py` 4종 통과 확인 후 Phase 1 PASS 선언 → Phase 2 착수. 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
+**Phase 1 PASS (코드·테스트 레벨) — Phase 2 착수 준비 완료** (2026-04-19 선언). Phase 0 환경 준비 완료. broker(KisClient + rate_limiter) + data(historical + universe + realtime) 모두 완료. pytest **131건 green**. **paper 주문 + live 시세 하이브리드 키 정책 도입**: KIS paper 도메인에 시세 API가 없어 `RealtimeDataStore`는 별도 실전 APP_KEY로 실전 도메인을 호출하며, 실전 키 PyKis 인스턴스에는 `install_order_block_guard`를 설치해 주문 경로를 구조적으로 차단한다. **주의**: 장중 실시간 시세 수신 end-to-end 확인(실전 키 + IP 화이트리스트 + 평일 장중 틱 수신)은 Phase 3 착수 전제로 이관됨. 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
 
 **운영 주의**: KOSPI 200 구성종목은 `config/universe.yaml`에 수동 관리합니다. KRX KOSPI 200 정기변경(연 2회 — 매년 6월·12월의 선물·옵션 동시만기일 익영업일 기준)에 맞춰 운영자가 직접 갱신해야 합니다. 현재 KRX 정보데이터시스템 [11006] 기준 199/200 반영(2026-04-17 조회, 임시 가상 코드 1건 제외). 정식 티커 발급 후 다음 갱신에 추가 예정.
 
@@ -78,7 +78,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 ## 디렉토리 구조
 
-현재 존재하는 파일 (Phase 1 진행 중 기준):
+현재 존재하는 파일 (Phase 1 완료 기준):
 
 ```text
 stock-agent/
@@ -115,7 +115,7 @@ stock-agent/
 │   ├── test_rate_limiter.py
 │   ├── test_historical.py     # 14 케이스
 │   ├── test_universe.py       # 11 케이스
-│   └── test_realtime.py       # 24 케이스 (pytest 115건 green)
+│   └── test_realtime.py       # 28 케이스 (pytest 131건 green)
 └── scripts/
     └── healthcheck.py         # KIS 모의 잔고 조회 + 텔레그램 hello (실주문 없음)
 ```
@@ -167,7 +167,8 @@ uv run python scripts/healthcheck.py
 # 2) 모의 계좌 잔고 조회 OK
 # 3) 텔레그램 "hello" 메시지 수신 OK
 # 4) 삼성전자(005930) 현재가 조회 OK — mode=websocket | polling
-#    (실전 키 미설정 시 4번은 SKIP — Phase 3 착수 전 실전 키 등록 필요)
+#    (실전 키 미설정 시 4번은 SKIP — Phase 3 착수 전 반드시 해결:
+#     실전 키 3종 기입 + KIS Developers 포털 IP 화이트리스트 등록 필수)
 ```
 
 ## 참고 문서
