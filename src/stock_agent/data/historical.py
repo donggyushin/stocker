@@ -1,11 +1,13 @@
-"""pykrx 기반 KOSPI 과거 일봉 수집 + SQLite 캐시.
+"""pykrx 기반 KOSPI 개별 종목 과거 일봉 수집 + SQLite 캐시.
 
 책임 범위
-- KOSPI 200 구성종목 조회 (as-of 날짜 기준)
 - 개별 종목의 일봉 OHLCV 조회 (start~end)
 - 결과를 단일 SQLite 파일 (기본: `data/stock_agent.db`) 에 캐시
 
 범위 제외 (의도적)
+- KOSPI 200 구성종목 조회: `data/universe.py` 가 YAML(`config/universe.yaml`) 에서
+  로드한다. pykrx 지수 API 는 KRX 서버 변경으로 호환이 깨졌고 KIS Developers 는
+  해당 API 를 제공하지 않아, 수동 관리 YAML 이 유일한 실용 경로.
 - 분봉/틱 데이터: pykrx 가 공식 미지원. `data/realtime.py` 가 장중 분봉 폴링으로 수집.
 - KIS Developers 현재가 조회: `broker/kis_client.py` 범위.
 - 백테스트 엔진: Phase 2 `backtest/engine.py`.
@@ -15,15 +17,18 @@
 - 그 외 `Exception` 은 `HistoricalDataError` 로 래핑 + loguru `exception` 로그.
 - 사전 가드: `symbol` 형식(6자리 숫자), `start <= end` 는 pykrx 호출 전에 거부.
 
-캐시 정책 (v2, 단순)
+캐시 정책 (v3, 단순)
 - `daily_bars` 테이블: `(symbol, trade_date)` PRIMARY KEY. OHLC + 거래량.
   (v1 에 있던 `value`(거래대금) 컬럼은 제거. pykrx `get_market_ohlcv` 는 단일 종목
   모드에서 거래대금을 반환하지 않아 조용한 0 이 섞이는 무결성 위험이 있었다.
   유동성 필터가 필요하면 추후 전시장 스냅샷 메서드를 별도 추가.)
-- `kospi200_constituents` 테이블: `(as_of_date, symbol)` PRIMARY KEY.
 - 재호출 판정: "요청 end 날짜가 DB 에 존재" + "end < today" 이면 캐시 적중.
   당일(T) 데이터는 장 종료 여부를 확정할 수 없어 항상 재조회한다.
-- v1 스키마가 감지되면 `daily_bars` 를 DROP 후 v2 로 재생성 (캐시 재구축).
+- 마이그레이션
+  - v1 → v3: `daily_bars` DROP+재생성, `kospi200_constituents` DROP.
+  - v2 → v3: `kospi200_constituents` DROP (daily_bars 는 유지).
+  - `kospi200_constituents` 테이블은 v3 에서 완전히 제거되었다 (유니버스 조회 책임이
+    `data/universe.py` 로 이전됨).
 """
 
 from __future__ import annotations
@@ -47,9 +52,8 @@ ClockFn = Callable[[], datetime]
 """현재 시각 제공자. 테스트 결정론화를 위해 주입 가능."""
 
 _DEFAULT_DB_PATH = Path("data/stock_agent.db")
-_KOSPI200_INDEX_CODE = "1028"
 _SYMBOL_RE = re.compile(r"^\d{6}$")
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 _CREATE_DAILY_BARS_SQL = """
     CREATE TABLE IF NOT EXISTS daily_bars (
@@ -61,14 +65,6 @@ _CREATE_DAILY_BARS_SQL = """
         close       TEXT NOT NULL,
         volume      INTEGER NOT NULL,
         PRIMARY KEY (symbol, trade_date)
-    )
-"""
-
-_CREATE_CONSTITUENTS_SQL = """
-    CREATE TABLE IF NOT EXISTS kospi200_constituents (
-        as_of_date  TEXT NOT NULL,
-        symbol      TEXT NOT NULL,
-        PRIMARY KEY (as_of_date, symbol)
     )
 """
 
@@ -107,10 +103,13 @@ class DailyBar:
 
 
 class HistoricalDataStore:
-    """pykrx 일봉 + KOSPI 200 구성종목 조회를 SQLite 로 캐시한다.
+    """pykrx 개별 종목 일봉 조회를 SQLite 로 캐시한다.
 
-    공개 API: `get_kospi200_constituents`, `fetch_daily_ohlcv`, `close` + 컨텍스트 매니저.
+    공개 API: `fetch_daily_ohlcv`, `close` + 컨텍스트 매니저.
     단일 프로세스 전용 (스레드/프로세스 safe 미제공).
+
+    KOSPI 200 구성종목 조회는 이 클래스의 책임이 아니다. 유니버스는
+    `stock_agent.data.universe.load_kospi200_universe()` 로 YAML 에서 로드한다.
     """
 
     def __init__(
@@ -150,15 +149,16 @@ class HistoricalDataStore:
     def _init_schema(self) -> None:
         """스키마를 최신 버전(`_SCHEMA_VERSION`) 으로 맞춘다.
 
-        - 빈 DB: 테이블 새로 생성 + 버전 기록.
-        - v1 (daily_bars 에 `value` 컬럼 존재): `daily_bars` DROP 후 v2 로 재생성.
-          캐시 레코드는 유실되지만 `.gitignore` 된 로컬 캐시이므로 영향 적음.
-        - v2 이상: no-op.
+        - 빈 DB: `daily_bars` 생성 + 버전 기록.
+        - v1 → v3: `daily_bars` DROP+재생성(컬럼 변경), `kospi200_constituents` DROP.
+        - v2 → v3: `kospi200_constituents` DROP. `daily_bars` 는 그대로 유지.
+        - v3 이상: no-op.
+
+        `.gitignore` 된 로컬 캐시라 레코드 유실 영향은 작다.
         """
         cur = self._conn.cursor()
         try:
             cur.execute(_CREATE_SCHEMA_VERSION_SQL)
-            cur.execute(_CREATE_CONSTITUENTS_SQL)
 
             row = cur.execute("SELECT MAX(version) FROM schema_version").fetchone()
             current = row[0] if row and row[0] is not None else 0
@@ -166,14 +166,15 @@ class HistoricalDataStore:
             if current == 0:
                 cur.execute(_CREATE_DAILY_BARS_SQL)
             elif current < _SCHEMA_VERSION:
-                logger.info(
-                    f"historical 스키마 v{current} → v{_SCHEMA_VERSION} 마이그레이션 "
-                    "(daily_bars 재생성)"
-                )
-                cur.execute("DROP TABLE IF EXISTS daily_bars")
+                logger.info(f"historical 스키마 v{current} → v{_SCHEMA_VERSION} 마이그레이션")
+                if current < 2:
+                    # v1 의 daily_bars 는 `value` 컬럼을 포함하므로 재생성이 필요.
+                    cur.execute("DROP TABLE IF EXISTS daily_bars")
                 cur.execute(_CREATE_DAILY_BARS_SQL)
-            # current >= _SCHEMA_VERSION 인 경우: 최신이거나 미래 버전(다운그레이드 금지)
+                # v3 에서 `kospi200_constituents` 테이블은 완전 제거.
+                cur.execute("DROP TABLE IF EXISTS kospi200_constituents")
             else:
+                # current >= _SCHEMA_VERSION: 최신 또는 미래 버전. 다운그레이드는 금지.
                 cur.execute(_CREATE_DAILY_BARS_SQL)
 
             cur.execute(
@@ -220,82 +221,6 @@ class HistoricalDataStore:
 
     def _today(self) -> date:
         return self._clock().date()
-
-    # ---- 공개 API: KOSPI 200 구성종목 ----------------------------------
-
-    def get_kospi200_constituents(self, as_of: date | None = None) -> list[str]:
-        """KOSPI 200 구성종목 티커 리스트를 반환한다.
-
-        - `as_of=None` → 오늘 날짜(`clock` 기준) 사용.
-        - 동일 `as_of` 에 대해 두 번째 호출부터는 pykrx 재호출 없이 DB 캐시에서 반환.
-        - 반환 순서는 티커 오름차순으로 안정화한다.
-        """
-        target = as_of or self._today()
-        return self._call(
-            "KOSPI 200 구성종목 조회",
-            lambda: self._load_or_fetch_constituents(target),
-        )
-
-    def _load_or_fetch_constituents(self, target: date) -> list[str]:
-        cached = self._select_constituents(target)
-        if cached:
-            logger.info(
-                f"KOSPI 200 구성종목 캐시 적중 — as_of={target.isoformat()}, n={len(cached)}"
-            )
-            return cached
-
-        tickers = self._fetch_constituents_from_pykrx(target)
-        self._insert_constituents(target, tickers)
-        logger.info(
-            f"KOSPI 200 구성종목 캐시 미스 — pykrx 조회 후 저장 "
-            f"(as_of={target.isoformat()}, n={len(tickers)})"
-        )
-        return tickers
-
-    def _select_constituents(self, target: date) -> list[str]:
-        cur = self._conn.cursor()
-        try:
-            rows = cur.execute(
-                "SELECT symbol FROM kospi200_constituents WHERE as_of_date = ? ORDER BY symbol ASC",
-                (target.isoformat(),),
-            ).fetchall()
-        finally:
-            cur.close()
-        return [r[0] for r in rows]
-
-    def _fetch_constituents_from_pykrx(self, target: date) -> list[str]:
-        stock = self._get_pykrx()
-        raw = stock.get_index_portfolio_deposit_file(
-            target.strftime("%Y%m%d"),
-            _KOSPI200_INDEX_CODE,
-        )
-        if raw is None:
-            raise HistoricalDataError(
-                "pykrx 가 KOSPI 200 구성종목으로 None 을 반환 — 데이터 소스 이상. "
-                f"as_of={target.isoformat()}"
-            )
-        tickers = sorted({str(t) for t in raw if str(t)})
-        return tickers
-
-    def _insert_constituents(self, target: date, tickers: list[str]) -> None:
-        if not tickers:
-            return
-        rows = [(target.isoformat(), t) for t in tickers]
-        cur = self._conn.cursor()
-        try:
-            cur.execute("BEGIN IMMEDIATE")
-            try:
-                cur.executemany(
-                    "INSERT OR REPLACE INTO kospi200_constituents (as_of_date, symbol) "
-                    "VALUES (?, ?)",
-                    rows,
-                )
-                cur.execute("COMMIT")
-            except Exception:
-                cur.execute("ROLLBACK")
-                raise
-        finally:
-            cur.close()
 
     # ---- 공개 API: 일봉 OHLCV -------------------------------------------
 

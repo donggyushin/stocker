@@ -93,7 +93,8 @@ def test_pykrx_factory_주입된_팩토리가_첫_공개API_호출_시점에_실
         call_count += 1
         return fake_pykrx
 
-    fake_pykrx.get_index_portfolio_deposit_file.return_value = ["005930", "000660"]
+    df = _make_ohlcv_df([("2026-04-18", 73_000, 74_500, 72_800, 74_000, 12_000_000)])
+    fake_pykrx.get_market_ohlcv.return_value = df
 
     s = HistoricalDataStore(
         pykrx_factory=counting_factory,
@@ -103,61 +104,13 @@ def test_pykrx_factory_주입된_팩토리가_첫_공개API_호출_시점에_실
     # 아직 factory 호출 없어야 함
     assert call_count == 0
 
-    s.get_kospi200_constituents(as_of=_TODAY)
+    s.fetch_daily_ohlcv(_SYMBOL, _START, _END)
     # 첫 public API 호출 후 팩토리가 정확히 1 회 실행
     assert call_count == 1
 
-    # 두 번째 호출 시 (캐시 적중) — 팩토리 재호출 없음
-    s.get_kospi200_constituents(as_of=_TODAY)
+    # 두 번째 호출 시 (과거 구간 캐시 적중) — 팩토리 재호출 없음
+    s.fetch_daily_ohlcv(_SYMBOL, _START, _END)
     assert call_count == 1
-
-
-# ---------------------------------------------------------------------------
-# 테스트 2: KOSPI200 캐시 미스 — pykrx 1회, DB 저장, 오름차순 반환
-# ---------------------------------------------------------------------------
-
-
-def test_kospi200_캐시_미스_시_pykrx_호출_후_DB_저장_오름차순_반환(
-    store: HistoricalDataStore,
-    fake_pykrx: MagicMock,
-) -> None:
-    fake_pykrx.get_index_portfolio_deposit_file.return_value = [
-        "035420",
-        "005930",
-        "000660",
-    ]
-
-    result = store.get_kospi200_constituents(as_of=_TODAY)
-
-    fake_pykrx.get_index_portfolio_deposit_file.assert_called_once_with("20260419", "1028")
-    assert result == ["000660", "005930", "035420"]
-
-    # DB 에 저장됐는지: store 내부 커넥션으로 직접 조회
-    cur = store._conn.cursor()
-    rows = cur.execute(
-        "SELECT symbol FROM kospi200_constituents WHERE as_of_date = '2026-04-19' ORDER BY symbol"
-    ).fetchall()
-    cur.close()
-    assert [r[0] for r in rows] == ["000660", "005930", "035420"]
-
-
-# ---------------------------------------------------------------------------
-# 테스트 3: KOSPI200 캐시 적중 — 두 번째 호출 시 pykrx 재호출 없음
-# ---------------------------------------------------------------------------
-
-
-def test_kospi200_캐시_적중_시_pykrx_재호출_없음(
-    store: HistoricalDataStore,
-    fake_pykrx: MagicMock,
-) -> None:
-    fake_pykrx.get_index_portfolio_deposit_file.return_value = ["005930", "000660"]
-
-    first = store.get_kospi200_constituents(as_of=_TODAY)
-    second = store.get_kospi200_constituents(as_of=_TODAY)
-
-    # pykrx 는 정확히 1 회만 호출
-    assert fake_pykrx.get_index_portfolio_deposit_file.call_count == 1
-    assert first == second
 
 
 # ---------------------------------------------------------------------------
@@ -341,28 +294,7 @@ def test_pykrx_내부예외_HistoricalDataError로_래핑_cause_보존(
 
 
 # ---------------------------------------------------------------------------
-# 테스트 11: clock 주입 결정론 — as_of=None 시 clock 기반 날짜로 pykrx 호출
-# ---------------------------------------------------------------------------
-
-
-def test_clock_주입시_as_of_None이면_clock_날짜로_pykrx_호출(
-    fake_pykrx: MagicMock,
-) -> None:
-    fixed_clock = lambda: datetime(2026, 4, 19, 10, 0)  # noqa: E731
-    fake_pykrx.get_index_portfolio_deposit_file.return_value = ["005930"]
-
-    s = HistoricalDataStore(
-        pykrx_factory=lambda: fake_pykrx,
-        db_path=":memory:",
-        clock=fixed_clock,
-    )
-    s.get_kospi200_constituents()  # as_of=None
-
-    fake_pykrx.get_index_portfolio_deposit_file.assert_called_once_with("20260419", "1028")
-
-
-# ---------------------------------------------------------------------------
-# 테스트 12: db_path 격리 — :memory: 및 tmp_path 양쪽 정상 동작
+# 테스트 11: db_path 격리 — :memory: 및 tmp_path 양쪽 정상 동작
 # ---------------------------------------------------------------------------
 
 
@@ -370,7 +302,8 @@ def test_db_path_격리_메모리와_파일_모두_정상_동작(
     tmp_path: Path,
     fake_pykrx: MagicMock,
 ) -> None:
-    fake_pykrx.get_index_portfolio_deposit_file.return_value = ["005930"]
+    df = _make_ohlcv_df([("2026-04-18", 73_000, 74_500, 72_800, 74_000, 12_000_000)])
+    fake_pykrx.get_market_ohlcv.return_value = df
 
     # :memory: 케이스
     s_mem = HistoricalDataStore(
@@ -378,8 +311,9 @@ def test_db_path_격리_메모리와_파일_모두_정상_동작(
         db_path=":memory:",
         clock=_CLOCK,
     )
-    result_mem = s_mem.get_kospi200_constituents(as_of=_TODAY)
-    assert result_mem == ["005930"]
+    result_mem = s_mem.fetch_daily_ohlcv(_SYMBOL, _START, _END)
+    assert len(result_mem) == 1
+    assert result_mem[0].symbol == _SYMBOL
     s_mem.close()
 
     # tmp_path / "t.db" 케이스
@@ -391,8 +325,9 @@ def test_db_path_격리_메모리와_파일_모두_정상_동작(
         db_path=db_file,
         clock=_CLOCK,
     )
-    result_file = s_file.get_kospi200_constituents(as_of=_TODAY)
-    assert result_file == ["005930"]
+    result_file = s_file.fetch_daily_ohlcv(_SYMBOL, _START, _END)
+    assert len(result_file) == 1
+    assert result_file[0].symbol == _SYMBOL
     s_file.close()
 
     # 파일이 실제로 생성됐는지 확인
@@ -400,14 +335,15 @@ def test_db_path_격리_메모리와_파일_모두_정상_동작(
 
 
 # ---------------------------------------------------------------------------
-# 테스트 13: 컨텍스트 매니저 — with 블록 종료 후 close 호출, 이후 API 사용 시 에러
+# 테스트 12: 컨텍스트 매니저 — with 블록 종료 후 close 호출, 이후 API 사용 시 에러
 # ---------------------------------------------------------------------------
 
 
 def test_컨텍스트_매니저_블록_종료_후_close_호출_이후_에러(
     fake_pykrx: MagicMock,
 ) -> None:
-    fake_pykrx.get_index_portfolio_deposit_file.return_value = ["005930"]
+    df = _make_ohlcv_df([("2026-04-18", 73_000, 74_500, 72_800, 74_000, 12_000_000)])
+    fake_pykrx.get_market_ohlcv.return_value = df
 
     s = HistoricalDataStore(
         pykrx_factory=lambda: fake_pykrx,
@@ -416,13 +352,10 @@ def test_컨텍스트_매니저_블록_종료_후_close_호출_이후_에러(
     )
 
     with s:
-        result = s.get_kospi200_constituents(as_of=_TODAY)
-        assert result == ["005930"]
+        result = s.fetch_daily_ohlcv(_SYMBOL, _START, _END)
+        assert len(result) == 1
 
     # with 블록 종료 후 close 됨 — public API 호출 시 HistoricalDataError
-    with pytest.raises(HistoricalDataError, match="close"):
-        s.get_kospi200_constituents(as_of=_TODAY)
-
     with pytest.raises(HistoricalDataError, match="close"):
         s.fetch_daily_ohlcv(
             _SYMBOL,

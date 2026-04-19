@@ -9,9 +9,17 @@ from stock_agent.data.historical import (
     HistoricalDataError,
     HistoricalDataStore,
 )
+from stock_agent.data.universe import (
+    KospiUniverse,
+    UniverseLoadError,
+    load_kospi200_universe,
+)
 
 __all__ = [
     "DailyBar",
     "HistoricalDataError",
     "HistoricalDataStore",
+    "KospiUniverse",
+    "UniverseLoadError",
+    "load_kospi200_universe",
 ]

@@ -1474,6 +1474,7 @@ dependencies = [
     { name = "pykrx" },
     { name = "python-kis" },
     { name = "python-telegram-bot" },
+    { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
@@ -1493,6 +1494,7 @@ requires-dist = [
     { name = "pykrx", specifier = ">=1.0.45" },
     { name = "python-kis", specifier = ">=2.1.0" },
     { name = "python-telegram-bot", specifier = ">=21.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [package.metadata.requires-dev]
