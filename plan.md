@@ -54,6 +54,8 @@
 
 **언어/런타임**: Python 3.11+
 
+**CI**: `.github/workflows/ci.yml` — PR 및 main push 시 `uv sync --frozen` → ruff/black 정적 분석 → pytest 자동 실행. main 브랜치는 CI job `Lint, format, test` 통과 없이 머지 불가 (required status check, `strict=true`).
+
 **주요 라이브러리**
 - `python-kis 2.x`: KIS Developers REST/WebSocket 래퍼 (오픈소스 검증됨, mojito2 미사용)
 - `pykrx`: KRX 공식 데이터(백테스트용 과거 OHLCV, KOSPI 200 구성종목)
@@ -214,6 +216,7 @@ python scripts/healthcheck.py
 | 악성 코드/키 유출 | 계좌 탈취 | `.env`는 `.gitignore`, **실전 키는 권한 최소화 · IP 화이트리스트** |
 | 감정적 개입 (수동 매매 섞임) | 시스템 검증 불가 | 실전 전환 후 **최소 1개월 수동 개입 금지**, 개선은 코드 반영으로만 |
 | `python-kis` paper-only 초기화 우회 | 설계가 라이브러리 내부 구현에 의존 | Phase 4 실전 전환 시 실전 APP_KEY/SECRET 별도 발급 및 슬롯 분리 (`PyKis.virtual` 프로퍼티로 라우팅 확인) |
+| 회귀 코드 머지 | 실거래 자금 시스템에 결함 유입 | GitHub Actions CI 자동 실행 + main 브랜치 보호로 CI 통과 필수 |
 
 ---
 

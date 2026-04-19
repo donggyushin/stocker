@@ -1,5 +1,7 @@
 # stock-agent
 
+![CI](https://github.com/donggyushin/korean-stock-trading-system/actions/workflows/ci.yml/badge.svg?branch=main)
+
 Python 기반 한국주식 **데이 트레이딩** 자동매매 시스템 (MVP 설계 단계).
 
 ## 개요
@@ -47,6 +49,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 - **저장소**: SQLite (MVP)
 - **테스트**: `pytest`, `pytest-mock`
 - **포매터/린터**: `ruff`, `black` (`pre-commit` 훅 적용)
+- **CI**: GitHub Actions — PR 및 main push 마다 ruff·black·pytest 자동 실행. main 머지는 CI job `Lint, format, test` 통과 필수.
 
 ## 로드맵 (총 약 4주)
 
@@ -77,6 +80,8 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 ```text
 stock-agent/
+├── .github/workflows/
+│   └── ci.yml                 # PR·main push 시 ruff/black/pytest 자동 실행
 ├── .python-version            # 3.11
 ├── pyproject.toml             # uv 기반, ruff/black/pytest 설정 포함
 ├── uv.lock                    # 47개 패키지 잠금
