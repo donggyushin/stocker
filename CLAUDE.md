@@ -57,6 +57,17 @@ Python 기반 한국주식 **데이트레이딩** 자동매매 시스템. 한국
 | 새 명령/스크립트 실행 가능 | — | O | O |
 | 리스크 고지 수정 | — | O (완화 금지) | O |
 
+### 계층 CLAUDE.md (모듈별 문서)
+
+모듈별 세부 사실(공개 API, 설계 원칙, 테스트 정책, 주의 사항)은 해당 폴더의 `CLAUDE.md` 에 둔다.
+root `CLAUDE.md` 는 프로젝트 전체 상태 요약과 하위 문서 링크만 유지한다.
+
+현재 하위 CLAUDE.md:
+- [src/stock_agent/broker/CLAUDE.md](./src/stock_agent/broker/CLAUDE.md) — KIS Developers API 래퍼 모듈 (KisClient, DTO, 에러 정책, 데이터 무결성 가드)
+
+하위 CLAUDE.md 를 추가·갱신할 때도 root 의 동기화 가드레일(승인된 결정 보존·리스크 고지 보존·존재하지 않는 코드/명령 생성 금지)을 동일하게 적용한다.
+신규 모듈(`src/stock_agent/<새 모듈>/`) 이 실제 코드와 함께 도입되면 같은 턴에 해당 폴더의 `CLAUDE.md` 도 작성하고 root 의 이 목록을 갱신한다.
+
 ## 리스크·고지 원칙
 
 금융 자동매매 특성상 문서와 응답에서 다음 기조를 유지한다.
@@ -91,8 +102,13 @@ Python 기반 한국주식 **데이트레이딩** 자동매매 시스템. 한국
   - GitHub Actions CI 도입 (`.github/workflows/ci.yml`): PR 및 main push 시 `uv sync --frozen` → ruff/black 정적 분석 → pytest 자동 실행. 첫 실행 12초, 10/10 통과 (PR #1 검증).
   - main 브랜치 보호 적용: required status check `Lint, format, test` (CI job), `strict=true`, force push/삭제 금지.
 
-- **다음 단계: Phase 1 — 브로커 래퍼 + 데이터 파이프라인**
-  1. `src/stock_agent/broker/kis_client.py` — 토큰 발급/갱신, 잔고 조회, 매수/매도 주문, 미체결 조회
+- **Phase 1 진행 중 — 브로커 래퍼 + 데이터 파이프라인** (첫 산출물 완료 2026-04-19)
+  - `src/stock_agent/broker/` 패키지 신설 — `KisClient` + DTO 정규화. 모듈 세부(공개 API, 에러 정책, 데이터 무결성 가드, 테스트 정책)는 [src/stock_agent/broker/CLAUDE.md](./src/stock_agent/broker/CLAUDE.md) 참조.
+  - `scripts/healthcheck.py` — `KisClient` 컨텍스트 매니저로 전환, 예수금 10,000,000원 조회 회귀 없음.
+  - pytest 25건 green (test_config 5 + test_kis_client 15 + test_safety 5).
+
+- **다음 작업 (Phase 1 잔여)**
+  1. ~~`src/stock_agent/broker/kis_client.py`~~ — 완료
   2. `src/stock_agent/broker/rate_limiter.py` — KIS 초당 호출 제한 대응
   3. `src/stock_agent/data/historical.py` — pykrx로 KOSPI 200 분봉/일봉 수집 & SQLite 캐시
   4. `src/stock_agent/data/realtime.py` — 장중 분봉 폴링 또는 WebSocket 실시간 체결가
