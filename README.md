@@ -64,7 +64,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 ## 현재 상태
 
-**Phase 1 진행 중** — Phase 0 환경 준비 완료(2026-04-19). broker(KisClient + rate_limiter) + data/historical + data/universe 완료. data/realtime 구현이 다음 단계. 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
+**Phase 1 코드 완료 / Phase 2 착수 대기** — Phase 0 환경 준비 완료(2026-04-19). broker(KisClient + rate_limiter) + data(historical + universe + realtime) 모두 완료. **paper 주문 + live 시세 하이브리드 키 정책 도입**: KIS paper 도메인에 시세 API가 없어 `RealtimeDataStore`는 별도 실전 APP_KEY로 실전 도메인을 호출하며, 실전 키 PyKis 인스턴스에는 `install_order_block_guard`를 설치해 주문 경로를 구조적으로 차단한다. 운영자 `.env` 실전 키 3종 설정 + `scripts/healthcheck.py` 4종 통과 확인 후 Phase 1 PASS 선언 → Phase 2 착수. 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
 
 **운영 주의**: KOSPI 200 구성종목은 `config/universe.yaml`에 수동 관리합니다. KRX KOSPI 200 정기변경(연 2회 — 매년 6월·12월의 선물·옵션 동시만기일 익영업일 기준)에 맞춰 운영자가 직접 갱신해야 합니다. 현재 KRX 정보데이터시스템 [11006] 기준 199/200 반영(2026-04-17 조회, 임시 가상 코드 1건 제외). 정식 티커 발급 후 다음 갱신에 추가 예정.
 
@@ -103,9 +103,10 @@ stock-agent/
 │   │   ├── rate_limiter.py    # OrderRateLimiter — 주문 경로 전용 (2 req/s, 350ms)
 │   │   └── CLAUDE.md          # 모듈 세부 문서
 │   └── data/
-│       ├── __init__.py        # HistoricalDataStore, HistoricalDataError, DailyBar export
+│       ├── __init__.py        # HistoricalDataStore, HistoricalDataError, DailyBar, KospiUniverse, UniverseLoadError, load_kospi200_universe, RealtimeDataStore, TickQuote, MinuteBar, RealtimeDataError export
 │       ├── historical.py      # pykrx 일봉 SQLite 캐시 (fetch_daily_ohlcv 전용, 스키마 v3)
 │       ├── universe.py        # KOSPI 200 유니버스 YAML 로더 (load_kospi200_universe)
+│       ├── realtime.py        # 실시간 시세 (RealtimeDataStore — WebSocket 우선 + REST 폴링 fallback)
 │       └── CLAUDE.md          # 모듈 세부 문서
 ├── tests/
 │   ├── test_config.py
@@ -113,7 +114,8 @@ stock-agent/
 │   ├── test_safety.py
 │   ├── test_rate_limiter.py
 │   ├── test_historical.py     # 14 케이스
-│   └── test_universe.py       # 11 케이스 (pytest 68건 green)
+│   ├── test_universe.py       # 11 케이스
+│   └── test_realtime.py       # 24 케이스 (pytest 115건 green)
 └── scripts/
     └── healthcheck.py         # KIS 모의 잔고 조회 + 텔레그램 hello (실주문 없음)
 ```
@@ -139,7 +141,7 @@ uv run pre-commit install
 
 # 환경변수 파일 작성 (.env는 절대 커밋하지 않습니다)
 cp .env.example .env
-# .env 에서 아래 7개 값을 채웁니다:
+# .env 에서 아래 값을 채웁니다:
 #   KIS_ENV          = paper
 #   KIS_HTS_ID       = 한투 HTS 아이디
 #   KIS_APP_KEY      = 모의투자 APP_KEY (36자)
@@ -147,6 +149,13 @@ cp .env.example .env
 #   KIS_ACCOUNT_NO   = 계좌번호 (XXXXXXXX-XX 형식)
 #   TELEGRAM_BOT_TOKEN = 텔레그램 봇 토큰
 #   TELEGRAM_CHAT_ID   = 텔레그램 chat_id
+#
+#   --- 시세 전용 실전 키 (Phase 3 착수 전 필수, 미설정 시 healthcheck 4번 SKIP) ---
+#   # HTS_ID 는 paper/실전 공유 — 위 KIS_HTS_ID 재사용 (한 사람 당 하나)
+#   KIS_LIVE_APP_KEY   = 실전 APP_KEY (36자)  ← KIS Developers 포털에서 실전 앱 별도 신청
+#   KIS_LIVE_APP_SECRET = 실전 APP_SECRET (180자)
+#   KIS_LIVE_ACCOUNT_NO = 실전 계좌번호 (XXXXXXXX-XX) — paper 계좌번호와 다름
+#   # 실전 앱 발급 후 KIS Developers 포털 → 앱 관리 → 허용 IP 목록에 현재 공인 IP 등록 필수
 ```
 
 ### 환경 점검
@@ -157,6 +166,8 @@ uv run python scripts/healthcheck.py
 # 1) KIS 모의투자 토큰 발급 OK
 # 2) 모의 계좌 잔고 조회 OK
 # 3) 텔레그램 "hello" 메시지 수신 OK
+# 4) 삼성전자(005930) 현재가 조회 OK — mode=websocket | polling
+#    (실전 키 미설정 시 4번은 SKIP — Phase 3 착수 전 실전 키 등록 필요)
 ```
 
 ## 참고 문서
