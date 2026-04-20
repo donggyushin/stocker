@@ -248,8 +248,8 @@ Phase 0 완료 (2026-04-19). Phase 1 코드·테스트 레벨 PASS 선언 (2026-
 Phase 2 첫 산출물 완료. 전체 PASS 선언은 이후.
 
 1. [x] `src/stock_agent/strategy/orb.py` + `base.py` + `__init__.py` — 완료. `ORBStrategy` 상태 머신(IDLE→FLAT→LONG→CLOSED), `StrategyConfig`(frozen dataclass, 생성자 주입), `Strategy` Protocol(최소 — `on_bar`/`on_time`), `EntrySignal`/`ExitSignal`/`ExitReason` DTO. 설계 결정: 분봉 close 기준 strict 돌파, 동일 분봉 손절·익절 동시 성립 시 손절 우선, 1일 1회 진입, `force_close_at` 이후 신규 진입 금지, 세션 경계 자동 리셋. 의존성 추가 없음.
-2. [ ] `src/stock_agent/risk/manager.py` — 미착수
+2. [x] `src/stock_agent/risk/manager.py` — 완료 2026-04-20. `RiskConfig` 기본값 고정(position_pct 20%, max_positions 3, daily_loss_limit_pct 2%, daily_max_entries 10, min_notional 10만원). `realized_pnl_krw` 부호 계약(손실 음수·수익 양수)은 호출자 책임. 공개 심볼 6종(`RiskManager`, `RiskConfig`, `RiskDecision`, `PositionRecord`, `RejectReason`, `RiskManagerError`) `risk/__init__` 재노출.
 3. [ ] `src/stock_agent/backtest/engine.py` — 미착수
 4. [ ] 파라미터 민감도 리포트 — 미착수
 
-pytest **167건 green** (기존 131 + 신규 36 — test_strategy_orb). ruff check/format 모두 green.
+pytest **245건 green** (기존 131 + test_strategy_orb 36 + test_risk_manager 73 + 기타 5). ruff check/format 모두 green.
