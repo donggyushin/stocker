@@ -9,6 +9,11 @@
             "type": "command",
             "command": "bash .claude/hooks/tests-writer-guard.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/src-first-requires-tests.sh",
+            "timeout": 5
           }
         ]
       }
