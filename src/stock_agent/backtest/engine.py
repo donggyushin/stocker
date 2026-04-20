@@ -42,12 +42,17 @@
 
 진입 체결 흐름
 1. `evaluate_entry(signal, available_cash)` — RiskManager 게이팅 (참고가 기준).
-2. 승인 시 `entry_fill = buy_fill_price(signal.price, slippage)` 계산.
-3. `notional_int + buy_commission > available_cash` 면 후처리 거부
-   (`rejected["insufficient_cash"] += 1`) — 슬리피지·수수료 반영 후 잔액 부족.
-4. `risk_manager.record_entry(symbol, entry_fill, qty, ts)` + 내부 `_active_lot`
-   에 entry_fill_price·qty·매수수수료·notional_int 보관 (PnL 산출용).
-5. 현금: `cash -= notional_int + buy_commission`.
+2. 거부 시 `rejected_counts[reason] += 1` (RiskManager 사전 거부 6종 사유).
+3. 승인 시 `entry_fill = buy_fill_price(signal.price, slippage)` 계산.
+4. `notional_int + buy_commission > available_cash` 면 사후 거부 — 슬리피지·
+   수수료 반영 후 잔액 부족. **`post_slippage_rejections += 1`** (별도 카운터)
+   로 기록 — RiskManager 의 `insufficient_cash` 사유와 의미가 달라 키 충돌
+   방지. RiskManager `entries_today` 미증가.
+5. 거부된 심볼은 strategy 가 이미 long 으로 전이했으므로 `phantom_longs.add` —
+   후속 ExitSignal 흡수.
+6. 승인·잔액 충분 시 `risk_manager.record_entry(...)` + `_active_lot` 기록
+   (entry_fill_price·qty·매수수수료·notional_int 보관, PnL 산출용).
+7. 현금: `cash -= notional_int + buy_commission`.
 
 청산 체결 흐름
 1. ExitSignal 의 symbol 이 `phantom_longs` 에 있으면 — 진입이 거부됐던 심볼의
@@ -113,7 +118,9 @@ class BacktestConfig:
     """백테스트 실행 파라미터.
 
     Raises:
-        RuntimeError: `starting_capital_krw <= 0` 또는 비율이 음수.
+        RuntimeError: `starting_capital_krw <= 0`,
+            `commission_rate < 0`, `sell_tax_rate < 0`,
+            또는 `slippage_rate` 가 `[0, 1)` 범위를 벗어날 때.
     """
 
     starting_capital_krw: int
@@ -181,7 +188,20 @@ class DailyEquity:
 
 @dataclass(frozen=True, slots=True)
 class BacktestMetrics:
-    """리포트 메트릭. 모두 소수(0.15 = 15%) 또는 비율 단위."""
+    """리포트 메트릭.
+
+    필드별 단위:
+
+    | 필드 | 타입 | 단위 |
+    |---|---|---|
+    | `total_return_pct` | Decimal | 소수 (0.15 = 15%) |
+    | `max_drawdown_pct` | Decimal | 음수 또는 0 (소수, -0.10 = -10%) |
+    | `sharpe_ratio` | Decimal | 무차원 (연환산, N=252) |
+    | `win_rate` | Decimal | 소수 [0, 1] (break-even 제외) |
+    | `avg_pnl_ratio` | Decimal | 무차원 (평균익절 / |평균손절|) |
+    | `trades_per_day` | Decimal | 무차원 (일평균 거래 수) |
+    | `net_pnl_krw` | int | KRW 정수 (`ending - starting`) |
+    """
 
     total_return_pct: Decimal
     max_drawdown_pct: Decimal
@@ -194,12 +214,26 @@ class BacktestMetrics:
 
 @dataclass(frozen=True, slots=True)
 class BacktestResult:
-    """백테스트 실행 결과 스냅샷."""
+    """백테스트 실행 결과 스냅샷.
+
+    Attributes:
+        trades: 진입~청산 1쌍 단위 체결 기록.
+        daily_equity: 세션 마감 시점 자본 시리즈.
+        metrics: 리포트 메트릭.
+        rejected_counts: RiskManager 사전 거부 사유별 카운트. 키 타입은
+            `RejectReason` Literal 6종 — 사후 슬리피지 거부와는 의미가 달라
+            여기 합산하지 않는다 (`post_slippage_rejections` 별도 필드 사용).
+            **dict 자체는 가변** (frozen 데이터클래스의 한계) 이므로 외부에서
+            수정 금지.
+        post_slippage_rejections: 사후 거부 카운트 — RiskManager 가 승인했지만
+            슬리피지·수수료 반영 후 잔액 부족으로 엔진이 거부한 횟수.
+    """
 
     trades: tuple[TradeRecord, ...]
     daily_equity: tuple[DailyEquity, ...]
     metrics: BacktestMetrics
     rejected_counts: dict[RejectReason, int] = field(default_factory=dict)
+    post_slippage_rejections: int = 0
 
 
 @dataclass
@@ -249,6 +283,9 @@ class BacktestEngine:
         trades: list[TradeRecord] = []
         daily_equity: list[DailyEquity] = []
         rejected: dict[RejectReason, int] = {}
+        # 사후 슬리피지 거부는 RiskManager 사유와 의미가 달라 별도로 추적.
+        # mutable single-element list 를 카운터 셀로 사용 (헬퍼에서 in-place 갱신).
+        post_slippage_counter: list[int] = [0]
         last_bar_time: datetime | None = None
         last_session_date: date | None = None
 
@@ -286,6 +323,7 @@ class BacktestEngine:
                 phantom_longs,
                 trades,
                 rejected,
+                post_slippage_counter,
                 cash,
             )
             cash = self._process_signals(
@@ -295,6 +333,7 @@ class BacktestEngine:
                 phantom_longs,
                 trades,
                 rejected,
+                post_slippage_counter,
                 cash,
             )
 
@@ -316,6 +355,7 @@ class BacktestEngine:
             daily_equity=tuple(daily_equity),
             metrics=self._compute_metrics(trades, daily_equity),
             rejected_counts=dict(rejected),
+            post_slippage_rejections=post_slippage_counter[0],
         )
 
     # ---- internal ------------------------------------------------------
@@ -328,11 +368,20 @@ class BacktestEngine:
         phantom_longs: set[str],
         trades: list[TradeRecord],
         rejected: dict[RejectReason, int],
+        post_slippage_counter: list[int],
         cash: int,
     ) -> int:
         for sig in signals:
             if isinstance(sig, EntrySignal):
-                cash = self._handle_entry(sig, risk_manager, active, phantom_longs, rejected, cash)
+                cash = self._handle_entry(
+                    sig,
+                    risk_manager,
+                    active,
+                    phantom_longs,
+                    rejected,
+                    post_slippage_counter,
+                    cash,
+                )
             else:
                 cash = self._handle_exit(sig, risk_manager, active, phantom_longs, trades, cash)
         return cash
@@ -344,11 +393,17 @@ class BacktestEngine:
         active: dict[str, _ActiveLot],
         phantom_longs: set[str],
         rejected: dict[RejectReason, int],
+        post_slippage_counter: list[int],
         cash: int,
     ) -> int:
         decision = risk_manager.evaluate_entry(signal, max(cash, 0))
         if not decision.approved:
-            assert decision.reason is not None  # noqa: S101 — Protocol 보장
+            if decision.reason is None:
+                # Protocol 상 approved=False 면 reason 필수. 위반 시 상태 머신
+                # 무결성 오류 — `python -O` 에서도 확실히 잡히도록 명시 raise.
+                raise RuntimeError(
+                    f"RiskDecision.approved=False 인데 reason=None (symbol={signal.symbol})"
+                )
             rejected[decision.reason] = rejected.get(decision.reason, 0) + 1
             # strategy 는 이미 long 으로 전이됐으므로 후속 ExitSignal 을 흡수해야 함.
             phantom_longs.add(signal.symbol)
@@ -363,8 +418,9 @@ class BacktestEngine:
 
         if total_cost > cash:
             # 슬리피지·수수료 반영 후 실비용이 잔액 초과 — 사후 거부.
+            # RiskManager 사전 거부 사유와 의미가 달라 별도 카운터 사용.
             # RiskManager 카운터에는 영향 없음 (record_entry 미호출).
-            rejected["insufficient_cash"] = rejected.get("insufficient_cash", 0) + 1
+            post_slippage_counter[0] += 1
             phantom_longs.add(signal.symbol)
             logger.debug(
                 "backtest.entry_rejected_post_slippage symbol={s} qty={q} "
@@ -470,7 +526,12 @@ class BacktestEngine:
         force_close_dt = datetime.combine(session_date, force_close_at, tzinfo=_KST)
         signals = strategy.on_time(force_close_dt)
         for sig in signals:
-            assert isinstance(sig, ExitSignal)  # noqa: S101 — on_time 계약
+            if not isinstance(sig, ExitSignal):
+                # on_time 의 명시 계약(ExitSignal 만 발생) 위반. `python -O` 에서도
+                # 확실히 잡히도록 명시 raise — assert 사용 금지 가드레일 준수.
+                raise RuntimeError(
+                    f"strategy.on_time 이 ExitSignal 외 시그널을 반환 (type={type(sig).__name__})"
+                )
             cash = self._handle_exit(sig, risk_manager, active, phantom_longs, trades, cash)
 
         if active:
