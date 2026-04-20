@@ -52,7 +52,7 @@
 
 ## 아키텍처 & 기술 스택
 
-**언어/런타임**: Python 3.11+
+**언어/런타임**: Python 3.12+
 
 **CI**: `.github/workflows/ci.yml` — PR 및 main push 시 `uv sync --frozen` → ruff/black 정적 분석 → pytest 자동 실행. main 브랜치는 CI job `Lint, format, test` 통과 없이 머지 불가 (required status check, `strict=true`).
 

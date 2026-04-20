@@ -2,7 +2,7 @@
 name = "stock-agent"
 version = "0.1.0"
 description = "Python 한국주식 자동매매 시스템 (KIS Developers + ORB)"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 readme = "README.md"
 dependencies = [
     "python-kis>=2.1.0",
@@ -32,7 +32,7 @@ packages = ["src/stock_agent"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 src = ["src", "scripts", "tests"]
 
 [tool.ruff.lint]
@@ -44,7 +44,7 @@ select = ["E", "F", "I", "B", "UP", "N", "SIM"]
 
 [tool.black]
 line-length = 100
-target-version = ["py311"]
+target-version = ["py312"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -56,5 +56,5 @@ venvPath = "."
 venv = ".venv"
 include = ["src", "scripts", "tests"]
 extraPaths = ["src"]
-pythonVersion = "3.11"
+pythonVersion = "3.12"
 reportMissingImports = "error"

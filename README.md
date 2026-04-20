@@ -37,7 +37,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 ## 기술 스택
 
-- **언어**: Python 3.11+
+- **언어**: Python 3.12+
 - **의존성 관리**: `uv`
 - **브로커 API**: `python-kis 2.x` (KIS Developers REST/WebSocket)
 - **시장 데이터**: `pykrx` (KRX 공식 과거 OHLCV), `pyyaml` (유니버스 설정 파일 로드)
@@ -86,7 +86,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 stock-agent/
 ├── .github/workflows/
 │   └── ci.yml                 # PR·main push 시 ruff/black/pytest 자동 실행
-├── .python-version            # 3.11
+├── .python-version            # 3.12
 ├── pyproject.toml             # uv 기반, ruff/black/pytest 설정 포함
 ├── uv.lock                    # 패키지 잠금 (pykrx 1.2.7, pyyaml 6.0.3 포함)
 ├── .pre-commit-config.yaml    # ruff, black, 기본 훅

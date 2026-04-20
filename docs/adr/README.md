@@ -38,6 +38,7 @@ ADR 가 **불필요** 한 변경:
 | [0006](./0006-cost-model-rates.md) | 백테스트 비용 모델 수치 (슬리피지/수수료/거래세) | 승인됨 | 2026-04-20 |
 | [0007](./0007-phantom-long-handling.md) | phantom_long 처리 (RiskManager 거부 시 strategy 가짜 LONG 흡수) | 승인됨 | 2026-04-20 |
 | [0008](./0008-single-process-only.md) | 단일 프로세스 전용 (멀티스레드/프로세스 safe 미제공) | 승인됨 | 2026-04-19 |
+| [0009](./0009-python-312-upgrade.md) | 베이스라인 인터프리터 Python 3.11 → 3.12 업그레이드 | 승인됨 | 2026-04-20 |
 
 ## 관련 문서
 
