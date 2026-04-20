@@ -904,6 +904,259 @@ class TestEngineMetricsComputation:
         )
 
 
+class TestEngineSafetyNet:
+    """커버리지 누락 분기 회귀 테스트 — PR #10 코드 리뷰 지적 4건."""
+
+    # ------------------------------------------------------------------
+    # 1. 사후 슬리피지 거부 — post_slippage_rejections 카운터 분리 검증
+    # ------------------------------------------------------------------
+
+    def test_사후_슬리피지_거부_분기(self):
+        """RiskManager 승인 후 슬리피지·수수료 반영 시 잔액 초과 → 사후 거부.
+
+        RiskManager 사전 판정은 참고가(signal.price) 기준 filled_notional 을 사용하므로
+        cash == filled_notional 이면 사전 통과된다. 하지만 엔진이 슬리피지를 반영한
+        entry_fill 로 총비용(notional_int + buy_comm)을 재계산하면 cash 를 초과할 수 있다.
+
+        수치:
+          capital=10_000, position_pct=1.0, slippage=0.001
+          OR bar: or_high=9_500, entry close=10_000
+          qty = int(10_000 × 1.0 / 10_000) = 1
+          filled_notional(참고가) = 10_000 ≤ cash=10_000 → 사전 통과
+          entry_fill = 10_000 × 1.001 = 10_010
+          notional_int = 10_010, buy_comm = 1 → total_cost = 10_011 > 10_000 → 사후 거부
+        """
+        from stock_agent.risk import RiskConfig
+
+        # 수치 설계:
+        #   capital=10_000, position_pct=1.0, slippage=0.001
+        #   OR bar: high=9_500 → or_high=9_500
+        #   entry bar: close=10_000 (> or_high → 진입 조건 성립)
+        #   price_signal=10_000
+        #   qty = int(10_000 * 1.0 / 10_000) = 1
+        #   filled_notional(참고가 기준) = 1 * 10_000 = 10_000
+        #   → 사전 insufficient_cash: 10_000 > 10_000 = False → 사전 통과
+        #   entry_fill = 10_000 * 1.001 = 10_010
+        #   notional_int = 10_010, buy_comm = 1
+        #   total_cost = 10_011 > cash=10_000 → 사후 거부 트리거
+        capital = 10_000
+
+        bars = [
+            _bar(_SYMBOL, 9, 0, 9_000, 9_500, 8_800, 9_200),  # OR bar: or_high=9_500
+            _bar(_SYMBOL, 9, 30, 9_500, 10_200, 9_400, 10_000),  # close=10_000 > or_high → 진입
+        ]
+
+        engine = BacktestEngine(
+            BacktestConfig(
+                starting_capital_krw=capital,
+                risk_config=RiskConfig(
+                    position_pct=Decimal("1.0"),
+                    max_positions=3,
+                    min_notional_krw=1,
+                ),
+                slippage_rate=Decimal("0.001"),
+            )
+        )
+        result = engine.run(bars)
+
+        assert result.post_slippage_rejections == 1, (
+            f"사후 슬리피지 거부가 1건이어야 한다 (실제={result.post_slippage_rejections})"
+        )
+        assert result.rejected_counts.get("insufficient_cash", 0) == 0, (
+            "사전 거부 insufficient_cash 카운터가 증가해선 안 된다 "
+            f"(rejected={result.rejected_counts})"
+        )
+        assert len(result.trades) == 0, "사후 거부이므로 체결 trade 가 없어야 한다"
+        # 세션 마감 정상 종료 — phantom_long 흡수 확인 (RuntimeError 미발생이 곧 검증)
+        assert len(result.daily_equity) == 1, "세션은 정상 마감되어야 한다"
+
+    # ------------------------------------------------------------------
+    # 2. phantom_long 세션 마감 정상 흡수
+    # ------------------------------------------------------------------
+
+    def test_phantom_long_세션_마감_정상_종결(self):
+        """서킷브레이커 halt 후 두 번째 종목 phantom_long → 세션 마감 force_close 흡수.
+
+        D1: SYM_A 큰 손실 → halt. SYM_B OR 돌파 → halted_daily_loss 거부 + phantom_long.
+            SYM_B 분봉이 stop/take 미도달 → 세션 마감 훅 on_time(15:00) 으로 phantom 흡수.
+        D2: 새 세션(halt 리셋) → SYM_B OR 돌파 + 익절 정상 진입.
+
+        수치 (D1):
+          자본 10_000_000, daily_loss_limit_pct=0.001 → threshold=-10_000
+          SYM_A: or_high=100_500, 진입 close=101_000
+            qty=19, entry_fill=101_101, entry_notional=1_920_919
+            stop=99_485 → net≈-36_564 → halt
+          SYM_B: halt 후 OR 돌파 → halted_daily_loss 거부 + phantom_long
+            SYM_B 분봉 10:00, 11:00 → stop/take 미도달
+            세션 마감 훅(15:00) → on_time 이 SYM_B force_close ExitSignal 발생 → phantom 흡수
+        D2: SYM_B OR + 진입 + 익절.
+        """
+        capital = 10_000_000
+        risk_cfg = RiskConfig(daily_loss_limit_pct=Decimal("0.001"))
+
+        # D1: SYM_A
+        a_or = _bar(_SYMBOL, 9, 0, 100_000, 100_500, 99_800, 100_000, date_=_DATE)
+        a_entry = _bar(_SYMBOL, 9, 30, 100_200, 101_500, 100_100, 101_000, date_=_DATE)
+        a_stop = _bar(_SYMBOL, 9, 31, 101_000, 101_100, 99_485, 100_500, date_=_DATE)
+
+        # D1: SYM_B — OR 설정 후 halt 발생 이후 돌파 시도, stop/take 미도달 유지
+        b_or_d1 = _bar(_SYMBOL_B, 9, 0, 100_000, 100_500, 99_800, 100_000, date_=_DATE)
+        # halt 이후 SYM_B 진입 시도: close > or_high
+        b_entry_d1 = _bar(_SYMBOL_B, 9, 32, 100_200, 101_500, 100_100, 101_000, date_=_DATE)
+        # stop(99_485)·take(101_000*1.03≈104_030) 미도달 분봉들
+        b_mid1_d1 = _bar(_SYMBOL_B, 10, 0, 101_000, 101_200, 100_800, 101_000, date_=_DATE)
+        b_mid2_d1 = _bar(_SYMBOL_B, 11, 0, 101_000, 101_200, 100_800, 101_000, date_=_DATE)
+        # 14:30 마지막 분봉 (15:00 분봉 없음 → 세션 마감 훅이 처리)
+        b_last_d1 = _bar(_SYMBOL_B, 14, 30, 101_000, 101_200, 100_800, 101_000, date_=_DATE)
+
+        # D2: SYM_B 정상 진입 + 익절
+        b_or_d2 = _bar(_SYMBOL_B, 9, 0, 70_000, 70_500, 69_800, 70_000, date_=_DATE2)
+        b_entry_d2 = _bar(_SYMBOL_B, 9, 30, 70_200, 71_500, 70_100, 71_000, date_=_DATE2)
+        b_take_d2 = _bar(_SYMBOL_B, 9, 32, 71_100, 73_130, 71_000, 71_200, date_=_DATE2)
+
+        all_bars = [
+            a_or,
+            b_or_d1,
+            a_entry,
+            a_stop,
+            b_entry_d1,
+            b_mid1_d1,
+            b_mid2_d1,
+            b_last_d1,
+            b_or_d2,
+            b_entry_d2,
+            b_take_d2,
+        ]
+
+        engine = BacktestEngine(BacktestConfig(starting_capital_krw=capital, risk_config=risk_cfg))
+        # RuntimeError 없이 완료되어야 함 (phantom_long 정상 흡수 검증)
+        result = engine.run(all_bars)
+
+        # D1: SYM_A 손절 trade 확인
+        d1_trades = [t for t in result.trades if t.entry_ts.date() == _DATE]
+        assert any(t.symbol == _SYMBOL and t.exit_reason == "stop_loss" for t in d1_trades), (
+            "D1 SYM_A 손절 trade 가 없다"
+        )
+        # D1: SYM_B trade 없음 (phantom_long 흡수, 거래 기록 없음)
+        assert not any(t.symbol == _SYMBOL_B for t in d1_trades), (
+            "D1 SYM_B 는 phantom_long 이므로 trade 가 없어야 한다"
+        )
+        # D2: SYM_B 정상 진입 trade 확인
+        d2_trades = [t for t in result.trades if t.entry_ts.date() == _DATE2]
+        assert any(t.symbol == _SYMBOL_B for t in d2_trades), (
+            "D2 SYM_B 는 halt 리셋 후 정상 진입이어야 한다"
+        )
+        assert len(result.daily_equity) == 2, "2일 세션 → DailyEquity 2건"
+        # halted_daily_loss 거부 1건 확인
+        assert result.rejected_counts.get("halted_daily_loss", 0) >= 1, (
+            f"halted_daily_loss 거부가 없다 (rejected={result.rejected_counts})"
+        )
+
+    # ------------------------------------------------------------------
+    # 3. _handle_exit 안전망 — 미보유·비phantom 심볼 ExitSignal → RuntimeError
+    # ------------------------------------------------------------------
+
+    def test_handle_exit_미보유_심볼_RuntimeError(self, monkeypatch):
+        """진입 없이 ExitSignal 이 도달하면 RuntimeError("활성 포지션 없음").
+
+        stub ORBStrategy: 첫 on_bar 에서 즉시 ExitSignal 반환,
+        EntrySignal 없음 → active 에 없고 phantom_longs 에도 없음 → 안전망 발동.
+        """
+        from stock_agent.strategy import EntrySignal as _EntrySignal  # noqa: F401
+        from stock_agent.strategy import ExitSignal as _ExitSignal
+        from stock_agent.strategy import StrategyConfig as _StrategyConfig
+
+        class _FakeStrategy:
+            def __init__(self, config=None):
+                self._config = config or _StrategyConfig()
+                self._fired = False
+
+            @property
+            def config(self):
+                return self._config
+
+            def on_bar(self, bar):
+                if not self._fired:
+                    self._fired = True
+                    # 진입 없이 ExitSignal 발생 → _handle_exit 안전망 트리거
+                    return [
+                        _ExitSignal(
+                            symbol=bar.symbol,
+                            price=bar.close,
+                            ts=bar.bar_time,
+                            reason="stop_loss",
+                        )
+                    ]
+                return []
+
+            def on_time(self, now):
+                return []
+
+        monkeypatch.setattr("stock_agent.backtest.engine.ORBStrategy", _FakeStrategy)
+
+        bars = [_bar(_SYMBOL, 9, 0, 70_000, 70_500, 69_800, 70_000)]
+        engine = _default_engine()
+
+        with pytest.raises(RuntimeError, match="활성 포지션 없음"):
+            engine.run(bars)
+
+    # ------------------------------------------------------------------
+    # 4. _close_session 안전망 — active 잔존 → RuntimeError
+    # ------------------------------------------------------------------
+
+    def test_close_session_active_잔존_RuntimeError(self, monkeypatch):
+        """on_time 이 항상 빈 리스트 반환 → 세션 마감 후 active 잔존 → RuntimeError.
+
+        stub ORBStrategy: on_bar 에서 EntrySignal 을 발생시켜 진입은 되지만,
+        on_time 은 항상 [] 반환 → force_close ExitSignal 미생성 → active 남음.
+        _close_session 의 `if active: raise RuntimeError(...)` 발동.
+        """
+        from stock_agent.strategy import EntrySignal as _EntrySignal
+        from stock_agent.strategy import StrategyConfig as _StrategyConfig
+
+        class _NoForceCloseStrategy:
+            def __init__(self, config=None):
+                self._config = config or _StrategyConfig()
+                self._fired = False
+
+            @property
+            def config(self):
+                return self._config
+
+            def on_bar(self, bar):
+                if not self._fired:
+                    self._fired = True
+                    # 정상 EntrySignal 발생 → 진입 승인 → active 등록
+                    return [
+                        _EntrySignal(
+                            symbol=bar.symbol,
+                            price=bar.close,
+                            ts=bar.bar_time,
+                            stop_price=bar.close * Decimal("0.985"),
+                            take_price=bar.close * Decimal("1.030"),
+                        )
+                    ]
+                return []
+
+            def on_time(self, now):
+                # force_close ExitSignal 미생성 → active 잔존 → 안전망 트리거
+                return []
+
+        monkeypatch.setattr("stock_agent.backtest.engine.ORBStrategy", _NoForceCloseStrategy)
+
+        bars = [
+            _bar(_SYMBOL, 9, 0, 70_000, 70_500, 69_800, 70_000),
+            # close=71_000 → EntrySignal (stub은 bar_time 무관 첫 on_bar에서 발생)
+            _bar(_SYMBOL, 9, 30, 70_200, 71_500, 70_100, 71_000),
+            # stop/take 미도달 → 세션 마감까지 포지션 유지
+            _bar(_SYMBOL, 14, 30, 71_000, 71_200, 70_800, 71_000),
+        ]
+        engine = _default_engine(capital=1_000_000)
+
+        with pytest.raises(RuntimeError, match="세션 마감 후에도 활성 포지션 잔존"):
+            engine.run(bars)
+
+
 class TestEngineExactArithmetic:
     def test_익절_정확_수치_전체_검증(self):
         """CLAUDE.md 시나리오 정확값 재현 — 모든 비용 단계별 검증.
