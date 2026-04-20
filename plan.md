@@ -146,8 +146,8 @@ stock-agent/
 - [x] `backtest/engine.py`: 자체 시뮬레이션 루프 엔진 코어 — 완료 2026-04-20 (코드·테스트 레벨). 슬리피지 0.1% 시장가 불리, 수수료 0.015%(매수·매도 대칭), 거래세 0.18%(매도만) 반영.
   - 리포트 항목: 총수익률, MDD, 샤프, 승률, 평균 손익비, 일평균 거래수, 수수료·세금 반영 후 순수익
 - [x] `data/minute_csv.py`: CSV 분봉 어댑터 — 완료 2026-04-20. 레이아웃 `{csv_dir}/{symbol}.csv`, 헤더 `bar_time,open,high,low,close,volume`. 누락 파일 fail-fast, 여러 심볼 `heapq.merge` 정렬 스트리밍, stdlib 전용 추가 의존성 0. KIS 과거 분봉 API 어댑터는 별도 PR 로 분리.
-- [ ] 파라미터 튜닝: OR 구간(15/30분), 손절/익절 레벨 비교 — 미착수
-- **산출물**: 백테스트 리포트 HTML/노트북 + 파라미터 민감도 테이블 (실데이터 어댑터 도입 후)
+- [x] 파라미터 민감도 그리드: OR 구간(15/30분), 손절/익절 레벨 비교 — 완료 2026-04-20. `src/stock_agent/backtest/sensitivity.py` + `scripts/sensitivity.py` + `tests/test_sensitivity.py` (80건). 기본 그리드 32 조합, 현재 운영 기본값 포함. 민감도 리포트는 sanity check 용도이며 walk-forward 검증을 대체하지 않는다.
+- **산출물**: 파라미터 민감도 테이블 (`scripts/sensitivity.py` CLI, CSV/Markdown 출력) — 완료. 백테스트 리포트 HTML/노트북은 Phase 5 후보 (의도적 defer).
 
 ### Phase 3 — 모의투자 자동 실행 (5~7일)
 - **착수 전제**: 실전 APP_KEY (시세 전용) 발급 완료 + KIS Developers 포털에서 IP 화이트리스트 등록 + `healthcheck.py` 4종 통과.
@@ -249,12 +249,12 @@ Phase 0 완료 (2026-04-19). Phase 1 코드·테스트 레벨 PASS 선언 (2026-
 
 ## Phase 2 진행 요약 (2026-04-20 기준)
 
-Phase 2 네 번째 산출물(CSV 분봉 어댑터) 완료. 전체 PASS 선언은 파라미터 민감도 리포트 + 실데이터 PASS 검증 이후.
+Phase 2 다섯 번째(마지막) 산출물(파라미터 민감도 그리드) 완료. 전체 PASS 선언은 `scripts/backtest.py` CLI + KIS 과거 분봉 API 어댑터(별도 PR) + 2~3년 실데이터 PASS 검증(MDD < -15%) 이후. 이 PR 은 Phase 2 전체 PASS 를 선언하지 않는다.
 
 1. [x] `src/stock_agent/strategy/orb.py` + `base.py` + `__init__.py` — 완료. `ORBStrategy` 상태 머신(IDLE→FLAT→LONG→CLOSED), `StrategyConfig`(frozen dataclass, 생성자 주입), `Strategy` Protocol(최소 — `on_bar`/`on_time`), `EntrySignal`/`ExitSignal`/`ExitReason` DTO. 설계 결정: 분봉 close 기준 strict 돌파, 동일 분봉 손절·익절 동시 성립 시 손절 우선, 1일 1회 진입, `force_close_at` 이후 신규 진입 금지, 세션 경계 자동 리셋. 의존성 추가 없음.
 2. [x] `src/stock_agent/risk/manager.py` — 완료 2026-04-20. `RiskConfig` 기본값 고정(position_pct 20%, max_positions 3, daily_loss_limit_pct 2%, daily_max_entries 10, min_notional 10만원). `realized_pnl_krw` 부호 계약(손실 음수·수익 양수)은 호출자 책임. 공개 심볼 6종(`RiskManager`, `RiskConfig`, `RiskDecision`, `PositionRecord`, `RejectReason`, `RiskManagerError`) `risk/__init__` 재노출.
 3. [x] `src/stock_agent/backtest/{__init__.py, engine.py, costs.py, metrics.py, loader.py}` — 완료 2026-04-20. 자체 시뮬레이션 루프(`backtesting.py` 폐기). `ORBStrategy` + `RiskManager` 호출, 슬리피지(0.1%) + 수수료(0.015%) + 거래세(0.18% 매도만) 반영, 세션 마감 force_close 훅, 복리 자본 갱신, phantom_long 처리(rejected entry 의 후속 ExitSignal 흡수), 시간 단조증가 검증. 외부 I/O 0, 의존성 추가 0. 공개 심볼 8종(`BacktestEngine`, `BacktestConfig`, `BacktestResult`, `BacktestMetrics`, `TradeRecord`, `DailyEquity`, `BarLoader`, `InMemoryBarLoader`).
 4. [x] `src/stock_agent/data/minute_csv.py` — 완료 2026-04-20. `MinuteCsvBarLoader` + `MinuteCsvLoadError` 공개. 레이아웃 `{csv_dir}/{symbol}.csv`, 헤더 `bar_time,open,high,low,close,volume`. bar_time naive KST 파싱·오프셋 포함 거부, Decimal 가격 파싱, OHLC 일관성 검증, 분 경계 강제, 단조증가+중복 금지, 누락 파일 fail-fast. 여러 심볼 `heapq.merge` 정렬 스트리밍. stdlib 전용, 추가 의존성 0. KIS 과거 분봉 API 어댑터는 별도 PR.
-5. [ ] 파라미터 민감도 리포트 — 미착수
+5. [x] `src/stock_agent/backtest/sensitivity.py` + `scripts/sensitivity.py` — 완료 2026-04-20. `ParameterAxis`·`SensitivityGrid`·`SensitivityRow`·`run_sensitivity`·`render_markdown_table`·`write_csv`·`default_grid` 공개 (backtest `__init__` 재노출, 7종 추가). 기본 그리드 `or_end` 2종 × `stop_loss_pct` 4종 × `take_profit_pct` 4종 = 32 조합. 파라미터 이름 공간 `strategy.*`·`risk.*`·`engine.*`. 외부 의존성 추가 0. 민감도 리포트는 sanity check 용도이며 walk-forward 검증을 대체하지 않는다 (백테스트 과적합 위험 보존).
 
-pytest **245 → 324 → 384건 green** (기존 324 + test_minute_csv 56). ruff check/format + black --check 모두 green. 의존성 추가 없음.
+pytest **245 → 324 → 384 → 464건 green** (기존 384 + test_sensitivity 80). ruff check/format + black --check 모두 green. 의존성 추가 없음.

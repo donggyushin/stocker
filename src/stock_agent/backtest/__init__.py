@@ -18,6 +18,15 @@ from stock_agent.backtest.engine import (
     TradeRecord,
 )
 from stock_agent.backtest.loader import BarLoader, InMemoryBarLoader
+from stock_agent.backtest.sensitivity import (
+    ParameterAxis,
+    SensitivityGrid,
+    SensitivityRow,
+    default_grid,
+    render_markdown_table,
+    run_sensitivity,
+    write_csv,
+)
 from stock_agent.risk import RejectReason
 
 __all__ = [
@@ -28,6 +37,13 @@ __all__ = [
     "BarLoader",
     "DailyEquity",
     "InMemoryBarLoader",
+    "ParameterAxis",
     "RejectReason",
+    "SensitivityGrid",
+    "SensitivityRow",
     "TradeRecord",
+    "default_grid",
+    "render_markdown_table",
+    "run_sensitivity",
+    "write_csv",
 ]

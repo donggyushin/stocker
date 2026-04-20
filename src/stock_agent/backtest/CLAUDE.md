@@ -9,13 +9,15 @@ stock-agent 의 시뮬레이션 경계 모듈. `ORBStrategy` + `RiskManager` 를
 ## 공개 심볼 (`backtest/__init__.py`)
 
 `BacktestEngine`, `BacktestConfig`, `BacktestResult`, `BacktestMetrics`,
-`TradeRecord`, `DailyEquity`, `BarLoader`, `InMemoryBarLoader`, `RejectReason`
+`TradeRecord`, `DailyEquity`, `BarLoader`, `InMemoryBarLoader`, `RejectReason`,
+`ParameterAxis`, `SensitivityGrid`, `SensitivityRow`, `run_sensitivity`,
+`render_markdown_table`, `write_csv`, `default_grid`
 
 `RejectReason` 은 `stock_agent.risk` 의 Literal 을 재노출. `BacktestResult.rejected_counts` 의 키 타입이라 같은 패키지에서 접근 가능해야 소비자가 `risk` 패키지를 직접 import 하지 않는다.
 
 ## 현재 상태 (2026-04-20 기준)
 
-**Phase 2 세 번째 산출물 — 엔진 코어 완료** (코드·테스트 레벨). 후속 PR 에서 실데이터 어댑터 + CLI + 민감도 리포트 + 2~3년 PASS 검증을 추가한다.
+**Phase 2 다섯 번째(마지막) 산출물 — 파라미터 민감도 그리드 완료** (코드·테스트 레벨). 후속 PR 에서 `scripts/backtest.py` CLI + KIS 과거 분봉 API 어댑터 + 2~3년 실데이터 PASS 검증을 추가한다.
 
 ### 핵심 결정 — `backtesting.py` 라이브러리 폐기, 자체 루프 채택
 
@@ -116,6 +118,51 @@ for bar in bars:
 
 **실데이터 어댑터**: CSV 임포트(`src/stock_agent/data/minute_csv.py` — `MinuteCsvBarLoader`) 는 도입 완료(2026-04-20). KIS 과거 분봉 API 어댑터는 30일 롤링 제약으로 장기 PASS 기준 부적합하여 별도 PR.
 
+### `sensitivity.py` — 파라미터 민감도 그리드
+
+Phase 2 다섯 번째(마지막) 산출물. `BacktestEngine` 을 파라미터 조합마다 반복 실행해 메트릭 표를 생성한다. **sanity check 용도** — "현재 기본값이 로버스트한지" 를 보는 도구이지 과적합 허가가 아니다. 최종 파라미터 교체는 walk-forward 검증 (Phase 5) 후에만.
+
+공개 심볼 7종:
+
+| 심볼 | 역할 |
+|---|---|
+| `ParameterAxis(name, values)` | frozen dataclass. `name` 은 `"prefix.field"` 형태 (`strategy`/`risk`/`engine`). 빈 후보·중복·잘못된 prefix → `RuntimeError`. |
+| `SensitivityGrid(axes)` | frozen dataclass. `iter_combinations()` 로 Cartesian product yield. `size` 프로퍼티. 축 이름 중복 → `RuntimeError`. |
+| `SensitivityRow` | frozen dataclass. `params: dict` + `BacktestMetrics` 7 필드 + `trade_count`/`rejected_total`/`post_slippage_rejections`. |
+| `run_sensitivity(loader, start, end, symbols, base_config, grid)` | 조합마다 `dataclasses.replace` 로 파생 config 생성 후 `BacktestEngine(config).run(loader.stream(...))` 실행. 알 수 없는 prefix/필드 → `RuntimeError`. |
+| `render_markdown_table(rows, sort_by, descending)` | Markdown 표 문자열. 허용 sort_by 10종 (`_SORTABLE_METRIC_KEYS`). 잘못된 키·params 키 불일치 → `RuntimeError`. |
+| `write_csv(rows, path)` | stdlib `csv.writer` 로 CSV 쓰기. 빈 rows → 헤더만. |
+| `default_grid()` | plan.md line 149 기준 2×4×4 = 32 조합: `or_end` ∈ {09:15, 09:30} × `stop_loss_pct` ∈ {1.0%, 1.5%, 2.0%, 2.5%} × `take_profit_pct` ∈ {2.0%, 3.0%, 4.0%, 5.0%}. 현재 운영 기본값(09:30/1.5%/3.0%)이 반드시 포함 — "현재 기본값 vs 그리드 최상위" 비교가 자동. |
+
+파라미터 이름 공간 (prefix 라우팅):
+
+- `strategy.<field>` — `StrategyConfig` 필드 (`stop_loss_pct`, `take_profit_pct`, `or_start`, `or_end`, `force_close_at`).
+- `risk.<field>` — `RiskConfig` 필드 (`position_pct`, `max_positions`, `daily_max_entries`, `min_notional_krw`, `daily_loss_limit_pct`).
+- `engine.<field>` — `BacktestConfig` 필드 중 `slippage_rate`/`commission_rate`/`sell_tax_rate` 만. `starting_capital_krw` 은 비교 의미 없어 그리드 대상 제외.
+
+설계 원칙:
+
+- 외부 I/O = CSV 쓰기 경로 1개만. Markdown 은 문자열 반환.
+- 결정론 — 그리드 순회는 축 선언 순서 · 각 축 후보값 선언 순서 고정.
+- 매 조합마다 `ORBStrategy`/`RiskManager` 를 엔진이 새로 생성 — 상태 공유 없음.
+- 외부 의존성 추가 0 (stdlib `csv`·`dataclasses` + 기존 `BacktestEngine` 만).
+- generic `except Exception` 금지. 사용자 입력 오류 → `RuntimeError`.
+
+CLI `scripts/sensitivity.py`:
+
+```
+uv run python scripts/sensitivity.py \
+  --csv-dir data/minute_csv \
+  --from 2023-01-01 --to 2025-12-31 \
+  --symbols 005930,000660,035420 \
+  --starting-capital 1000000 \
+  --output-markdown data/sensitivity_report.md \
+  --output-csv data/sensitivity_report.csv \
+  --sort-by total_return_pct
+```
+
+`--symbols` 미지정 시 `load_kospi200_universe()` 전체 사용. 외부 네트워크·KIS·pykis 접촉 없음 — 순수 CSV + 엔진. plan.md PASS 기준(2~3년 실데이터, MDD<-15%) 판정은 이 스크립트 범위 밖 — 운영자가 출력 테이블을 육안 검토해 결정.
+
 ## 설계 원칙
 
 - **외부 I/O 없음**. 네트워크·시계·파일·DB 미사용. 테스트는 합성 분봉 fixture 만으로 통과.
@@ -130,20 +177,19 @@ for bar in bars:
 - 실 네트워크·시계·파일·DB 에 절대 접촉하지 않는다.
 - 외부 목킹 불필요 — 모든 모듈이 순수 로직.
 - 테스트 파일 작성·수정은 반드시 `unit-test-writer` 서브에이전트 경유 (root CLAUDE.md 하드 규칙, `.claude/hooks/tests-writer-guard.sh` fail-closed).
-- 관련 테스트 파일: `tests/test_backtest_engine.py`.
+- 관련 테스트 파일: `tests/test_backtest_engine.py`, `tests/test_sensitivity.py` (80건 — `ParameterAxis`/`SensitivityGrid`/`run_sensitivity`/`render_markdown_table`/`write_csv`/`default_grid` 커버).
 
 ## 소비자 참고
 
-- **`scripts/backtest.py`** (후속 PR): `BacktestEngine` + 실데이터 어댑터 조합으로 CLI 실행. plan.md PASS 기준 (`--from 2023-01-01 --to 2025-12-31`, MDD < -15%, 수수료·세금 반영) 충족.
-- **파라미터 민감도 리포트** (후속 PR): `BacktestConfig` / `StrategyConfig` 필드를 그리드로 변경하며 `BacktestResult.metrics` 비교.
+- **`scripts/sensitivity.py`** (완료 2026-04-20): `MinuteCsvBarLoader` + `default_grid()` + `run_sensitivity` 조합으로 32 조합 실행 → Markdown·CSV 리포트. 사용법은 위 `sensitivity.py` 섹션의 CLI 블록 참조.
+- **`scripts/backtest.py`** (후속 PR): `BacktestEngine` + 실데이터 어댑터 조합으로 단일 실행 CLI. plan.md PASS 기준 (`--from 2023-01-01 --to 2025-12-31`, MDD < -15%, 수수료·세금 반영) 충족 — 2~3년 실데이터 CSV 2~3년치 확보 후.
 
 ## 범위 제외 (의도적 defer — 후속 PR)
 
-- **실데이터 어댑터**: KIS 과거 분봉 API 통합 또는 외부 CSV 임포트. `BarLoader` Protocol 만 정의해두고 후속 PR.
-- **CLI 스크립트**: `scripts/backtest.py` (argparse 미사용 healthcheck.py 패턴 유지).
+- **실데이터 어댑터**: KIS 과거 분봉 API 통합. `BarLoader` Protocol + `MinuteCsvBarLoader` 는 완료, KIS API 는 30일 롤링 제약으로 별도 PR.
+- **단일 실행 CLI 스크립트**: `scripts/backtest.py` (argparse 기반 — `scripts/sensitivity.py` 패턴 재사용 가능).
 - **HTML/노트북 리포트**: `BacktestResult` → 시각화 (Streamlit/Jupyter — Phase 5 후보).
-- **파라미터 민감도 그리드**: OR 구간(15/30분), 손절/익절 레벨 비교.
-- **Walk-forward 검증**: 과적합 방어 (Phase 5).
+- **Walk-forward 검증**: 과적합 방어 (Phase 5). 민감도 그리드는 sanity check 이지 walk-forward 를 대체하지 않는다.
 - **호가 단위 라운딩**: 현재 `Decimal` 원시 그대로 — KRX 호가 단위 반영은 Phase 3 executor 책임 영역과 합쳐 재설계.
 - **부분 체결 시뮬레이션**: 현재 시그널 1건 = 전량 체결. 부분 체결은 Phase 5.
 - **공매도(short) 포지션**: 한국 공매도 제한으로 long-only — Phase 5 까지 보류.
