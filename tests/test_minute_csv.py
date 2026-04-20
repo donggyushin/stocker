@@ -641,16 +641,40 @@ def test_심볼_포맷_위반_MinuteCsvLoadError(tmp_path: Path, bad_symbol: str
 
 
 # ---------------------------------------------------------------------------
-# 시나리오 31 — symbols=() → 빈 iterator (에러 아님)
+# 시나리오 31 — symbols=() → RuntimeError (호출자 계약 위반)
 # ---------------------------------------------------------------------------
 
 
-def test_symbols_빈_튜플_빈_iterator(tmp_path: Path) -> None:
-    """시나리오 31: symbols=() → 에러 없이 빈 iterator 반환."""
+def test_symbols_빈_튜플_RuntimeError(tmp_path: Path) -> None:
+    """시나리오 31: symbols=() → RuntimeError (호출자 계약 위반)."""
     loader = MinuteCsvBarLoader(tmp_path)
-    bars = _stream_list(loader, _DATE, _DATE, ())
 
-    assert bars == []
+    with pytest.raises(RuntimeError, match="symbols"):
+        _stream_list(loader, _DATE, _DATE, ())
+
+
+# ---------------------------------------------------------------------------
+# 중복 심볼 전달 — 각각 독립 스트림으로 동일 bar 2배 yield
+# ---------------------------------------------------------------------------
+
+
+def test_중복_심볼_전달_각각_독립_스트림(tmp_path: Path) -> None:
+    """symbols=("005930", "005930") → 각 심볼이 독립적으로 _sorted_bar_iter 에 연결되어
+    동일 bar 가 2번 yield 된다 (현재 구현은 사전 dedup 을 하지 않는다는 계약 고정).
+    """
+    _write_csv(
+        tmp_path,
+        _SYMBOL,
+        [
+            "2026-04-20 09:00,10000,10500,9900,10200,100",
+            "2026-04-20 09:01,10200,10600,10100,10400,80",
+        ],
+    )
+    loader = MinuteCsvBarLoader(tmp_path)
+    bars = _stream_list(loader, _DATE, _DATE, (_SYMBOL, _SYMBOL))
+
+    # 원본 파일의 bar 수(2) × 중복 심볼 수(2) = 4
+    assert len(bars) == 4
 
 
 # ---------------------------------------------------------------------------

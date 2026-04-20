@@ -257,4 +257,4 @@ Phase 2 네 번째 산출물(CSV 분봉 어댑터) 완료. 전체 PASS 선언은
 4. [x] `src/stock_agent/data/minute_csv.py` — 완료 2026-04-20. `MinuteCsvBarLoader` + `MinuteCsvLoadError` 공개. 레이아웃 `{csv_dir}/{symbol}.csv`, 헤더 `bar_time,open,high,low,close,volume`. bar_time naive KST 파싱·오프셋 포함 거부, Decimal 가격 파싱, OHLC 일관성 검증, 분 경계 강제, 단조증가+중복 금지, 누락 파일 fail-fast. 여러 심볼 `heapq.merge` 정렬 스트리밍. stdlib 전용, 추가 의존성 0. KIS 과거 분봉 API 어댑터는 별도 PR.
 5. [ ] 파라미터 민감도 리포트 — 미착수
 
-pytest **245 → 324 → 383건 green** (기존 324 + test_minute_csv 55). ruff check/format + black --check 모두 green. 의존성 추가 없음.
+pytest **245 → 324 → 384건 green** (기존 324 + test_minute_csv 56). ruff check/format + black --check 모두 green. 의존성 추가 없음.

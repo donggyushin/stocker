@@ -32,6 +32,12 @@ class BarLoader(Protocol):
     - 시간 단조증가 (동일 시각은 허용).
     - `(symbol, bar_time)` 중복 없음.
 
+    호출자 계약:
+    - `start <= end` 이어야 함. 위반 시 구현은 `RuntimeError` 를 던진다.
+    - `symbols` 는 1개 이상이어야 함. 빈 튜플은 호출자 오류로 간주하며
+      구현은 `RuntimeError` 를 던진다 ("필터 미적용 = 전체 로드" 같은
+      암묵 확장 금지 — 각 구현의 전수 스캔 비용과 의미가 서로 다르다).
+
     구현체는 I/O 여부·스트리밍 방식에 자유. 엔진은 순방향 1회 소비만 한다.
     """
 
@@ -49,7 +55,7 @@ class InMemoryBarLoader:
     초기화 시점에 한 번 정렬·dedupe 한다. 이후 `stream` 호출은 조건 필터링만.
 
     Raises:
-        RuntimeError: `start > end` 일 때.
+        RuntimeError: `start > end` 또는 `symbols` 가 빈 튜플일 때.
     """
 
     def __init__(self, bars: Iterable[MinuteBar]) -> None:
@@ -73,11 +79,13 @@ class InMemoryBarLoader:
     ) -> Iterator[MinuteBar]:
         if start > end:
             raise RuntimeError(f"start({start}) 는 end({end}) 이전이어야 합니다.")
+        if not symbols:
+            raise RuntimeError("symbols 는 1개 이상이어야 합니다.")
         symbol_set = frozenset(symbols)
         for bar in self._bars:
             d = bar.bar_time.date()
             if d < start or d > end:
                 continue
-            if symbol_set and bar.symbol not in symbol_set:
+            if bar.symbol not in symbol_set:
                 continue
             yield bar

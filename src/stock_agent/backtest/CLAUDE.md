@@ -111,10 +111,10 @@ for bar in bars:
 
 ### `loader.py` — 데이터 어댑터 경계
 
-- `BarLoader` Protocol — `stream(start, end, symbols) -> Iterable[MinuteBar]`. 시간 단조증가, `(symbol, bar_time)` 중복 없음, 경계 포함 날짜 필터를 계약.
-- `InMemoryBarLoader` — `__init__(bars)` 시 정렬·dedupe (나중 값 우선). `stream` 호출은 조건 필터링만.
+- `BarLoader` Protocol — `stream(start, end, symbols) -> Iterable[MinuteBar]`. 시간 단조증가, `(symbol, bar_time)` 중복 없음, 경계 포함 날짜 필터를 계약. 호출자 계약: `start <= end` + `symbols` 1개 이상 (위반 시 구현은 `RuntimeError` — 두 구현 일관).
+- `InMemoryBarLoader` — `__init__(bars)` 시 정렬·dedupe (나중 값 우선). `stream` 호출은 조건 필터링만. 빈 `symbols` 는 `RuntimeError` (구 계약 "필터 비활성" 폐기 — Protocol 일관화).
 
-**실데이터 어댑터(KIS 과거 분봉 API · CSV 임포트) 는 의도적으로 본 PR 범위 밖.** Protocol 만 정의해두고 후속 PR 에서 추가.
+**실데이터 어댑터**: CSV 임포트(`src/stock_agent/data/minute_csv.py` — `MinuteCsvBarLoader`) 는 도입 완료(2026-04-20). KIS 과거 분봉 API 어댑터는 30일 롤링 제약으로 장기 PASS 기준 부적합하여 별도 PR.
 
 ## 설계 원칙
 

@@ -383,15 +383,15 @@ class TestInMemoryBarLoader:
         with pytest.raises(RuntimeError, match="start"):
             list(loader.stream(date(2026, 4, 21), date(2026, 4, 20), (_SYMBOL,)))
 
-    def test_stream_빈_심볼_튜플_모든_심볼_통과(self):
-        """symbols=() (빈 튜플) → 심볼 필터 비활성 — 모든 심볼 통과."""
+    def test_stream_빈_심볼_튜플_RuntimeError(self):
+        """symbols=() (빈 튜플) → 호출자 오류, RuntimeError."""
         bars = [
             _bar(_SYMBOL, 9, 0, 70000, 70500, 69800, 70000),
             _bar(_SYMBOL_B, 9, 0, 80000, 80500, 79800, 80000),
         ]
         loader = InMemoryBarLoader(bars)
-        result = list(loader.stream(_DATE, _DATE, ()))
-        assert len(result) == 2
+        with pytest.raises(RuntimeError, match="symbols"):
+            list(loader.stream(_DATE, _DATE, ()))
 
     def test_stream_경계_날짜_포함(self):
         """start == end == bar_date 인 경우 포함된다 (경계 inclusive)."""

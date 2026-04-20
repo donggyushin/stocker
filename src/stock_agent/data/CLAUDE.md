@@ -85,8 +85,8 @@ YAML 로더, 실시간 분봉 소스를 한 자리에 모아 상위 레이어
 - 실제 KRX 네트워크·pykrx import·외부 파일 I/O 는 절대 발생시키지 않는다.
 - `historical.py`: `pykrx_factory` 에 `MagicMock` 반환 팩토리 주입. DataFrame 은 실제 pandas 로 생성해 컬럼(`시가/고가/저가/종가/거래량`) 맞춘 경량 더블을 넘긴다.
 - `universe.py`: 실제 PyYAML import 허용(외부 네트워크 없음), 파일은 `tmp_path` 에 작성해 격리. 로거 캡처는 loguru sink 바인딩으로.
-- `realtime.py`: 실 pykis import 금지. `pykis_factory` 에 `MagicMock` 반환 팩토리 주입, `clock` 주입으로 분 경계 제어, `polling_interval_s=0.0` 으로 폴링 루프 단축. WebSocket 모드 테스트는 `ensure_connected` 성공 mock, 폴링 fallback 테스트는 `ensure_connected` 를 `TimeoutError` 로 mock. 24 케이스 (생명주기 6 + WebSocket 3 + 폴링 1 + 분봉 집계 2 + 가드/엣지 4 + 기타 + live 키 관련 3 — 미설정 fail-fast, live 키 factory 호출 검증, `install_order_block_guard` 호출 검증).
-- `minute_csv.py`: 외부 I/O 없음 (stdlib `csv` + `tmp_path` CSV 작성만). 헬퍼로 `_write_csv(tmp_path, symbol, rows, *, header)` 패턴 사용 — 헤더 오버라이드로 정상·오류 시나리오를 같은 헬퍼로 커버. 55 케이스 (생성자 4 + 정상 stream 2 + 다중 심볼 2 + 날짜 필터 4 + 심볼 필터 1 + 빈 파일 1 + volume 3 + 가드/에러 30+).
+- `realtime.py`: 실 pykis import 금지. `pykis_factory` 에 `MagicMock` 반환 팩토리 주입, `clock` 주입으로 분 경계 제어, `polling_interval_s=0.0` 으로 폴링 루프 단축. WebSocket 모드 테스트는 `ensure_connected` 성공 mock, 폴링 fallback 테스트는 `ensure_connected` 를 `TimeoutError` 로 mock. 27 케이스 — 생명주기·WebSocket·폴링·분봉 집계·가드/엣지·live 키(fail-fast·factory 호출·`install_order_block_guard` 호출) 카테고리 커버.
+- `minute_csv.py`: 외부 I/O 없음 (stdlib `csv` + `tmp_path` CSV 작성만). 헬퍼로 `_write_csv(tmp_path, symbol, rows, *, header)` 패턴 사용 — 헤더 오버라이드로 정상·오류 시나리오를 같은 헬퍼로 커버. 56 케이스 — 생성자·정상 stream·다중 심볼·중복 심볼 행위 고정·날짜/심볼 필터·빈 파일·volume·헤더/행 파싱·bar_time/오프셋/분 경계·가격/OHLC·심볼 포맷·`symbols=()` `RuntimeError` 카테고리 커버.
 - DB 는 `tmp_path / "test.db"` 또는 `":memory:"` 사용. `clock` 주입으로 "오늘" 판정을 고정.
 - 테스트 파일 작성·수정은 반드시 `unit-test-writer` 서브에이전트 경유 (root CLAUDE.md 하드 규칙).
 - 관련 테스트: `tests/test_historical.py`, `tests/test_universe.py`, `tests/test_realtime.py`, `tests/test_minute_csv.py`.
