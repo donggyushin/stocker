@@ -1673,6 +1673,37 @@ def test_on_daily_report_realized_pnl_pct_None_when_starting_0_or_None(
     assert summary.realized_pnl_pct is None
 
 
+def test_on_daily_report_pct_decimal_타입_드리프트_내성(mocker: Any) -> None:
+    """I3 #25 — RiskManager pct 가 Decimal 로 드리프트해도
+    notify_daily_summary 가 호출되고 pct 는 정상 float 값이다.
+    """
+    from decimal import Decimal
+
+    fake_executor = MagicMock(spec=Executor)
+    fake_executor.is_halted = False
+    fake_executor.last_reconcile = None
+
+    fake_rm = MagicMock(spec=RiskManager)
+    fake_rm.daily_realized_pnl_krw = Decimal("-12345")
+    fake_rm.entries_today = 1
+    fake_rm.active_positions = ()
+    fake_rm.starting_capital_krw = Decimal("1000000")
+
+    fake_notifier = MagicMock(spec=Notifier)
+    mocker.patch("stock_agent.main.logger")
+
+    runtime = _make_runtime(executor=fake_executor, risk_manager=fake_rm, notifier=fake_notifier)
+    clock = lambda: _kst(15, 30)  # noqa: E731
+
+    cb = _on_daily_report(runtime, clock)
+    cb()
+
+    fake_notifier.notify_daily_summary.assert_called_once()
+    summary: DailySummary = fake_notifier.notify_daily_summary.call_args[0][0]
+    assert summary.realized_pnl_pct == pytest.approx(-1.2345, rel=1e-6)
+    fake_notifier.notify_error.assert_not_called()
+
+
 def test_on_daily_report_mismatch_symbols_from_last_reconcile(mocker: Any) -> None:
     """E4 — last_reconcile.mismatch_symbols=("A",) → DailySummary.mismatch_symbols==("A",).
     last_reconcile=None 이면 mismatch_symbols==().

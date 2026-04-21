@@ -562,6 +562,27 @@ def _on_force_close(runtime: Runtime, clock: ClockFn) -> Callable[[], None]:
     return callback
 
 
+def _safe_pct(pnl: Any, starting: Any) -> float | None:
+    """pnl / starting × 100.0. 실패 시 None.
+
+    계산 실패와 텔레그램 발송 실패를 직교화한다. `RiskManager` 의
+    `starting_capital_krw`/`daily_realized_pnl_krw` 타입이 향후 Decimal 등으로
+    드리프트하더라도 `float()` 변환 + 명시 except 로 `TypeError`/`ValueError`/
+    `ArithmeticError` 를 흡수해 None 을 반환한다. 발송 경로(`notify_daily_summary`)
+    는 pct=None 을 "n/a" 로 출력하므로 계산 실패가 일일 요약 발송 자체를
+    막지 않는다 (Issue #25, PR #18 리뷰 후속 I3).
+    """
+    try:
+        if starting is None:
+            return None
+        s = float(starting)
+        if s <= 0:
+            return None
+        return (float(pnl) / s) * 100.0
+    except (TypeError, ValueError, ArithmeticError):
+        return None
+
+
 def _on_daily_report(runtime: Runtime, clock: ClockFn) -> Callable[[], None]:
     """15:30 — 당일 요약 로그 (`runtime.risk_manager` 공개 프로퍼티 사용).
 
@@ -581,9 +602,7 @@ def _on_daily_report(runtime: Runtime, clock: ClockFn) -> Callable[[], None]:
             entries = rm.entries_today
             active = len(rm.active_positions)
             starting = rm.starting_capital_krw
-            pct: float | None = (
-                (pnl / starting) * 100.0 if starting is not None and starting > 0 else None
-            )
+            pct = _safe_pct(pnl, starting)
             last_rec = runtime.executor.last_reconcile
             mismatch = last_rec.mismatch_symbols if last_rec is not None else ()
             logger.info(
