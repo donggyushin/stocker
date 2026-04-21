@@ -16,6 +16,27 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "AskUserQuestion|ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/notify-waiting.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/notify-waiting.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Stop": [
