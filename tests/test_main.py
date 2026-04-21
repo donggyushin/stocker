@@ -1,10 +1,10 @@
-"""stock_agent.main 공개 계약 단위 테스트 (RED 모드).
+"""stock_agent.main 공개 계약 단위 테스트 (refactor-invariant 모드).
 
-src/stock_agent/main.py 가 아직 존재하지 않으므로 모든 케이스가
-ModuleNotFoundError 로 실패한다. 구현 후 GREEN 전환을 목표로 한다.
+기존 47 케이스 + notifier 검증 신규 케이스를 담는다.
 
 가드레일: KIS·텔레그램·외부 HTTP·실 KisClient·실 RealtimeDataStore 접촉 없음.
 모든 외부 의존은 팩토리 주입 또는 mocker.patch 로 차단한다.
+Notifier 는 MagicMock(spec=Notifier) 로 주입 — 실 TelegramNotifier 접촉 0.
 """
 
 from __future__ import annotations
@@ -26,15 +26,13 @@ from stock_agent.data import UniverseLoadError
 from stock_agent.data.universe import KospiUniverse
 from stock_agent.execution import (
     DryRunOrderSubmitter,
+    EntryEvent,
     Executor,
+    ExitEvent,
     LiveOrderSubmitter,
     ReconcileReport,
     StepReport,
 )
-
-# ---------------------------------------------------------------------------
-# import — SessionStatus 가 없으면 ImportError 로 실패 (RED 모드 목표).
-# ---------------------------------------------------------------------------
 from stock_agent.main import (
     EXIT_INPUT_ERROR,
     EXIT_IO_ERROR,
@@ -45,6 +43,7 @@ from stock_agent.main import (
     SessionStatus,
     _build_order_submitter,
     _configure_logging,
+    _default_notifier_factory,
     _graceful_shutdown,
     _install_jobs,
     _on_daily_report,
@@ -55,7 +54,14 @@ from stock_agent.main import (
     build_runtime,
     main,
 )
+from stock_agent.monitor import (
+    DailySummary,
+    ErrorEvent,
+    Notifier,
+    NullNotifier,
+)
 from stock_agent.risk import RiskManager
+from stock_agent.strategy import ExitReason
 
 # ---------------------------------------------------------------------------
 # 공통 상수 / 헬퍼
@@ -87,8 +93,13 @@ def _make_runtime(
     args: argparse.Namespace | None = None,
     risk_manager: MagicMock | None = None,
     session_status: SessionStatus | None = None,
+    notifier: MagicMock | None = None,
 ) -> Runtime:
-    """Runtime 더블 조립 헬퍼."""
+    """Runtime 더블 조립 헬퍼.
+
+    `notifier` 는 `MagicMock(spec=Notifier)` 기본값 — 실 TelegramNotifier
+    접촉 0. 개별 테스트에서 별도 MagicMock 을 주입하면 호출 횟수·인자 검증 가능.
+    """
     _kis = kis_client or MagicMock(spec=KisClient)
     _rt = realtime_store or MagicMock()
     _ex = executor or MagicMock(spec=Executor)
@@ -96,6 +107,7 @@ def _make_runtime(
     _args = args or _parse_args([])
     _rm = risk_manager or MagicMock(spec=RiskManager)
     _ss = session_status or SessionStatus()
+    _notifier = notifier or MagicMock(spec=Notifier)
     return Runtime(
         scheduler=_sc,
         executor=_ex,
@@ -104,20 +116,55 @@ def _make_runtime(
         args=_args,
         risk_manager=_rm,
         session_status=_ss,
+        notifier=_notifier,
     )
 
 
-def _make_step_report() -> StepReport:
+def _make_step_report(
+    *,
+    entry_events: tuple[EntryEvent, ...] = (),
+    exit_events: tuple[ExitEvent, ...] = (),
+    mismatch_symbols: tuple[str, ...] = (),
+) -> StepReport:
     reconcile = ReconcileReport(
         broker_holdings={},
         risk_holdings={},
-        mismatch_symbols=(),
+        mismatch_symbols=mismatch_symbols,
     )
     return StepReport(
         processed_bars=3,
         orders_submitted=1,
         halted=False,
         reconcile=reconcile,
+        entry_events=entry_events,
+        exit_events=exit_events,
+    )
+
+
+def _make_entry_event(symbol: str = "005930") -> EntryEvent:
+    """EntryEvent 더블 — Decimal 가격, KST aware datetime."""
+    from decimal import Decimal
+
+    return EntryEvent(
+        symbol=symbol,
+        qty=10,
+        fill_price=Decimal("70000"),
+        ref_price=Decimal("69930"),
+        timestamp=_kst(9, 31),
+    )
+
+
+def _make_exit_event(symbol: str = "005930", reason: ExitReason = "take_profit") -> ExitEvent:
+    """ExitEvent 더블 — Decimal 가격, KST aware datetime."""
+    from decimal import Decimal
+
+    return ExitEvent(
+        symbol=symbol,
+        qty=10,
+        fill_price=Decimal("72100"),
+        reason=reason,
+        net_pnl_krw=20_000,
+        timestamp=_kst(10, 15),
     )
 
 
@@ -259,12 +306,13 @@ def test_build_runtime_dry_run_False_시_LiveOrderSubmitter_주입(
     assert isinstance(runtime.executor._order_submitter, LiveOrderSubmitter)
 
 
-def test_build_runtime_Runtime_필드_5개_반환(
+def test_build_runtime_Runtime_필드_반환(
     _mock_universe: KospiUniverse, _fake_settings: MagicMock
 ) -> None:
-    """기존 5개 필드 + 신규 2개(risk_manager, session_status) = 7개 검증. (I1)"""
+    """기존 5개 필드 + risk_manager, session_status, notifier = 8개 검증. (I1)"""
     fake_rt = MagicMock()
     args = _parse_args([])
+    fake_notifier = MagicMock(spec=Notifier)
 
     runtime = build_runtime(
         args,
@@ -273,6 +321,7 @@ def test_build_runtime_Runtime_필드_5개_반환(
         realtime_store_factory=lambda s: fake_rt,
         scheduler_factory=MagicMock,
         universe_loader=lambda p: _mock_universe,
+        notifier_factory=lambda s, d: fake_notifier,
     )
 
     assert isinstance(runtime, Runtime)
@@ -281,17 +330,18 @@ def test_build_runtime_Runtime_필드_5개_반환(
     assert runtime.realtime_store is fake_rt
     assert runtime.kis_client is not None
     assert runtime.args is args
-    # I1 — 신규 필드
+    # 신규 필드
     assert isinstance(runtime.risk_manager, RiskManager)
     assert isinstance(runtime.session_status, SessionStatus)
     assert runtime.session_status.started is False
     assert runtime.session_status.fail_logged is False
+    assert runtime.notifier is fake_notifier
 
 
-def test_build_runtime_Runtime_필드_7개_반환(
+def test_build_runtime_Runtime_필드_8개_반환(
     _mock_universe: KospiUniverse, _fake_settings: MagicMock
 ) -> None:
-    """Runtime 이 7개 필드를 갖는지 명시 검증. (I1)"""
+    """Runtime 이 8개 필드를 갖는지 명시 검증 (notifier 추가). (I1)"""
     fake_rt = MagicMock()
     args = _parse_args([])
 
@@ -302,12 +352,14 @@ def test_build_runtime_Runtime_필드_7개_반환(
         realtime_store_factory=lambda s: fake_rt,
         scheduler_factory=MagicMock,
         universe_loader=lambda p: _mock_universe,
+        notifier_factory=lambda s, d: MagicMock(spec=Notifier),
     )
 
     field_names = {f.name for f in dataclasses.fields(runtime)}
     assert "risk_manager" in field_names, "Runtime 에 risk_manager 필드가 없다"
     assert "session_status" in field_names, "Runtime 에 session_status 필드가 없다"
-    assert len(field_names) == 7, f"Runtime 필드 수가 7이 아님: {field_names}"
+    assert "notifier" in field_names, "Runtime 에 notifier 필드가 없다"
+    assert len(field_names) == 8, f"Runtime 필드 수가 8이 아님: {field_names}"
 
 
 # ---------------------------------------------------------------------------
@@ -694,6 +746,7 @@ def test_on_daily_report_logger_info_최소_1회(mocker: Any) -> None:
     fake_rm.daily_realized_pnl_krw = 0
     fake_rm.entries_today = 0
     fake_rm.active_positions = ()
+    fake_rm.starting_capital_krw = 1_000_000
     mock_logger = mocker.patch("stock_agent.main.logger")
     runtime = _make_runtime(executor=fake_executor, risk_manager=fake_rm)
     clock = lambda: _kst(15, 30)  # noqa: E731
@@ -731,6 +784,7 @@ def test_on_daily_report_runtime_risk_manager_공개_경로_사용(mocker: Any) 
     fake_rm.daily_realized_pnl_krw = -50_000
     fake_rm.entries_today = 3
     fake_rm.active_positions = (MagicMock(), MagicMock())
+    fake_rm.starting_capital_krw = 1_000_000
 
     mock_logger = mocker.patch("stock_agent.main.logger")
     runtime = _make_runtime(executor=fake_executor, risk_manager=fake_rm)
@@ -925,6 +979,7 @@ def _base_patches(mocker: Any) -> dict[str, MagicMock]:
     fake_executor = MagicMock(spec=Executor)
     fake_rm = MagicMock(spec=RiskManager)
     fake_ss = SessionStatus()
+    fake_notifier = MagicMock(spec=Notifier)
 
     fake_runtime = Runtime(
         scheduler=fake_scheduler,
@@ -934,6 +989,7 @@ def _base_patches(mocker: Any) -> dict[str, MagicMock]:
         args=_parse_args([]),
         risk_manager=fake_rm,
         session_status=fake_ss,
+        notifier=fake_notifier,
     )
     patches["build_runtime"].return_value = fake_runtime
 
@@ -1186,3 +1242,465 @@ def test_SessionStatus_mutable() -> None:
     ss.fail_logged = True
     assert ss.started is True
     assert ss.fail_logged is True
+
+
+# ===========================================================================
+# 그룹 A — _default_notifier_factory
+# ===========================================================================
+
+
+def _make_fake_settings_for_notifier() -> MagicMock:
+    """_default_notifier_factory 에서 접근하는 속성을 가진 settings 더블.
+
+    spec=Settings 를 쓰면 SecretStr 필드가 MagicMock으로 반환되어 TelegramNotifier
+    생성자 내부에서 AttributeError 가 발생한다. spec 없이 MagicMock 을 만들고
+    필요한 속성만 명시적으로 설정한다 — _default_notifier_factory 의 경계만 검증.
+    """
+    from pydantic import SecretStr
+
+    fake_settings = MagicMock()
+    fake_settings.telegram_bot_token = SecretStr("dummy-bot-token:TEST")
+    fake_settings.telegram_chat_id = 123456789
+    return fake_settings
+
+
+def test_default_notifier_factory_dry_run_False_는_TelegramNotifier_반환(
+    mocker: Any,
+) -> None:
+    """A1 — dry_run=False 이면 TelegramNotifier 인스턴스를 반환.
+    실 텔레그램 접촉 없이 생성자 호출 여부를 sentinel 로 검증한다.
+    """
+    from unittest.mock import sentinel
+
+    fake_settings = _make_fake_settings_for_notifier()
+
+    mock_telegram = mocker.patch(
+        "stock_agent.main.TelegramNotifier", return_value=sentinel.telegram_instance
+    )
+
+    result = _default_notifier_factory(fake_settings, dry_run=False)
+
+    mock_telegram.assert_called_once()
+    assert result is sentinel.telegram_instance
+
+
+def test_default_notifier_factory_TelegramNotifier_예외시_NullNotifier_폴백(
+    mocker: Any,
+) -> None:
+    """A2 — TelegramNotifier 생성자가 RuntimeError 를 던지면 NullNotifier 반환.
+    logger.warning 도 1회 호출됨.
+    """
+    fake_settings = _make_fake_settings_for_notifier()
+    mocker.patch("stock_agent.main.TelegramNotifier", side_effect=RuntimeError("봇 초기화 실패"))
+    mock_logger = mocker.patch("stock_agent.main.logger")
+
+    result = _default_notifier_factory(fake_settings, dry_run=False)
+
+    assert isinstance(result, NullNotifier)
+    mock_logger.warning.assert_called_once()
+    warning_msg = str(mock_logger.warning.call_args)
+    assert "NullNotifier" in warning_msg or "notifier_factory" in warning_msg
+
+
+def test_default_notifier_factory_dry_run_True_가_TelegramNotifier에_전달됨(
+    mocker: Any,
+) -> None:
+    """A3 — dry_run=True 가 TelegramNotifier 생성자 인자로 전달됨."""
+    fake_settings = _make_fake_settings_for_notifier()
+    mock_telegram = mocker.patch("stock_agent.main.TelegramNotifier", return_value=MagicMock())
+
+    _default_notifier_factory(fake_settings, dry_run=True)
+
+    assert mock_telegram.call_count == 1
+    _, kwargs = mock_telegram.call_args
+    assert kwargs.get("dry_run") is True
+
+
+# ===========================================================================
+# 그룹 B — _on_session_start notifier 통합
+# ===========================================================================
+
+
+def test_on_session_start_정상경로_notify_error_미호출(mocker: Any) -> None:
+    """B1 — 정상 경로에서 notify_error 미호출. 진입 성공 알림은 이번 PR 범위 밖."""
+    fake_kis = MagicMock(spec=KisClient)
+    fake_kis.get_balance.return_value = _make_balance(total=2_000_000, withdrawable=1_800_000)
+    fake_executor = MagicMock(spec=Executor)
+    fake_notifier = MagicMock(spec=Notifier)
+    mocker.patch("stock_agent.main.logger")
+
+    runtime = _make_runtime(kis_client=fake_kis, executor=fake_executor, notifier=fake_notifier)
+    args = _parse_args([])
+    clock = lambda: _kst(9, 0)  # noqa: E731
+
+    cb = _on_session_start(runtime, args, clock)
+    cb()
+
+    fake_notifier.notify_error.assert_not_called()
+
+
+def test_on_session_start_자본_0이면_notify_error_stage_session_start(
+    mocker: Any,
+) -> None:
+    """B2 — withdrawable==0 이면 notify_error(stage="session_start", severity="error") 1회.
+    error_class 에 "StartingCapitalError" 문자열 포함.
+    """
+    fake_kis = MagicMock(spec=KisClient)
+    fake_kis.get_balance.return_value = _make_balance(total=10_000_000, withdrawable=0)
+    fake_notifier = MagicMock(spec=Notifier)
+    mocker.patch("stock_agent.main.logger")
+
+    runtime = _make_runtime(kis_client=fake_kis, notifier=fake_notifier)
+    args = _parse_args([])
+    clock = lambda: _kst(9, 0)  # noqa: E731
+
+    cb = _on_session_start(runtime, args, clock)
+    cb()
+
+    fake_notifier.notify_error.assert_called_once()
+    event: ErrorEvent = fake_notifier.notify_error.call_args[0][0]
+    assert event.stage == "session_start"
+    assert event.severity == "error"
+    assert "StartingCapitalError" in event.error_class
+
+
+def test_on_session_start_예외발생시_notify_error_error_class_포함(
+    mocker: Any,
+) -> None:
+    """B3 — get_balance 예외 시 notify_error(stage="session_start", error_class=<클래스명>) 1회."""
+    fake_kis = MagicMock(spec=KisClient)
+    fake_kis.get_balance.side_effect = ConnectionError("네트워크 오류")
+    fake_notifier = MagicMock(spec=Notifier)
+    mocker.patch("stock_agent.main.logger")
+
+    runtime = _make_runtime(kis_client=fake_kis, notifier=fake_notifier)
+    args = _parse_args([])
+    clock = lambda: _kst(9, 0)  # noqa: E731
+
+    cb = _on_session_start(runtime, args, clock)
+    cb()
+
+    fake_notifier.notify_error.assert_called_once()
+    event: ErrorEvent = fake_notifier.notify_error.call_args[0][0]
+    assert event.stage == "session_start"
+    assert event.error_class == "ConnectionError"
+    assert event.severity == "error"
+
+
+# ===========================================================================
+# 그룹 C — _on_step notifier 통합
+# ===========================================================================
+
+
+def test_on_step_entry_exit_events_각각_notify_호출(mocker: Any) -> None:
+    """C1 — entry_events 2건 + exit_events 1건 → notify_entry 2회, notify_exit 1회.
+    reconcile mismatch 없음 → notify_error 미호출.
+    """
+    e1 = _make_entry_event("005930")
+    e2 = _make_entry_event("000660")
+    x1 = _make_exit_event("035420")
+    report = _make_step_report(
+        entry_events=(e1, e2),
+        exit_events=(x1,),
+        mismatch_symbols=(),
+    )
+
+    fake_executor = MagicMock(spec=Executor)
+    fake_executor.step.return_value = report
+    fake_notifier = MagicMock(spec=Notifier)
+    mocker.patch("stock_agent.main.logger")
+
+    runtime = _make_runtime(
+        executor=fake_executor,
+        notifier=fake_notifier,
+        session_status=SessionStatus(started=True),
+    )
+    clock = lambda: _kst(9, 5)  # noqa: E731
+
+    cb = _on_step(runtime, clock)
+    cb()
+
+    assert fake_notifier.notify_entry.call_count == 2
+    assert fake_notifier.notify_exit.call_count == 1
+    fake_notifier.notify_error.assert_not_called()
+
+    # 순서 검증 — e1, e2 순으로 notify_entry 호출
+    assert fake_notifier.notify_entry.call_args_list[0][0][0] is e1
+    assert fake_notifier.notify_entry.call_args_list[1][0][0] is e2
+    assert fake_notifier.notify_exit.call_args_list[0][0][0] is x1
+
+
+def test_on_step_mismatch_symbols_notify_error_critical_1회(mocker: Any) -> None:
+    """C2 — mismatch_symbols 비어있지 않으면 notify_error(reconcile, critical) 1회.
+
+    message 에 종목 코드 포함.
+    """
+    report = _make_step_report(mismatch_symbols=("005930", "000660"))
+    fake_executor = MagicMock(spec=Executor)
+    fake_executor.step.return_value = report
+    fake_notifier = MagicMock(spec=Notifier)
+    mocker.patch("stock_agent.main.logger")
+
+    runtime = _make_runtime(
+        executor=fake_executor,
+        notifier=fake_notifier,
+        session_status=SessionStatus(started=True),
+    )
+    clock = lambda: _kst(9, 5)  # noqa: E731
+
+    cb = _on_step(runtime, clock)
+    cb()
+
+    fake_notifier.notify_error.assert_called_once()
+    event: ErrorEvent = fake_notifier.notify_error.call_args[0][0]
+    assert event.stage == "reconcile"
+    assert event.severity == "critical"
+    assert "005930" in event.message or "000660" in event.message
+
+
+def test_on_step_예외시_notify_error_stage_step_error_class_포함(mocker: Any) -> None:
+    """C3 — executor.step 이 예외 → notify_error(stage="step", error_class=<클래스명>) 1회.
+    entry/exit notify 는 미호출.
+    """
+    from stock_agent.execution import ExecutorError
+
+    fake_executor = MagicMock(spec=Executor)
+    fake_executor.step.side_effect = ExecutorError("step 내부 오류")
+    fake_notifier = MagicMock(spec=Notifier)
+    mocker.patch("stock_agent.main.logger")
+
+    runtime = _make_runtime(
+        executor=fake_executor,
+        notifier=fake_notifier,
+        session_status=SessionStatus(started=True),
+    )
+    clock = lambda: _kst(9, 5)  # noqa: E731
+
+    cb = _on_step(runtime, clock)
+    cb()
+
+    fake_notifier.notify_error.assert_called_once()
+    event: ErrorEvent = fake_notifier.notify_error.call_args[0][0]
+    assert event.stage == "step"
+    assert event.error_class == "ExecutorError"
+    assert event.severity == "error"
+    fake_notifier.notify_entry.assert_not_called()
+    fake_notifier.notify_exit.assert_not_called()
+
+
+def test_on_step_세션_미시작_notify_미호출(mocker: Any) -> None:
+    """C4 — session_status.started==False 이면 notify_* 일절 미호출 (skip 경로)."""
+    fake_executor = MagicMock(spec=Executor)
+    fake_notifier = MagicMock(spec=Notifier)
+    mocker.patch("stock_agent.main.logger")
+
+    runtime = _make_runtime(
+        executor=fake_executor,
+        notifier=fake_notifier,
+        session_status=SessionStatus(started=False),
+    )
+    clock = lambda: _kst(9, 5)  # noqa: E731
+
+    cb = _on_step(runtime, clock)
+    cb()
+
+    fake_notifier.notify_entry.assert_not_called()
+    fake_notifier.notify_exit.assert_not_called()
+    fake_notifier.notify_error.assert_not_called()
+
+
+# ===========================================================================
+# 그룹 D — _on_force_close notifier 통합
+# ===========================================================================
+
+
+def test_on_force_close_정상경로_exit_events_notify_exit_호출(mocker: Any) -> None:
+    """D1 — 정상 경로 exit_events 1건 → notify_exit 1회, notify_error 미호출."""
+    x1 = _make_exit_event("005930", reason="force_close")
+    report = _make_step_report(exit_events=(x1,))
+    fake_executor = MagicMock(spec=Executor)
+    fake_executor.force_close_all.return_value = report
+    fake_notifier = MagicMock(spec=Notifier)
+    mocker.patch("stock_agent.main.logger")
+
+    runtime = _make_runtime(executor=fake_executor, notifier=fake_notifier)
+    clock = lambda: _kst(15, 0)  # noqa: E731
+
+    cb = _on_force_close(runtime, clock)
+    cb()
+
+    fake_notifier.notify_exit.assert_called_once_with(x1)
+    fake_notifier.notify_error.assert_not_called()
+
+
+def test_on_force_close_예외시_notify_error_critical_및_logger_critical(
+    mocker: Any,
+) -> None:
+    """D2 — force_close_all 예외 → notify_error(stage="force_close", severity="critical") 1회.
+    logger.critical 도 동시 호출 (기존 계약 유지).
+    """
+    fake_executor = MagicMock(spec=Executor)
+    fake_executor.force_close_all.side_effect = RuntimeError("청산 API 실패")
+    fake_notifier = MagicMock(spec=Notifier)
+    mock_logger = mocker.patch("stock_agent.main.logger")
+
+    runtime = _make_runtime(executor=fake_executor, notifier=fake_notifier)
+    clock = lambda: _kst(15, 0)  # noqa: E731
+
+    cb = _on_force_close(runtime, clock)
+    cb()
+
+    fake_notifier.notify_error.assert_called_once()
+    event: ErrorEvent = fake_notifier.notify_error.call_args[0][0]
+    assert event.stage == "force_close"
+    assert event.severity == "critical"
+    mock_logger.critical.assert_called_once()
+
+
+# ===========================================================================
+# 그룹 E — _on_daily_report notifier 통합
+# ===========================================================================
+
+
+def test_on_daily_report_정상경로_notify_daily_summary_1회(mocker: Any) -> None:
+    """E1 — 정상 경로에서 notify_daily_summary 1회. summary 필드 검증."""
+    fake_executor = MagicMock(spec=Executor)
+    fake_executor.is_halted = False
+    fake_executor.last_reconcile = None
+
+    fake_rm = MagicMock(spec=RiskManager)
+    fake_rm.daily_realized_pnl_krw = 10_000
+    fake_rm.entries_today = 2
+    fake_rm.active_positions = ()
+    fake_rm.starting_capital_krw = 1_000_000
+
+    fake_notifier = MagicMock(spec=Notifier)
+    mocker.patch("stock_agent.main.logger")
+
+    runtime = _make_runtime(executor=fake_executor, risk_manager=fake_rm, notifier=fake_notifier)
+    now = _kst(15, 30)
+    clock = lambda: now  # noqa: E731
+
+    cb = _on_daily_report(runtime, clock)
+    cb()
+
+    fake_notifier.notify_daily_summary.assert_called_once()
+    summary: DailySummary = fake_notifier.notify_daily_summary.call_args[0][0]
+    assert summary.session_date == now.date()
+    assert summary.realized_pnl_krw == 10_000
+    assert summary.entries_today == 2
+    assert summary.halted is False
+
+
+def test_on_daily_report_realized_pnl_pct_계산(mocker: Any) -> None:
+    """E2 — starting_capital=1_000_000, pnl=15_000 → realized_pnl_pct ≈ 1.5."""
+    fake_executor = MagicMock(spec=Executor)
+    fake_executor.is_halted = False
+    fake_executor.last_reconcile = None
+
+    fake_rm = MagicMock(spec=RiskManager)
+    fake_rm.daily_realized_pnl_krw = 15_000
+    fake_rm.entries_today = 1
+    fake_rm.active_positions = ()
+    fake_rm.starting_capital_krw = 1_000_000
+
+    fake_notifier = MagicMock(spec=Notifier)
+    mocker.patch("stock_agent.main.logger")
+
+    runtime = _make_runtime(executor=fake_executor, risk_manager=fake_rm, notifier=fake_notifier)
+    clock = lambda: _kst(15, 30)  # noqa: E731
+
+    cb = _on_daily_report(runtime, clock)
+    cb()
+
+    summary: DailySummary = fake_notifier.notify_daily_summary.call_args[0][0]
+    assert summary.realized_pnl_pct == pytest.approx(1.5, abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    "starting_capital",
+    [None, 0],
+    ids=["starting_capital_None", "starting_capital_0"],
+)
+def test_on_daily_report_realized_pnl_pct_None_when_starting_0_or_None(
+    mocker: Any,
+    starting_capital: int | None,
+) -> None:
+    """E3 — starting_capital_krw=None 또는 0 이면 realized_pnl_pct is None."""
+    fake_executor = MagicMock(spec=Executor)
+    fake_executor.is_halted = False
+    fake_executor.last_reconcile = None
+
+    fake_rm = MagicMock(spec=RiskManager)
+    fake_rm.daily_realized_pnl_krw = 5_000
+    fake_rm.entries_today = 1
+    fake_rm.active_positions = ()
+    fake_rm.starting_capital_krw = starting_capital
+
+    fake_notifier = MagicMock(spec=Notifier)
+    mocker.patch("stock_agent.main.logger")
+
+    runtime = _make_runtime(executor=fake_executor, risk_manager=fake_rm, notifier=fake_notifier)
+    clock = lambda: _kst(15, 30)  # noqa: E731
+
+    cb = _on_daily_report(runtime, clock)
+    cb()
+
+    summary: DailySummary = fake_notifier.notify_daily_summary.call_args[0][0]
+    assert summary.realized_pnl_pct is None
+
+
+def test_on_daily_report_mismatch_symbols_from_last_reconcile(mocker: Any) -> None:
+    """E4 — last_reconcile.mismatch_symbols=("A",) → DailySummary.mismatch_symbols==("A",).
+    last_reconcile=None 이면 mismatch_symbols==().
+    """
+    fake_executor_with_reconcile = MagicMock(spec=Executor)
+    fake_executor_with_reconcile.is_halted = False
+    # last_reconcile 은 spec=Executor 에 있으므로 return_value 로 설정 불가 —
+    # PropertyMock 또는 직접 속성으로 설정.
+    fake_reconcile = ReconcileReport(
+        broker_holdings={},
+        risk_holdings={},
+        mismatch_symbols=("A",),
+    )
+    type(fake_executor_with_reconcile).last_reconcile = PropertyMock(return_value=fake_reconcile)
+
+    fake_rm = MagicMock(spec=RiskManager)
+    fake_rm.daily_realized_pnl_krw = 0
+    fake_rm.entries_today = 0
+    fake_rm.active_positions = ()
+    fake_rm.starting_capital_krw = 1_000_000
+
+    fake_notifier = MagicMock(spec=Notifier)
+    mocker.patch("stock_agent.main.logger")
+
+    runtime = _make_runtime(
+        executor=fake_executor_with_reconcile,
+        risk_manager=fake_rm,
+        notifier=fake_notifier,
+    )
+    clock = lambda: _kst(15, 30)  # noqa: E731
+
+    cb = _on_daily_report(runtime, clock)
+    cb()
+
+    summary_with: DailySummary = fake_notifier.notify_daily_summary.call_args[0][0]
+    assert summary_with.mismatch_symbols == ("A",)
+
+    # last_reconcile=None 경우
+    fake_executor_none = MagicMock(spec=Executor)
+    fake_executor_none.is_halted = False
+    type(fake_executor_none).last_reconcile = PropertyMock(return_value=None)
+
+    fake_notifier2 = MagicMock(spec=Notifier)
+    runtime2 = _make_runtime(
+        executor=fake_executor_none,
+        risk_manager=fake_rm,
+        notifier=fake_notifier2,
+    )
+
+    cb2 = _on_daily_report(runtime2, clock)
+    cb2()
+
+    summary_none: DailySummary = fake_notifier2.notify_daily_summary.call_args[0][0]
+    assert summary_none.mismatch_symbols == ()

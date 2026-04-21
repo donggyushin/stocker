@@ -57,7 +57,7 @@ from stock_agent.broker import (
 from stock_agent.broker.kis_client import KisClient
 from stock_agent.data import MinuteBar
 from stock_agent.risk import RiskManager
-from stock_agent.strategy import EntrySignal, ExitSignal, ORBStrategy, Signal
+from stock_agent.strategy import EntrySignal, ExitReason, ExitSignal, ORBStrategy, Signal
 
 KST = timezone(timedelta(hours=9))
 
@@ -265,13 +265,55 @@ class ReconcileReport:
 
 
 @dataclass(frozen=True, slots=True)
+class EntryEvent:
+    """체결 확정된 진입 이벤트 — notifier / storage 소비용.
+
+    `fill_price` 는 슬리피지 반영된 추정 체결가(`backtest.costs.buy_fill_price`
+    와 동일 계산), `ref_price` 는 시그널 생성 당시 참고가. timestamp 는 `step`
+    에 주입된 `now` 인자로 KST aware datetime.
+    """
+
+    symbol: str
+    qty: int
+    fill_price: Decimal
+    ref_price: Decimal
+    timestamp: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ExitEvent:
+    """체결 확정된 청산 이벤트 — notifier / storage 소비용.
+
+    `net_pnl_krw` 는 수수료·거래세 반영 순손익(`_compute_net_pnl` 결과와 동일).
+    `reason` 은 `"stop_loss" | "take_profit" | "force_close"` — `ExitReason`
+    재사용(strategy/base.py). 타입이 `ExitReason` 이므로 소비자(notifier 등)는
+    값 범위 가정을 정적 타입으로 보장받는다 (ADR-0012 후속 보강 2026-04-21).
+    """
+
+    symbol: str
+    qty: int
+    fill_price: Decimal
+    reason: ExitReason
+    net_pnl_krw: int
+    timestamp: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class StepReport:
-    """`step(now)` 의 결과 — 한 sweep 의 처리 요약."""
+    """`step(now)` 의 결과 — 한 sweep 의 처리 요약.
+
+    `entry_events` / `exit_events` 는 해당 sweep 에서 체결 확정된 진입·청산을
+    순서대로 담는다(빈 tuple 기본값 — backward compat). notifier 는 이 tuple
+    을 소비해 텔레그램 알림을 푸시한다. 로그(`executor.entry.filled` 등) 는
+    감사 추적 목적으로 유지된다 — 알림과 로그는 독립 채널.
+    """
 
     processed_bars: int
     orders_submitted: int
     halted: bool
     reconcile: ReconcileReport
+    entry_events: tuple[EntryEvent, ...] = ()
+    exit_events: tuple[ExitEvent, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,6 +363,9 @@ class Executor:
         self._last_processed_bar_time: dict[str, datetime] = {}
         self._open_lots: dict[str, _OpenLot] = {}
         self._halt: bool = False
+        self._last_reconcile: ReconcileReport | None = None
+        self._sweep_entry_events: list[EntryEvent] = []
+        self._sweep_exit_events: list[ExitEvent] = []
 
     # ---- 세션 -----------------------------------------------------------
 
@@ -353,6 +398,8 @@ class Executor:
                 "start_session(session_date, starting_capital_krw) 를 먼저 호출하세요."
             )
 
+        self._sweep_entry_events = []
+        self._sweep_exit_events = []
         reconcile_report = self.reconcile()
         processed_bars = 0
         orders_submitted = 0
@@ -376,6 +423,8 @@ class Executor:
             orders_submitted=orders_submitted,
             halted=self.is_halted,
             reconcile=reconcile_report,
+            entry_events=tuple(self._sweep_entry_events),
+            exit_events=tuple(self._sweep_exit_events),
         )
 
     def force_close_all(self, now: datetime) -> StepReport:
@@ -389,6 +438,8 @@ class Executor:
                 "Executor.force_close_all: 세션이 시작되지 않았습니다. "
                 "start_session 을 먼저 호출하세요."
             )
+        self._sweep_entry_events = []
+        self._sweep_exit_events = []
         reconcile_report = self.reconcile()
         signals = self._strategy.on_time(now)
         orders_submitted = self._process_signals(signals, now)
@@ -397,6 +448,8 @@ class Executor:
             orders_submitted=orders_submitted,
             halted=self.is_halted,
             reconcile=reconcile_report,
+            entry_events=tuple(self._sweep_entry_events),
+            exit_events=tuple(self._sweep_exit_events),
         )
 
     # ---- 상태 동기화 ---------------------------------------------------
@@ -424,16 +477,27 @@ class Executor:
                 syms=mismatch,
             )
             self._halt = True
-        return ReconcileReport(
+        report = ReconcileReport(
             broker_holdings=MappingProxyType(broker_holdings),
             risk_holdings=MappingProxyType(risk_holdings),
             mismatch_symbols=mismatch,
         )
+        self._last_reconcile = report
+        return report
 
     @property
     def is_halted(self) -> bool:
         """재동기화 불일치(`_halt`) 또는 `RiskManager.is_halted` 둘 중 하나라도 True."""
         return self._halt or self._risk_manager.is_halted
+
+    @property
+    def last_reconcile(self) -> ReconcileReport | None:
+        """가장 최근 `reconcile()` 결과. 세션 시작 직후·호출 전에는 None.
+
+        notifier 가 일일 요약 생성 시 추가 네트워크 호출 없이 mismatch 상태를
+        참조하도록 캐시된 값. `reconcile()` 호출마다 갱신된다.
+        """
+        return self._last_reconcile
 
     # ---- 시그널 처리 ---------------------------------------------------
 
@@ -492,6 +556,15 @@ class Executor:
             price=entry_fill_price,
             ref=signal.price,
         )
+        self._sweep_entry_events.append(
+            EntryEvent(
+                symbol=signal.symbol,
+                qty=decision.qty,
+                fill_price=entry_fill_price,
+                ref_price=signal.price,
+                timestamp=now,
+            )
+        )
         return True
 
     def _handle_exit(self, signal: ExitSignal, now: datetime) -> bool:
@@ -540,6 +613,16 @@ class Executor:
             price=exit_fill_price,
             pnl=net_pnl,
             reason=signal.reason,
+        )
+        self._sweep_exit_events.append(
+            ExitEvent(
+                symbol=signal.symbol,
+                qty=lot.qty,
+                fill_price=exit_fill_price,
+                reason=signal.reason,
+                net_pnl_krw=net_pnl,
+                timestamp=now,
+            )
         )
         return True
 

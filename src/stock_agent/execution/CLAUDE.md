@@ -12,11 +12,17 @@ stock-agent 의 오케스트레이션 경계 모듈. `ORBStrategy` (시그널) +
 
 `Executor`, `ExecutorConfig`, `OrderSubmitter`, `LiveOrderSubmitter`,
 `DryRunOrderSubmitter`, `BalanceProvider`, `LiveBalanceProvider`, `BarSource`,
-`ExecutorError`, `StepReport`, `ReconcileReport`
+`ExecutorError`, `StepReport`, `ReconcileReport`, `EntryEvent`, `ExitEvent`
+(총 13종)
 
 ## 현재 상태 (2026-04-21 기준)
 
 **Phase 3 첫 산출물 — `Executor` 단독 (코드·테스트 레벨) 완료** (2026-04-21).
+
+**Phase 3 세 번째 산출물(`monitor/notifier.py`) 완료(2026-04-21)에 따른 확장**:
+`StepReport` 에 `entry_events`·`exit_events` 필드 추가 (기본값 `()` backward compat),
+`EntryEvent`·`ExitEvent` DTO 신설 + `execution/__init__` 재노출,
+`Executor.last_reconcile: ReconcileReport | None` 프로퍼티 신설.
 
 Phase 3 PASS 선언은 모의투자 환경에서 **연속 10영업일 무중단 + 0 unhandled
 error + 모든 주문이 SQLite 기록 + 텔레그램 알림 100% 수신** 후. 본 PR 은 그
@@ -28,7 +34,7 @@ error + 모든 주문이 SQLite 기록 + 텔레그램 알림 100% 수신** 후. 
 | 영역 | 위치 | 비고 |
 |---|---|---|
 | APScheduler 스케줄링 | `main.py` | `Executor.step(now)` 만 노출 — 호출 주기는 외부 책임 |
-| 텔레그램 알림 | `monitor/notifier.py` | 진입·청산·에러·일일 요약 |
+| ~~텔레그램 알림~~ | ~~`monitor/notifier.py`~~ | **완료 2026-04-21** — [monitor/CLAUDE.md](../monitor/CLAUDE.md) 참조 |
 | SQLite 영속화 | `storage/db.py` | 체결·주문·일일 PnL |
 | KIS 체결조회 API | `broker/` 확장 | 실체결가 정확도 향상 (현재 슬리피지 0.1% 가정) |
 | 부분체결 잔량 처리 | `broker/cancel_order` 등 | 시장가 즉시 전량 체결 가정 |
@@ -99,11 +105,47 @@ is_halted (property)                       # _halt or risk_manager.is_halted
 `@dataclass(frozen=True, slots=True)`. 필드:
 
 ```python
-StepReport(processed_bars: int, orders_submitted: int, halted: bool, reconcile: ReconcileReport)
-ReconcileReport(broker_holdings: Mapping[str, int], risk_holdings: Mapping[str, int], mismatch_symbols: tuple[str, ...])
+StepReport(
+    processed_bars: int,
+    orders_submitted: int,
+    halted: bool,
+    reconcile: ReconcileReport,
+    entry_events: tuple[EntryEvent, ...] = (),   # Phase 3 세 번째 산출물에서 추가
+    exit_events: tuple[ExitEvent, ...] = (),     # 기본값 () — backward compat
+)
+ReconcileReport(
+    broker_holdings: Mapping[str, int],
+    risk_holdings: Mapping[str, int],
+    mismatch_symbols: tuple[str, ...],
+)
 ```
 
 `ReconcileReport.broker_holdings` / `risk_holdings` 는 `MappingProxyType` 으로 래핑된 읽기 전용 뷰 — `report.broker_holdings["AAA"] = 99` 같은 외부 mutation 시도는 `TypeError`.
+
+`entry_events` / `exit_events` 는 `_handle_entry` / `_handle_exit` 체결 확정 후
+`_sweep_entry_events` / `_sweep_exit_events` 에 append 된 뒤 sweep 완료 시점에
+tuple 로 고정된다 — `main.py` 콜백이 소비해 `runtime.notifier.notify_*` 를 호출.
+
+### `EntryEvent` / `ExitEvent`
+
+`@dataclass(frozen=True, slots=True)`. `execution/__init__` 재노출.
+
+| DTO | 핵심 필드 |
+|---|---|
+| `EntryEvent` | `symbol: str`, `qty: int`, `fill_price: Decimal`, `ref_price: Decimal`, `timestamp: datetime` |
+| `ExitEvent` | `symbol: str`, `qty: int`, `fill_price: Decimal`, `reason: ExitReason`, `net_pnl_krw: int`, `timestamp: datetime` |
+
+소비자: `monitor/notifier.py` 의 `TelegramNotifier.notify_entry` / `notify_exit`.
+
+### `Executor` 추가 공개 API (Phase 3 세 번째 산출물)
+
+```python
+last_reconcile: ReconcileReport | None   # property, read-only
+```
+
+`reconcile()` 호출 시마다 내부 캐시 갱신. `_on_daily_report` 콜백이 추가 네트워크
+호출 없이 최신 mismatch 상태를 `DailySummary.mismatch_symbols` 에 담을 수 있도록.
+`start_session` 에서 `None` 으로 초기화.
 
 ## `step(now)` 흐름
 
@@ -237,11 +279,13 @@ generic `except Exception` 금지. `assert` 대신 명시적 예외. broker/stra
 
 ## 소비자 참고
 
-- **`main.py`** (Phase 3 두 번째 산출물, 미착수): `APScheduler` 로
-  09:00 시작·09:30 OR 확정·장중 `step(now)` 폴링·15:00 `force_close_all`·
-  15:30 일일 리포트. `LiveOrderSubmitter` / `LiveBalanceProvider` 를 주입.
-- **`monitor/notifier.py`** (Phase 3 세 번째 산출물, 미착수): `Executor`
-  반환 `StepReport` / `ReconcileReport` 와 logger sink 를 받아 텔레그램 알림.
+- **`main.py`** (Phase 3 두 번째 산출물, **완료 2026-04-21**): `APScheduler` 로
+  09:00 시작·장중 `step(now)` 폴링·15:00 `force_close_all`·15:30 일일 리포트.
+  `LiveOrderSubmitter` / `LiveBalanceProvider` 를 주입.
+- **`monitor/notifier.py`** (Phase 3 세 번째 산출물, **완료 2026-04-21**):
+  `Executor` 반환 `StepReport.entry_events` / `exit_events` 와
+  `Executor.last_reconcile` 를 소비해 텔레그램 알림.
+  → [src/stock_agent/monitor/CLAUDE.md](../monitor/CLAUDE.md) 참조.
 - **`storage/db.py`** (Phase 3 네 번째 산출물, 미착수): `RiskManager` 의 체결
   통지 및 `Executor` 의 PnL 계산 결과를 SQLite 에 영속화.
 - **드라이런 검증**: `DryRunOrderSubmitter` 를 주입하면 `Executor` 는 KIS 에

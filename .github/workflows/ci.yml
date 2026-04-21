@@ -41,5 +41,10 @@ jobs:
       - name: Format check (black)
         run: uv run black --check src scripts tests
 
+      - name: Type check (pyright, src/scripts only)
+        # tests/ 는 MagicMock spec 추론 등 목킹 특유의 false positive 가 있어
+        # 범위 밖 — 후속 PR 에서 baseline 캡처 후 점진 도입.
+        run: uv run pyright src scripts
+
       - name: Tests (pytest)
         run: uv run pytest -v
