@@ -44,6 +44,7 @@ from collections.abc import Iterator
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import NoReturn
 
 from loguru import logger
 
@@ -148,11 +149,15 @@ class MinuteCsvBarLoader:
         return heapq.merge(*per_symbol_iters, key=lambda b: (b.bar_time, b.symbol))
 
 
-def _raise_error(msg: str, *, cause: BaseException | None = None) -> None:
+def _raise_error(msg: str, *, cause: BaseException | None = None) -> NoReturn:
     """`MinuteCsvLoadError` 로깅 + raise 헬퍼.
 
     `cause=None` → `from None` (검증-실패형, 원본 예외 없음).
     `cause=exc` → `from exc` (stdlib 예외 래핑, `__cause__` 보존).
+
+    반환 타입은 `NoReturn` — 호출 후 실행이 이어지지 않음을 정적 타입으로 보장
+    (Pyright 가 `_iter_symbol_file` 의 `header` 변수를 unbound 로 오판하지
+    않도록).
     """
     logger.error(msg)
     if cause is None:
