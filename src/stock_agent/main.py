@@ -3,12 +3,13 @@
 Phase 3 두 번째 산출물. 이 모듈은 **조립만** 한다 — 전략·리스크·브로커·시세의
 단독 동작 계약은 이미 잠겨 있다.
 
-스케줄 (plan.md Phase 3, ADR-0011)
-    09:00 KST  → on_session_start (RiskManager/Executor 세션 리셋)
-    09:30 KST  → (자동 — ORBStrategy.on_bar 가 분봉 경계에서 OR-High 자동 확정)
+스케줄 (plan.md Phase 3, ADR-0011) — `_install_jobs` 가 등록하는 cron 4종
+    09:00 KST  → on_session_start      (RiskManager/Executor 세션 리셋)
     매분 00s  → on_step                (Executor.step, 9-14시 평일)
     15:00 KST  → on_force_close         (Executor.force_close_all)
     15:30 KST  → on_daily_report        (일일 요약 로그)
+
+※ 09:30 OR-High 확정은 별도 cron 이 아닌 `on_step` 루프의 `ORBStrategy.on_bar` 부작용이다.
 
 범위 (이번 PR)
     - `main.py` + APScheduler wiring + 드라이런 CLI 플래그
@@ -47,6 +48,7 @@ from typing import Any
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from loguru import logger
+from pydantic import ValidationError
 
 from stock_agent.broker import KisClient
 from stock_agent.config import Settings, get_settings
@@ -78,12 +80,27 @@ ClockFn = Callable[[], datetime]
 """KST aware datetime 을 반환하는 시계 함수. 테스트는 `lambda: _kst(9, 0)` 주입."""
 
 
+@dataclass(slots=True)
+class SessionStatus:
+    """일일 세션 상태 — silent failure 루프 차단용 (C1, ADR-0011 결정 5 연장).
+
+    `on_session_start` 성공 여부와 `on_step` 의 경고 로그 dedupe 플래그를 담는다.
+    `Runtime` 자체는 frozen 이지만 본 객체는 내부 필드 mutation 이 필요하므로
+    별도 컨테이너로 분리. 다음 영업일 `on_session_start` 가 성공하면 자연 복구.
+    """
+
+    started: bool = False
+    fail_logged: bool = False
+
+
 @dataclass(frozen=True, slots=True)
 class Runtime:
     """조립 완료된 실행 환경.
 
     `main()` 은 이 컨테이너를 들고 시그널 핸들러·리소스 정리·스케줄러 시작을
-    조율한다. `build_runtime` 이 반환.
+    조율한다. `build_runtime` 이 반환. `risk_manager` 는 `_on_daily_report` 가
+    공개 경로로 접근하기 위한 참조(Executor private 의존 제거), `session_status`
+    는 silent failure 루프 차단용 (C1).
     """
 
     scheduler: BlockingScheduler
@@ -91,6 +108,8 @@ class Runtime:
     realtime_store: RealtimeDataStore
     kis_client: KisClient
     args: argparse.Namespace
+    risk_manager: RiskManager
+    session_status: SessionStatus
 
 
 # ---- CLI -----------------------------------------------------------------
@@ -111,7 +130,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--starting-capital",
         type=int,
         default=1_000_000,
-        help="시작 자본(KRW). 잔고 total 과 min 을 취해 보수적으로 적용.",
+        help=(
+            "시작 자본(KRW). 잔고 withdrawable 과 min 을 취해 보수적으로 적용 "
+            "— RiskManager 진입 사이징·서킷브레이커가 매수 가능 현금 기준으로 동작."
+        ),
     )
     parser.add_argument(
         "--universe-path",
@@ -166,6 +188,8 @@ def build_runtime(
         RuntimeError: `settings.has_live_keys is False` (시세 키 미주입) 또는
             유니버스 `tickers` 가 비어있는 경우.
         UniverseLoadError: `universe_loader` 가 yaml 파싱에서 실패한 경우.
+        OSError: `kis_client_factory` / `realtime_store_factory` 초기화 중
+            발생 가능 (네트워크·토큰 파일 I/O). `main()` 이 exit 3 으로 매핑.
     """
     if not settings.has_live_keys:
         raise RuntimeError(
@@ -214,6 +238,8 @@ def build_runtime(
         realtime_store=realtime_store,
         kis_client=kis_client,
         args=args,
+        risk_manager=risk_manager,
+        session_status=SessionStatus(),
     )
     _install_jobs(scheduler, runtime, args, clock=clock)
     return runtime
@@ -272,37 +298,70 @@ def _on_session_start(
     args: argparse.Namespace,
     clock: ClockFn,
 ) -> Callable[[], None]:
-    """09:00 — 잔고 조회 후 보수적으로 min(CLI 자본, 잔고 total) 로 세션 시작."""
+    """09:00 — 잔고 조회 후 보수적으로 `min(CLI 자본, 잔고 withdrawable)` 로 세션 시작.
+
+    `withdrawable` (실제 매수 가능 현금) 기준이라 RiskManager 진입 사이징·
+    서킷브레이커(`-starting_capital × 2%`) 가 실제 손실과 맞물린다. `total`
+    (평가금액 포함) 이면 일일 손실 한도가 구조적으로 느슨해지므로 사용 금지.
+
+    실패 분기 (withdrawable ≤ 0 또는 예외) 에선 `session_status.started = False`
+    로 리셋해 이후 `on_step` 이 silent failure 루프에 빠지지 않고 첫 진입에서
+    warning 1회만 남기고 스킵한다 (C1 — `on_step` 의 dedupe 가드와 연결).
+
+    예외 전파 금지 — ADR-0011 결정 5 (콜백 예외로 스케줄러 연속성 파괴 방지).
+    """
 
     def callback() -> None:
         try:
             balance = runtime.kis_client.get_balance()
-            starting_capital = min(int(args.starting_capital), int(balance.total))
+            starting_capital = min(int(args.starting_capital), int(balance.withdrawable))
             if starting_capital <= 0:
                 logger.error(
                     "main.session_start: 시작 자본이 0 이하입니다 "
-                    "(cli={cli}, balance_total={t}). 오늘은 매매 중단.",
+                    "(cli={cli}, balance_withdrawable={w}). 오늘은 매매 중단.",
                     cli=args.starting_capital,
-                    t=balance.total,
+                    w=balance.withdrawable,
                 )
+                runtime.session_status.started = False
+                runtime.session_status.fail_logged = False
                 return
             now = clock()
             runtime.executor.start_session(now.date(), starting_capital)
+            runtime.session_status.started = True
+            runtime.session_status.fail_logged = False
             logger.info(
                 "main.session_start date={d} capital={c}",
                 d=now.date(),
                 c=starting_capital,
             )
-        except Exception as e:  # noqa: BLE001 — 콜백 예외로 스케줄러가 죽지 않게
+        except Exception as e:  # noqa: BLE001 — ADR-0011 결정 5 (스케줄러 연속성)
             logger.exception(f"main.session_start 실패: {e.__class__.__name__}: {e}")
+            runtime.session_status.started = False
+            runtime.session_status.fail_logged = False
 
     return callback
 
 
 def _on_step(runtime: Runtime, clock: ClockFn) -> Callable[[], None]:
-    """매분 00s — `Executor.step(now)` 로 reconcile + 분봉 처리 + 시각 트리거."""
+    """매분 00s — `Executor.step(now)` 로 reconcile + 분봉 처리 + 시각 트리거.
+
+    세션 미시작(`on_session_start` 실패) 상태면 `executor.step` 을 건너뛰고
+    `logger.warning` 을 **첫 호출에만 1회** 남긴다 (C1 silent failure 루프 차단).
+    dedupe 플래그는 `session_status.fail_logged` 에 기록, 다음 영업일
+    `on_session_start` 성공 시 자동 해제된다.
+
+    예외 전파 금지 — ADR-0011 결정 5.
+    """
 
     def callback() -> None:
+        if runtime.session_status.started is False:
+            if not runtime.session_status.fail_logged:
+                logger.warning(
+                    "main.step.skip: 세션 미시작 — 오늘은 매매 중단 "
+                    "(on_session_start 실패). 다음 영업일 09:00 까지 스킵 유지."
+                )
+                runtime.session_status.fail_logged = True
+            return
         try:
             now = clock()
             report = runtime.executor.step(now)
@@ -313,14 +372,18 @@ def _on_step(runtime: Runtime, clock: ClockFn) -> Callable[[], None]:
                 h=report.halted,
                 m=len(report.reconcile.mismatch_symbols),
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 — ADR-0011 결정 5 (스케줄러 연속성)
             logger.exception(f"main.step 실패: {e.__class__.__name__}: {e}")
 
     return callback
 
 
 def _on_force_close(runtime: Runtime, clock: ClockFn) -> Callable[[], None]:
-    """15:00 — 잔존 long 포지션 강제청산."""
+    """15:00 — 잔존 long 포지션 강제청산.
+
+    실패 시 `logger.critical` 로 severity 격상 (포지션 잔존 = 운영 리스크).
+    예외 전파 금지 — ADR-0011 결정 5.
+    """
 
     def callback() -> None:
         try:
@@ -331,7 +394,7 @@ def _on_force_close(runtime: Runtime, clock: ClockFn) -> Callable[[], None]:
                 o=report.orders_submitted,
                 h=report.halted,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 — ADR-0011 결정 5 (스케줄러 연속성)
             # 포지션 잔존 운영 리스크 — 텔레그램 없는 이번 PR 범위에서 유일한 경보 채널.
             logger.critical(
                 f"main.force_close 실패 — 포지션 잔존 위험: {e.__class__.__name__}: {e}"
@@ -341,17 +404,23 @@ def _on_force_close(runtime: Runtime, clock: ClockFn) -> Callable[[], None]:
 
 
 def _on_daily_report(runtime: Runtime, clock: ClockFn) -> Callable[[], None]:
-    """15:30 — 당일 요약. Phase 3 후속에서 텔레그램 연결 예정, 현재는 로그 전용."""
+    """15:30 — 당일 요약 로그 (`runtime.risk_manager` 공개 프로퍼티 사용).
+
+    Executor private 속성(`_risk_manager`) 우회 경로를 제거하고 `Runtime` 에
+    직접 주입된 `RiskManager` 참조를 사용한다. 후속 PR(`monitor/notifier.py`)
+    이 같은 경로를 공유하도록 공개 경계를 확정한다.
+
+    예외 전파 금지 — ADR-0011 결정 5.
+    """
 
     def callback() -> None:
         try:
             now = clock()
-            executor = runtime.executor
-            halted = executor.is_halted
-            rm = getattr(executor, "_risk_manager", None)
-            pnl = getattr(rm, "daily_realized_pnl_krw", 0) if rm is not None else 0
-            entries = getattr(rm, "entries_today", 0) if rm is not None else 0
-            active = len(getattr(rm, "active_positions", ()) or ()) if rm is not None else 0
+            halted = runtime.executor.is_halted
+            rm = runtime.risk_manager
+            pnl = rm.daily_realized_pnl_krw
+            entries = rm.entries_today
+            active = len(rm.active_positions)
             logger.info(
                 "main.daily_report date={d} realized_pnl={pnl} entries={e} active={a} halted={h}",
                 d=now.date(),
@@ -360,7 +429,7 @@ def _on_daily_report(runtime: Runtime, clock: ClockFn) -> Callable[[], None]:
                 a=active,
                 h=halted,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 — ADR-0011 결정 5 (스케줄러 연속성)
             logger.exception(f"main.daily_report 실패: {e.__class__.__name__}: {e}")
 
     return callback
@@ -398,9 +467,16 @@ def _configure_logging(log_dir: Path) -> None:
 def _graceful_shutdown(runtime: Runtime, signum: int, frame: Any) -> None:
     """SIGINT/SIGTERM 핸들러 — 스케줄러·시세·KIS 리소스를 순서대로 정리.
 
+    **재진입 방어 (I4)**: 진입 즉시 SIGINT/SIGTERM 을 `SIG_DFL` 로 교체한다.
+    2차 시그널 도달 시 Python 기본 동작(즉시 종료)으로 넘겨, 정리 중 데몬
+    스레드 락 경합을 회피 — 포지션 잔존보다 락 경합이 더 위험.
+
     각 close 는 예외를 삼키고 warning 로그만 — 한 단계 실패가 이후 정리를
-    막지 않게. `main()` 의 finally 블록과 중복 호출돼도 `close()` 는 멱등.
+    막지 않게. `main()` 의 finally 블록과 중복 호출돼도 `close()` 는 멱등
+    (broker·realtime 모듈의 `_closed` 플래그로 보장).
     """
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
     logger.warning(f"main.graceful_shutdown signum={signum} — 리소스 정리 시작")
     try:
         runtime.scheduler.shutdown(wait=False)
@@ -450,8 +526,12 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as e:
         logger.exception(f"설정 로드 I/O 오류: {e}")
         return EXIT_IO_ERROR
-    except Exception as e:  # noqa: BLE001 — pydantic ValidationError 등 입력 오류 일반화
-        logger.exception(f"설정 로드 실패: {e.__class__.__name__}: {e}")
+    except (ValidationError, RuntimeError) as e:
+        # ValidationError: pydantic 설정 검증 실패. RuntimeError: 프로젝트 가드레일
+        # (키 원점 불일치·live 슬롯 부분 주입 등) 명시 전파 (broker/config 기조).
+        # ImportError 같은 프로그래밍 오류는 catch 하지 않고 전파시켜 traceback 으로
+        # 실패 — generic except 금지 기조(I3).
+        logger.error(f"설정 로드 실패: {e.__class__.__name__}: {e}")
         return EXIT_INPUT_ERROR
 
     try:
