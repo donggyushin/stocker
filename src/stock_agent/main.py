@@ -66,6 +66,13 @@ from stock_agent.execution import (
     LiveOrderSubmitter,
     OrderSubmitter,
 )
+from stock_agent.monitor import (
+    DailySummary,
+    ErrorEvent,
+    Notifier,
+    NullNotifier,
+    TelegramNotifier,
+)
 from stock_agent.risk import RiskConfig, RiskManager
 from stock_agent.strategy import ORBStrategy, StrategyConfig
 
@@ -100,7 +107,8 @@ class Runtime:
     `main()` 은 이 컨테이너를 들고 시그널 핸들러·리소스 정리·스케줄러 시작을
     조율한다. `build_runtime` 이 반환. `risk_manager` 는 `_on_daily_report` 가
     공개 경로로 접근하기 위한 참조(Executor private 의존 제거), `session_status`
-    는 silent failure 루프 차단용 (C1).
+    는 silent failure 루프 차단용 (C1). `notifier` 는 텔레그램 알림 라우팅 —
+    주입 실패 시 `NullNotifier` 로 폴백(알림 없이 세션 지속).
     """
 
     scheduler: BlockingScheduler
@@ -110,6 +118,7 @@ class Runtime:
     args: argparse.Namespace
     risk_manager: RiskManager
     session_status: SessionStatus
+    notifier: Notifier
 
 
 # ---- CLI -----------------------------------------------------------------
@@ -165,6 +174,26 @@ def _default_scheduler_factory() -> BlockingScheduler:
     return BlockingScheduler(timezone="Asia/Seoul")
 
 
+def _default_notifier_factory(settings: Settings, dry_run: bool) -> Notifier:
+    """기본 notifier 팩토리 — TelegramNotifier 조립.
+
+    `TelegramNotifier` 생성자에서 봇 조립·가드 검증이 일어나며, 실패 시
+    `RuntimeError` 전파 대신 `NullNotifier` 폴백(알림 부재가 세션 전체 실패
+    보다 위험하지 않음 — logger sink 로 동일 정보 획득 가능).
+    """
+    try:
+        return TelegramNotifier(
+            bot_token=settings.telegram_bot_token,
+            chat_id=settings.telegram_chat_id,
+            dry_run=dry_run,
+        )
+    except Exception as e:  # noqa: BLE001 — notifier 조립 실패는 세션을 죽이지 않는다
+        logger.warning(
+            f"main.notifier_factory 초기화 실패 — NullNotifier 폴백: {e.__class__.__name__}: {e}"
+        )
+        return NullNotifier()
+
+
 # ---- 런타임 조립 ---------------------------------------------------------
 
 
@@ -176,6 +205,7 @@ def build_runtime(
     realtime_store_factory: Callable[[Settings], RealtimeDataStore] | None = None,
     scheduler_factory: Callable[[], BlockingScheduler] | None = None,
     universe_loader: Callable[[Path | None], KospiUniverse] | None = None,
+    notifier_factory: Callable[[Settings, bool], Notifier] | None = None,
     clock: ClockFn | None = None,
 ) -> Runtime:
     """전략·리스크·브로커·시세·Executor·스케줄러를 조립해 `Runtime` 반환.
@@ -232,6 +262,8 @@ def build_runtime(
 
     build_scheduler = scheduler_factory or _default_scheduler_factory
     scheduler = build_scheduler()
+    build_notifier = notifier_factory or _default_notifier_factory
+    notifier = build_notifier(settings, args.dry_run)
     runtime = Runtime(
         scheduler=scheduler,
         executor=executor,
@@ -240,6 +272,7 @@ def build_runtime(
         args=args,
         risk_manager=risk_manager,
         session_status=SessionStatus(),
+        notifier=notifier,
     )
     _install_jobs(scheduler, runtime, args, clock=clock)
     return runtime
@@ -324,6 +357,18 @@ def _on_session_start(
                 )
                 runtime.session_status.started = False
                 runtime.session_status.fail_logged = False
+                runtime.notifier.notify_error(
+                    ErrorEvent(
+                        stage="session_start",
+                        error_class="StartingCapitalError",
+                        message=(
+                            f"시작 자본 0 이하 — cli={args.starting_capital} "
+                            f"withdrawable={balance.withdrawable}"
+                        ),
+                        timestamp=clock(),
+                        severity="error",
+                    )
+                )
                 return
             now = clock()
             runtime.executor.start_session(now.date(), starting_capital)
@@ -338,6 +383,15 @@ def _on_session_start(
             logger.exception(f"main.session_start 실패: {e.__class__.__name__}: {e}")
             runtime.session_status.started = False
             runtime.session_status.fail_logged = False
+            runtime.notifier.notify_error(
+                ErrorEvent(
+                    stage="session_start",
+                    error_class=e.__class__.__name__,
+                    message=str(e),
+                    timestamp=clock(),
+                    severity="error",
+                )
+            )
 
     return callback
 
@@ -372,8 +426,34 @@ def _on_step(runtime: Runtime, clock: ClockFn) -> Callable[[], None]:
                 h=report.halted,
                 m=len(report.reconcile.mismatch_symbols),
             )
+            for entry in report.entry_events:
+                runtime.notifier.notify_entry(entry)
+            for exit_ev in report.exit_events:
+                runtime.notifier.notify_exit(exit_ev)
+            if report.reconcile.mismatch_symbols:
+                runtime.notifier.notify_error(
+                    ErrorEvent(
+                        stage="reconcile",
+                        error_class="ReconcileMismatch",
+                        message=(
+                            "잔고↔RiskManager 포지션 불일치 — 운영자 수동 정리 필요. "
+                            f"symbols={list(report.reconcile.mismatch_symbols)}"
+                        ),
+                        timestamp=clock(),
+                        severity="critical",
+                    )
+                )
         except Exception as e:  # noqa: BLE001 — ADR-0011 결정 5 (스케줄러 연속성)
             logger.exception(f"main.step 실패: {e.__class__.__name__}: {e}")
+            runtime.notifier.notify_error(
+                ErrorEvent(
+                    stage="step",
+                    error_class=e.__class__.__name__,
+                    message=str(e),
+                    timestamp=clock(),
+                    severity="error",
+                )
+            )
 
     return callback
 
@@ -394,10 +474,21 @@ def _on_force_close(runtime: Runtime, clock: ClockFn) -> Callable[[], None]:
                 o=report.orders_submitted,
                 h=report.halted,
             )
+            for exit_ev in report.exit_events:
+                runtime.notifier.notify_exit(exit_ev)
         except Exception as e:  # noqa: BLE001 — ADR-0011 결정 5 (스케줄러 연속성)
-            # 포지션 잔존 운영 리스크 — 텔레그램 없는 이번 PR 범위에서 유일한 경보 채널.
+            # 포지션 잔존 운영 리스크 — 텔레그램 + logger.critical 이중 경보.
             logger.critical(
                 f"main.force_close 실패 — 포지션 잔존 위험: {e.__class__.__name__}: {e}"
+            )
+            runtime.notifier.notify_error(
+                ErrorEvent(
+                    stage="force_close",
+                    error_class=e.__class__.__name__,
+                    message=f"강제청산 실패 — 포지션 잔존 위험: {e}",
+                    timestamp=clock(),
+                    severity="critical",
+                )
             )
 
     return callback
@@ -421,6 +512,12 @@ def _on_daily_report(runtime: Runtime, clock: ClockFn) -> Callable[[], None]:
             pnl = rm.daily_realized_pnl_krw
             entries = rm.entries_today
             active = len(rm.active_positions)
+            starting = rm.starting_capital_krw
+            pct: float | None = (
+                (pnl / starting) * 100.0 if starting is not None and starting > 0 else None
+            )
+            last_rec = runtime.executor.last_reconcile
+            mismatch = last_rec.mismatch_symbols if last_rec is not None else ()
             logger.info(
                 "main.daily_report date={d} realized_pnl={pnl} entries={e} active={a} halted={h}",
                 d=now.date(),
@@ -429,8 +526,28 @@ def _on_daily_report(runtime: Runtime, clock: ClockFn) -> Callable[[], None]:
                 a=active,
                 h=halted,
             )
+            runtime.notifier.notify_daily_summary(
+                DailySummary(
+                    session_date=now.date(),
+                    starting_capital_krw=starting,
+                    realized_pnl_krw=pnl,
+                    realized_pnl_pct=pct,
+                    entries_today=entries,
+                    halted=halted,
+                    mismatch_symbols=mismatch,
+                )
+            )
         except Exception as e:  # noqa: BLE001 — ADR-0011 결정 5 (스케줄러 연속성)
             logger.exception(f"main.daily_report 실패: {e.__class__.__name__}: {e}")
+            runtime.notifier.notify_error(
+                ErrorEvent(
+                    stage="daily_report",
+                    error_class=e.__class__.__name__,
+                    message=str(e),
+                    timestamp=clock(),
+                    severity="error",
+                )
+            )
 
     return callback
 

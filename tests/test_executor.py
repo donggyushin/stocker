@@ -2056,3 +2056,394 @@ class TestHaltPersistence:
         fake_balance_provider.set_balance(_empty_balance())
         exc.start_session(_DATE, _STARTING_CAPITAL)
         assert not exc.is_halted
+
+
+# ===========================================================================
+# 26. EntryEvent / ExitEvent / StepReport 이벤트 필드 불변성 (notifier용)
+# ===========================================================================
+
+
+class TestEntryExitEventBackwardCompat:
+    """StepReport 기본값 backward compat — entry_events / exit_events 기본 빈 tuple."""
+
+    def test_step_report_필수_4개_필드만으로_생성시_이벤트_기본_빈_tuple(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """StepReport 는 entry_events / exit_events 기본값으로 빈 tuple 을 가진다.
+
+        기존 코드가 이 두 필드를 지정하지 않아도 AttributeError 없이 동작해야 한다.
+        """
+        exc = _make_executor(
+            strategy,
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+        )
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+        # 분봉 없음 → 진입·청산 이벤트 0건
+        report = exc.step(_kst(9, 32))
+
+        assert report.entry_events == ()
+        assert report.exit_events == ()
+
+
+class TestStepEntryEvent:
+    """step sweep 에서 진입 1회 → entry_events tuple 에 EntryEvent 1개."""
+
+    def test_진입_1회시_entry_events_1개_필드_정확(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """entry_events[0] 의 fill_price / ref_price / timestamp 가 계약과 일치."""
+        from stock_agent.backtest.costs import buy_fill_price
+
+        cfg = ExecutorConfig(slippage_rate=Decimal("0.001"))
+        now = _kst(9, 32)
+        exc = _make_executor(
+            strategy,
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+            config=cfg,
+            clock=lambda: now,
+        )
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+
+        or_bars = [
+            _bar(_SYMBOL_A, 9, h, close=49_000, high=49_500, low=48_500) for h in range(0, 30)
+        ]
+        breakout_bar = _bar(_SYMBOL_A, 9, 31, close=50_100, high=50_100, low=50_000)
+        fake_bar_source.set_bars(_SYMBOL_A, or_bars + [breakout_bar])
+
+        report = exc.step(now)
+
+        assert len(report.entry_events) == 1
+        ev = report.entry_events[0]
+        assert ev.symbol == _SYMBOL_A
+        expected_fill = buy_fill_price(Decimal("50100"), Decimal("0.001"))
+        assert ev.fill_price == pytest.approx(expected_fill, abs=Decimal("1"))
+        assert ev.ref_price == Decimal("50100")
+        assert ev.timestamp == now
+
+
+class TestStepExitEvent:
+    """step sweep 에서 청산 1회 → exit_events tuple 에 ExitEvent 1개."""
+
+    def test_청산_1회시_exit_events_1개_필드_정확(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """exit_events[0] 의 fill_price / reason / net_pnl_krw / timestamp 계약 검증."""
+        from stock_agent.backtest.costs import sell_fill_price
+
+        cfg = ExecutorConfig(slippage_rate=Decimal("0.001"))
+        now_entry = _kst(9, 32)
+        now_exit = _kst(9, 36)
+        exc = _make_executor(
+            strategy,
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+            config=cfg,
+            clock=lambda: now_entry,
+        )
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+
+        # OR → 진입
+        or_bars = [
+            _bar(_SYMBOL_A, 9, h, close=49_000, high=49_500, low=48_500) for h in range(0, 30)
+        ]
+        breakout_bar = _bar(_SYMBOL_A, 9, 31, close=50_100, high=50_100, low=50_000)
+        fake_bar_source.set_bars(_SYMBOL_A, or_bars + [breakout_bar])
+        exc.step(now_entry)
+        assert len(risk_manager.active_positions) == 1
+
+        # 손절 bar 공급 — clock 을 now_exit 로 전환
+        # ORBStrategy 의 stop_price 는 entry_price 기준이 아닌 signal.price(=bar.close) 기준.
+        # 따라서 손절 발동 조건을 확실히 만족하도록 low 를 충분히 낮게 설정한다.
+        stop_price_ref = Decimal("50100") * (Decimal("1") - Decimal("0.015"))
+        stop_int = int(stop_price_ref)
+        stop_bar = _bar(
+            _SYMBOL_A,
+            9,
+            35,
+            close=stop_int - 100,
+            high=stop_int - 50,
+            low=stop_int - 200,
+        )
+        fake_bar_source.set_bars(_SYMBOL_A, [stop_bar])
+
+        # clock 을 now_exit 로 바꾸기 위해 새 Executor 대신 직접 분봉 처리 호출
+        # _make_executor 에서 clock 을 고정했으므로, step 에 now_exit 를 전달해 timestamp 검증
+        report_exit = exc.step(now_exit)
+
+        assert len(report_exit.exit_events) == 1
+        ev = report_exit.exit_events[0]
+        assert ev.symbol == _SYMBOL_A
+        expected_fill = sell_fill_price(stop_price_ref, Decimal("0.001"))
+        assert ev.fill_price == pytest.approx(expected_fill, abs=Decimal("1"))
+        assert ev.reason in ("stop_loss", "take_profit", "force_close")
+        # net_pnl_krw 와 RiskManager 가 기록한 daily_realized_pnl_krw 가 일치
+        assert ev.net_pnl_krw == risk_manager.daily_realized_pnl_krw
+        assert ev.timestamp == now_exit
+
+
+class TestSweepSnapshotIsolation:
+    """sweep 단위 스냅샷 — 연속 호출 시 이벤트 누적 안 함."""
+
+    def test_sweep1_진입_후_sweep2_추가_트리거_없으면_entry_events_빈_tuple(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """첫 번째 step → entry_events 1개.
+
+        두 번째 step → 신규 진입 없으면 entry_events 빈 tuple.
+        """
+        exc = _make_executor(
+            strategy,
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+        )
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+
+        # OR → 돌파 → 진입
+        or_bars = [
+            _bar(_SYMBOL_A, 9, h, close=49_000, high=49_500, low=48_500) for h in range(0, 30)
+        ]
+        breakout_bar = _bar(_SYMBOL_A, 9, 31, close=50_100, high=50_100, low=50_000)
+        fake_bar_source.set_bars(_SYMBOL_A, or_bars + [breakout_bar])
+        report1 = exc.step(_kst(9, 32))
+        assert len(report1.entry_events) == 1
+
+        # 두 번째 sweep — 신규 분봉 없음
+        fake_bar_source.set_bars(_SYMBOL_A, [])
+        report2 = exc.step(_kst(9, 33))
+        assert report2.entry_events == ()
+
+
+class TestForceCloseAllExitEvents:
+    """force_close_all 경로에서도 exit_events 가 채워진다."""
+
+    def test_force_close_all_exit_events_채워짐_entry_events_빈_tuple(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """15:00 강제청산 → StepReport.exit_events 에 ExitEvent(reason 포함),
+        processed_bars == 0, entry_events == ().
+        """
+        exc = _make_executor(
+            strategy,
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+        )
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+
+        # OR → 진입
+        for m in range(0, 30):
+            strategy.on_bar(_bar(_SYMBOL_A, 9, m, close=49_000, high=49_500, low=48_500))
+        strategy.on_bar(_bar(_SYMBOL_A, 9, 31, close=50_100, high=50_100, low=50_000))
+        risk_manager.record_entry(_SYMBOL_A, Decimal("50050"), 10, _kst(9, 31))
+        # _open_lots 에도 직접 진입 기록 (Executor 우회 진입 → fallback 경로 허용)
+        # 이 테스트는 exit_events 생성 자체를 확인하므로 fallback 경로도 무방
+
+        report = exc.force_close_all(_kst(15, 0))
+
+        assert report.processed_bars == 0
+        assert report.entry_events == ()
+        assert len(report.exit_events) == 1
+        ev = report.exit_events[0]
+        assert ev.symbol == _SYMBOL_A
+        assert ev.reason == "force_close"
+
+
+class TestEntryEventRiskRejected:
+    """RiskManager 거부 시 entry_events 비어있음."""
+
+    def test_risk_거부시_entry_events_빈_tuple(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """잔고 0원 → evaluate_entry 거부 → entry_events == ()."""
+        fake_balance_provider.set_balance(_empty_balance(withdrawable=0))
+        exc = _make_executor(
+            strategy,
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+        )
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+
+        or_bars = [
+            _bar(_SYMBOL_A, 9, h, close=49_000, high=49_500, low=48_500) for h in range(0, 30)
+        ]
+        breakout_bar = _bar(_SYMBOL_A, 9, 31, close=50_000, high=50_000, low=49_900)
+        fake_bar_source.set_bars(_SYMBOL_A, or_bars + [breakout_bar])
+        report = exc.step(_kst(9, 32))
+
+        assert report.entry_events == ()
+        assert len(fake_order_submitter.buy_calls) == 0
+
+
+class TestLastReconcileProperty:
+    """last_reconcile 프로퍼티 — 세션 시작 직후 None, step 후 갱신."""
+
+    def test_세션_직후_reconcile_미호출시_None(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        exc = _make_executor(
+            strategy,
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+        )
+        # start_session 전에는 None
+        assert exc.last_reconcile is None
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+        # start_session 은 reconcile 을 호출하지 않는다
+        assert exc.last_reconcile is None
+
+    def test_step_호출_후_last_reconcile_ReconcileReport_인스턴스(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        exc = _make_executor(
+            strategy,
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+        )
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+        report = exc.step(_kst(9, 32))
+
+        assert exc.last_reconcile is not None
+        assert isinstance(exc.last_reconcile, ReconcileReport)
+        # step 내부에서 호출된 reconcile 의 반환값과 동일 객체
+        assert exc.last_reconcile is report.reconcile
+
+    def test_force_close_all_후에도_last_reconcile_갱신됨(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        exc = _make_executor(
+            strategy,
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+        )
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+        report = exc.force_close_all(_kst(15, 0))
+
+        assert exc.last_reconcile is not None
+        assert exc.last_reconcile is report.reconcile
+
+
+class TestLastReconcileMismatchPersistence:
+    """last_reconcile mismatch 후에도 살아있음, 해소 시 빈 tuple 로 갱신."""
+
+    def test_mismatch_후_last_reconcile_mismatch_symbols_비어있지_않음(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """reconcile mismatch → _halt=True 이후에도 last_reconcile.mismatch_symbols 유지."""
+        fake_balance_provider.set_balance(_balance_with_holding(_SYMBOL_A, qty=10))
+        exc = _make_executor(
+            strategy,
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+        )
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+        exc.reconcile()
+
+        assert exc.is_halted
+        assert exc.last_reconcile is not None
+        assert len(exc.last_reconcile.mismatch_symbols) > 0
+        assert _SYMBOL_A in exc.last_reconcile.mismatch_symbols
+
+    def test_mismatch_해소_후_다음_step에서_mismatch_symbols_빈_tuple(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """mismatch → halt. 다음 세션 start_session 후 잔고 일치 상태에서 step →
+        last_reconcile.mismatch_symbols 빈 tuple. _halt 는 start_session 으로만 해제됨.
+        """
+        fake_balance_provider.set_balance(_balance_with_holding(_SYMBOL_A, qty=10))
+        exc = _make_executor(
+            strategy,
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+        )
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+        exc.reconcile()
+        assert exc.is_halted
+
+        # 잔고를 일치 상태로 변경 + start_session 으로 halt 해제
+        fake_balance_provider.set_balance(_empty_balance())
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+        assert not exc.is_halted
+
+        # 새 step — reconcile 재실행 → mismatch_symbols 빈 tuple 이어야 함
+        report = exc.step(_kst(9, 32))
+        assert report.reconcile.mismatch_symbols == ()
+        assert exc.last_reconcile is not None
+        assert exc.last_reconcile.mismatch_symbols == ()

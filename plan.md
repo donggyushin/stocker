@@ -155,7 +155,7 @@ stock-agent/
   - [x] 통과 확인 — 2026-04-21 평일 장중 healthcheck 4종 그린, WebSocket 체결 수신 OK.
 - [x] `execution/executor.py`: 신호 → 주문 → 체결 추적 → 상태 동기화 루프 — 완료 2026-04-21. Protocol 분리(`OrderSubmitter`/`BalanceProvider`/`BarSource`) + `DryRunOrderSubmitter` 주입으로 KIS 접촉 0 드라이런 + 재동기화 halt + `KisClientError` 지수 백오프 + `backtest/costs.py` 비용 산식 재사용. 단위 테스트 63건 green (총 605건). 의존성 추가 없음.
 - [x] `main.py`: APScheduler로 9:00 시작, 장중 루프, 15:00 청산, 15:30 리포트 — 완료 2026-04-21. `BlockingScheduler(timezone='Asia/Seoul')` + 4종 cron job(09:00 session_start·매분 step·15:00 force_close·15:30 daily_report, 평일 한정). `--dry-run` CLI 플래그로 `DryRunOrderSubmitter` 주입 → KIS 주문 접촉 0. SIGINT/SIGTERM graceful shutdown. 단위 테스트 47건 green (총 652건). `apscheduler 3.11.2` 의존성 추가. 9:30 OR 확정 별도 훅 불필요 — `ORBStrategy.on_bar` 가 분봉 경계에서 자동 처리. 공휴일 자동 판정 미도입 — 운영자 수동 처리 (ADR-0011).
-- `monitor/notifier.py`: 진입/청산/에러/일일 요약 텔레그램 알림
+- [x] `monitor/notifier.py`: 진입/청산/에러/일일 요약 텔레그램 알림 — 완료 2026-04-21. `Notifier` Protocol 분리(`Executor` 는 notifier 모름) + `StepReport` 이벤트 확장(`entry_events`/`exit_events`) + 전송 실패 silent fail + 연속 실패 dedupe 경보 + 드라이런 실전송 `[DRY-RUN]` 프리픽스. ADR-0012.
 - SQLite에 모든 주문/체결/PnL 기록
 - **드라이런 모드**: `--dry-run` 플래그로 주문 API 호출 없이 로그만 (최종 검증용) — `main.py` 에서 구현 완료.
 - **산출물**: **모의투자 환경에서 최소 2주 무사고 운영** (에러 0건 · 알림 정상 · PnL 기록 정확)
@@ -263,3 +263,25 @@ Phase 2 여섯 번째 산출물 — `scripts/backtest.py` CLI 완료 (2026-04-20
 6. [x] `scripts/backtest.py` — 완료 2026-04-20. `MinuteCsvBarLoader` + `BacktestEngine` 1회 실행 → 3종 산출물(Markdown 리포트·메트릭 CSV·체결 CSV). 공개 인자: `--csv-dir` (required), `--from`/`--to` (required, `date.fromisoformat`), `--symbols` (default 유니버스 전체), `--starting-capital` (default 1,000,000), `--output-markdown`/`--output-csv`/`--output-trades-csv`. PASS 판정: 낙폭 절대값 15% 미만일 때 PASS (`mdd > Decimal("-0.15")` 이면 PASS — 경계 정확값 -15%는 FAIL). exit code 에는 반영 안 함 — 운영자 수동 검토 보존, CI 자동 pass/fail 금지. exit code 규약: `0` 정상 / `2` `MinuteCsvLoadError`·`UniverseLoadError`·`RuntimeError` / `3` `OSError` (sensitivity.py 는 `UniverseLoadError` 분기 미포함 — 별도 PR 이슈). 외부 네트워크·KIS 접촉 0, 의존성 추가 0. 테스트: `tests/test_backtest_cli.py` 65건. **PASS 라벨이 출력돼도 즉시 실전 전환 금지 — Phase 3 모의투자 2주 무사고 운영이 전제.**
 
 pytest **245 → 324 → 384 → 464 → 477 → 539 → 542건 green** (기존 539 + verdict 경계값 보강 2건 + UniverseLoadError 회귀 1건). ruff check/format + black --check 모두 green. 의존성 추가 없음.
+
+---
+
+## Phase 3 진행 요약 (2026-04-21 기준)
+
+### Phase 3 착수 전제 통과 (2026-04-21)
+
+실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK). 완료.
+
+### Phase 3 첫 산출물 — execution/executor.py (2026-04-21)
+
+[x] `src/stock_agent/execution/` 패키지 신설. Protocol 분리(`OrderSubmitter`/`BalanceProvider`/`BarSource`) + `DryRunOrderSubmitter` 주입으로 KIS 접촉 0 드라이런 + 재동기화 halt + `KisClientError` 지수 백오프 + `backtest/costs.py` 비용 산식 재사용. 단위 테스트 63건 green (총 605건). 의존성 추가 없음.
+
+### Phase 3 두 번째 산출물 — main.py + APScheduler (2026-04-21)
+
+[x] `src/stock_agent/main.py` 신설. `BlockingScheduler(timezone='Asia/Seoul')` + 4종 cron job(09:00 session_start·매분 step·15:00 force_close·15:30 daily_report, 평일 한정). `--dry-run` CLI 플래그 → `DryRunOrderSubmitter` 주입 → KIS 주문 접촉 0. SIGINT/SIGTERM graceful shutdown. PR #17 리뷰 반영: `SessionStatus` 공개·세션 자본 기준 `balance.withdrawable` 교정·`Runtime.risk_manager` 공개 경로화·재진입 가드. 단위 테스트 47건 + 29건 추가·보강 (총 681건). 의존성 추가: `apscheduler 3.11.2`.
+
+### Phase 3 세 번째 산출물 — monitor/notifier.py (2026-04-21)
+
+[x] `src/stock_agent/monitor/` 패키지 신설. `Notifier` Protocol + `TelegramNotifier` + `NullNotifier` + `ErrorEvent`/`DailySummary` DTO. 핵심 결정(ADR-0012): Protocol 의존성 역전 유지(Executor 는 notifier 모름), `StepReport.entry_events`/`exit_events` 확장(기본값 `()` backward compat), 전송 실패 silent fail + 연속 실패 dedupe 경보(`consecutive_failure_threshold` 기본 5), 드라이런도 실전송 + `[DRY-RUN]` 프리픽스, plain text 한국어 포맷. `Executor.last_reconcile: ReconcileReport | None` 프로퍼티 신설. pytest **681 → 780건 green** (notifier 71건 신규 + executor/main 확장분). 의존성 추가 없음.
+
+미완료: `storage/db.py` (SQLite 체결 기록). **Phase 3 PASS 선언은 모의투자 환경 연속 10영업일 무중단 + 0 unhandled error + 모든 주문이 SQLite 기록 + 텔레그램 알림 100% 수신 후.**
