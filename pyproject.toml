@@ -55,10 +55,8 @@ addopts = "-q"
 [tool.pyright]
 # 에디터 LSP 와 CI 게이트 공통 설정.
 #
-# CI 는 `uv run pyright src scripts` 만 실행 — tests 는 범위 밖 (MagicMock spec 추론·
-# Decimal/int 자동 변환 등 목킹 특유의 false positive 가 누적되어 있어 점진 정리를
-# 후속 PR 로 이관). src/scripts 는 현재 pyright clean (경고 0) 상태라 신규 드리프트
-# 를 즉시 차단한다. tests 범위 확장은 후속 PR 에서 baseline 캡처 후 진행.
+# CI 는 `uv run pyright src scripts tests` 실행 — src/scripts/tests 모두 pyright
+# clean (경고 0) 상태로 신규 드리프트를 즉시 차단한다.
 venvPath = "."
 venv = ".venv"
 include = ["src", "scripts", "tests"]

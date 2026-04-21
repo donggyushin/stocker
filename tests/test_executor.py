@@ -13,7 +13,7 @@ import dataclasses
 from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import MagicMock
 
 import pytest
@@ -91,7 +91,11 @@ def _bar(
     )
 
 
-def _ticket(symbol: str = _SYMBOL_A, side: str = "buy", n: int = 1) -> OrderTicket:
+def _ticket(
+    symbol: str = _SYMBOL_A,
+    side: Literal["buy", "sell"] = "buy",
+    n: int = 1,
+) -> OrderTicket:
     """OrderTicket 생성 헬퍼."""
     return OrderTicket(
         order_number=f"ORD-{n:04d}",
@@ -252,7 +256,7 @@ def fake_bar_source() -> FakeBarSource:
 def _make_executor(
     strategy: ORBStrategy,
     risk_manager: RiskManager,
-    fake_order_submitter: FakeOrderSubmitter,
+    fake_order_submitter: OrderSubmitter,
     fake_balance_provider: FakeBalanceProvider,
     fake_bar_source: FakeBarSource,
     *,
@@ -358,7 +362,7 @@ class TestExecutorConfig:
             "sell_tax_rate_음수",
         ],
     )
-    def test_비율_음수_RuntimeError(self, field_name: str, bad_value: Decimal) -> None:
+    def test_비율_음수_RuntimeError(self, field_name: str, bad_value: Any) -> None:
         with pytest.raises(RuntimeError):
             ExecutorConfig(**{field_name: bad_value})
 

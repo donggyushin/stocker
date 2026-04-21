@@ -70,18 +70,25 @@ _DATE_START = date(2023, 1, 1)
 _DATE_END = date(2025, 12, 31)
 
 
-def _make_metrics(**overrides) -> BacktestMetrics:
-    defaults = dict(
-        total_return_pct=Decimal("0.08"),
-        max_drawdown_pct=Decimal("-0.12"),
-        sharpe_ratio=Decimal("1.2"),
-        win_rate=Decimal("0.55"),
-        avg_pnl_ratio=Decimal("1.3"),
-        trades_per_day=Decimal("1.2"),
-        net_pnl_krw=80_000,
+def _make_metrics(
+    *,
+    total_return_pct: Decimal = Decimal("0.08"),
+    max_drawdown_pct: Decimal = Decimal("-0.12"),
+    sharpe_ratio: Decimal = Decimal("1.2"),
+    win_rate: Decimal = Decimal("0.55"),
+    avg_pnl_ratio: Decimal = Decimal("1.3"),
+    trades_per_day: Decimal = Decimal("1.2"),
+    net_pnl_krw: int = 80_000,
+) -> BacktestMetrics:
+    return BacktestMetrics(
+        total_return_pct=total_return_pct,
+        max_drawdown_pct=max_drawdown_pct,
+        sharpe_ratio=sharpe_ratio,
+        win_rate=win_rate,
+        avg_pnl_ratio=avg_pnl_ratio,
+        trades_per_day=trades_per_day,
+        net_pnl_krw=net_pnl_krw,
     )
-    defaults.update(overrides)
-    return BacktestMetrics(**defaults)
 
 
 def _make_trade(

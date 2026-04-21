@@ -479,7 +479,7 @@ def test_install_jobs_cron_시각_검증(
     _install_jobs(scheduler, runtime, args, clock=lambda: _kst(9, 0))
 
     call_kwargs = scheduler.add_job.call_args_list[job_index]
-    trigger: CronTrigger = call_kwargs.kwargs.get("trigger") or (
+    trigger = call_kwargs.kwargs.get("trigger") or (
         call_kwargs.args[1] if len(call_kwargs.args) > 1 else None
     )
     assert isinstance(trigger, CronTrigger)
@@ -504,7 +504,7 @@ def test_install_jobs_step_hour_range_9_14() -> None:
 
     # on_step 은 두 번째(index=1) add_job
     step_call = scheduler.add_job.call_args_list[1]
-    trigger: CronTrigger = step_call.kwargs.get("trigger") or (
+    trigger = step_call.kwargs.get("trigger") or (
         step_call.args[1] if len(step_call.args) > 1 else None
     )
     assert isinstance(trigger, CronTrigger)
@@ -523,7 +523,7 @@ def test_install_jobs_모두_mon_fri_Asia_Seoul() -> None:
     _install_jobs(scheduler, runtime, args, clock=lambda: _kst(9, 0))
 
     for idx, c in enumerate(scheduler.add_job.call_args_list):
-        trigger: CronTrigger = c.kwargs.get("trigger") or (c.args[1] if len(c.args) > 1 else None)
+        trigger = c.kwargs.get("trigger") or (c.args[1] if len(c.args) > 1 else None)
         trigger_msg = f"job[{idx}] trigger 는 CronTrigger 여야 한다"
         assert isinstance(trigger, CronTrigger), trigger_msg
         tz_msg = f"job[{idx}] timezone 이 Asia/Seoul 이어야 한다"
@@ -886,10 +886,6 @@ def test_graceful_shutdown_sig_dfl_교체(mocker: Any) -> None:
     _graceful_shutdown(runtime, SIGTERM, None)
 
     # signal.signal 이 SIG_DFL 로 2회 교체되어야 함
-    [
-        call(_signal.SIGINT, _signal.SIG_DFL),
-        call(_signal.SIGTERM, _signal.SIG_DFL),
-    ]
     mock_signal.assert_any_call(_signal.SIGINT, _signal.SIG_DFL)
     mock_signal.assert_any_call(_signal.SIGTERM, _signal.SIG_DFL)
     # scheduler.shutdown 보다 먼저 호출됐는지 (call_order): signal.signal 2회가

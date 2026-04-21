@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pandas as pd
@@ -50,11 +51,13 @@ def _make_ohlcv_df(
         "종가": [r[4] for r in rows],
         "거래량": [r[5] for r in rows],
     }
-    return pd.DataFrame(data, index=index)
+    # pandas stubs: Axes|None 만 허용 — list[Timestamp]/list[str] 가 좁혀지지 않는 한계
+    return pd.DataFrame(data, index=cast(Any, index))
 
 
 def _empty_ohlcv_df() -> pd.DataFrame:
-    return pd.DataFrame(columns=["시가", "고가", "저가", "종가", "거래량"])
+    # pandas stubs: Axes|None 만 허용 — list[Timestamp]/list[str] 가 좁혀지지 않는 한계
+    return pd.DataFrame(columns=cast(Any, ["시가", "고가", "저가", "종가", "거래량"]))
 
 
 # ---------------------------------------------------------------------------

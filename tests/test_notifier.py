@@ -11,8 +11,8 @@ stock_agent.monitor 패키지와 stock_agent.execution 의 EntryEvent/ExitEvent 
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -59,8 +59,11 @@ def _make_bot_mock() -> MagicMock:
     return bot
 
 
-def _make_bot_factory(bot: MagicMock) -> Callable[[str], MagicMock]:
-    """주어진 bot 인스턴스를 반환하는 단순 팩토리."""
+def _make_bot_factory(bot: MagicMock) -> MagicMock:
+    """주어진 bot 인스턴스를 반환하는 MagicMock 팩토리.
+
+    Callable 로 호출 가능하면서 assert_called_once/call_args 접근 가능.
+    """
     return MagicMock(return_value=bot)
 
 
@@ -90,11 +93,11 @@ def _make_entry_event(
     *,
     symbol: str = _SYMBOL,
     qty: int = 10,
-    fill_price: int = 50_000,
-    ref_price: int = 49_500,
+    fill_price: Decimal = Decimal("50000"),
+    ref_price: Decimal = Decimal("49500"),
 ) -> EntryEvent:
-    """EntryEvent 더블 — execution 구현 후 실 타입으로 교체."""
-    return EntryEvent(  # type: ignore[call-arg]
+    """EntryEvent 더블."""
+    return EntryEvent(
         symbol=symbol,
         qty=qty,
         fill_price=fill_price,
@@ -107,12 +110,12 @@ def _make_exit_event(
     *,
     symbol: str = _SYMBOL,
     qty: int = 10,
-    fill_price: int = 51_500,
+    fill_price: Decimal = Decimal("51500"),
     reason: ExitReason = "take_profit",
     net_pnl_krw: int = 14_000,
 ) -> ExitEvent:
-    """ExitEvent 더블 — execution 구현 후 실 타입으로 교체."""
-    return ExitEvent(  # type: ignore[call-arg]
+    """ExitEvent 더블."""
+    return ExitEvent(
         symbol=symbol,
         qty=qty,
         fill_price=fill_price,
@@ -350,14 +353,14 @@ class TestNotifyEntry:
     def test_text_contains_fill_price(self) -> None:
         bot = _make_bot_mock()
         n = _make_notifier(bot=bot)
-        n.notify_entry(_make_entry_event(fill_price=52_000))
+        n.notify_entry(_make_entry_event(fill_price=Decimal("52000")))
         _, kwargs = bot.send_message.call_args
         assert "52000" in kwargs["text"] or "52,000" in kwargs["text"]
 
     def test_text_contains_ref_price(self) -> None:
         bot = _make_bot_mock()
         n = _make_notifier(bot=bot)
-        n.notify_entry(_make_entry_event(ref_price=51_800))
+        n.notify_entry(_make_entry_event(ref_price=Decimal("51800")))
         _, kwargs = bot.send_message.call_args
         assert "51800" in kwargs["text"] or "51,800" in kwargs["text"]
 
