@@ -70,7 +70,9 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **Phase 3 착수 전제 통과** (2026-04-21). 실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK) 완료.
 
-**Phase 3 첫 산출물 — Executor (코드·테스트 레벨) 완료** (2026-04-21). `execution/` 패키지 신설 — `Executor` + Protocol 3종(`OrderSubmitter`/`BalanceProvider`/`BarSource`) + 어댑터 3종(`LiveOrderSubmitter`/`LiveBalanceProvider`/`DryRunOrderSubmitter`) + `StepReport`/`ReconcileReport` DTO. pytest **605건 green**. 후속 산출물(`main.py`/`monitor/notifier.py`/`storage/db.py`) 미착수. **Phase 3 PASS 선언은 모의투자 환경 연속 10영업일 무중단 운영 후.**
+**Phase 3 첫 산출물 — Executor (코드·테스트 레벨) 완료** (2026-04-21). `execution/` 패키지 신설 — `Executor` + Protocol 3종(`OrderSubmitter`/`BalanceProvider`/`BarSource`) + 어댑터 3종(`LiveOrderSubmitter`/`LiveBalanceProvider`/`DryRunOrderSubmitter`) + `StepReport`/`ReconcileReport` DTO. pytest **605건 green**.
+
+**Phase 3 두 번째 산출물 — main.py + APScheduler 통합 (코드·테스트 레벨) 완료** (2026-04-21). `src/stock_agent/main.py` 신설 — `BlockingScheduler` + 4종 cron job(09:00 session_start·매분 step·15:00 force_close·15:30 daily_report, 평일 한정) + `--dry-run` CLI 플래그(KIS 주문 접촉 0). pytest **652건 green**. 후속 산출물(`monitor/notifier.py`/`storage/db.py`) 미착수. **Phase 3 PASS 선언은 모의투자 환경 연속 10영업일 무중단 운영 후.**
 
 **운영 주의**: KOSPI 200 구성종목은 `config/universe.yaml`에 수동 관리합니다. KRX KOSPI 200 정기변경(연 2회 — 매년 6월·12월의 선물·옵션 동시만기일 익영업일 기준)에 맞춰 운영자가 직접 갱신해야 합니다. 현재 KRX 정보데이터시스템 [11006] 기준 199/200 반영(2026-04-17 조회, 임시 가상 코드 1건 제외). 정식 티커 발급 후 다음 갱신에 추가 예정.
 
@@ -84,7 +86,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 ## 디렉토리 구조
 
-현재 존재하는 파일 (Phase 3 첫 산출물 완료 기준):
+현재 존재하는 파일 (Phase 3 두 번째 산출물 완료 기준):
 
 ```text
 stock-agent/
@@ -131,10 +133,11 @@ stock-agent/
 │   │   ├── loader.py          # BarLoader Protocol + InMemoryBarLoader
 │   │   ├── sensitivity.py     # 파라미터 민감도 그리드
 │   │   └── CLAUDE.md          # 모듈 세부 문서
-│   └── execution/
-│       ├── __init__.py        # Executor, ExecutorConfig, OrderSubmitter, BalanceProvider, BarSource, LiveOrderSubmitter, LiveBalanceProvider, DryRunOrderSubmitter, StepReport, ReconcileReport, ExecutorError export
-│       ├── executor.py        # Executor — 신호 → 주문 → 체결 추적 → 상태 동기화 루프
-│       └── CLAUDE.md          # 모듈 세부 문서
+│   ├── execution/
+│   │   ├── __init__.py        # Executor, ExecutorConfig, OrderSubmitter, BalanceProvider, BarSource, LiveOrderSubmitter, LiveBalanceProvider, DryRunOrderSubmitter, StepReport, ReconcileReport, ExecutorError export
+│   │   ├── executor.py        # Executor — 신호 → 주문 → 체결 추적 → 상태 동기화 루프
+│   │   └── CLAUDE.md          # 모듈 세부 문서
+│   └── main.py                # 장중 실행 진입점 (BlockingScheduler + Executor 오케스트레이터)
 ├── tests/
 │   ├── test_config.py
 │   ├── test_kis_client.py
@@ -146,7 +149,8 @@ stock-agent/
 │   ├── test_strategy_orb.py   # 36 케이스
 │   ├── test_risk_manager.py   # 73 케이스
 │   ├── test_backtest_engine.py
-│   └── test_executor.py       # 63 케이스
+│   ├── test_executor.py       # 63 케이스
+│   └── test_main.py           # 47 케이스
 └── scripts/
     ├── healthcheck.py         # KIS 모의 잔고 조회 + 텔레그램 hello (실주문 없음)
     ├── backtest.py            # 단일 런 백테스트 CLI
@@ -190,6 +194,25 @@ cp .env.example .env
 #   KIS_LIVE_ACCOUNT_NO = 실전 계좌번호 (XXXXXXXX-XX) — paper 계좌번호와 다름
 #   # 실전 앱 발급 후 KIS Developers 포털 → 앱 관리 → 허용 IP 목록에 현재 공인 IP 등록 필수
 ```
+
+### 장중 실행 (Phase 3)
+
+실전 전 반드시 모의투자 2주 무사고 운영을 먼저 거친다. 드라이런 모드로 동작을 먼저 검증하는 것을 권장한다.
+
+```bash
+# 드라이런 — KIS 주문 API 접촉 0, 시그널·로그만 남긴다
+uv run python -m stock_agent.main --dry-run
+
+# 실 주문 실행 (paper 또는 실전 — .env 의 KIS_ENV 에 따름)
+uv run python -m stock_agent.main
+
+# 시작 자본 명시 (기본 1,000,000원)
+uv run python -m stock_agent.main --dry-run --starting-capital 2000000
+```
+
+- 스케줄: 평일(`mon-fri`) 09:00 세션 시작 → 매분 신호 처리 → 15:00 강제청산 → 15:30 일일 리포트 (모두 KST)
+- 공휴일 자동 판정 미지원 — KRX 임시공휴일은 운영자가 프로세스를 띄우지 않는 방식으로 처리
+- SIGINT(Ctrl+C) / SIGTERM 모두 graceful shutdown 처리 (exit 0)
 
 ### 환경 점검
 

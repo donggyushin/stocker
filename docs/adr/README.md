@@ -40,6 +40,7 @@ ADR 가 **불필요** 한 변경:
 | [0008](./0008-single-process-only.md) | 단일 프로세스 전용 (멀티스레드/프로세스 safe 미제공) | 승인됨 | 2026-04-19 |
 | [0009](./0009-python-312-upgrade.md) | 베이스라인 인터프리터 Python 3.11 → 3.12 업그레이드 | 승인됨 | 2026-04-20 |
 | [0010](./0010-tdd-order-enforcement.md) | src-first TDD 순서 강제 (신규 `src/` 파일에 대한 PreToolUse 게이트) | 승인됨 | 2026-04-20 |
+| [0011](./0011-apscheduler-adoption-single-process.md) | APScheduler 채택 및 BlockingScheduler + 공휴일 수동 판정 정책 | 승인됨 | 2026-04-21 |
 
 ## 관련 문서
 

@@ -35,7 +35,8 @@ korean-stock-trading-system/
 │   ├── strategy/              # ORB 전략 엔진  → CLAUDE.md
 │   ├── risk/                  # 리스크 매니저  → CLAUDE.md
 │   ├── backtest/              # 백테스트 엔진·민감도  → CLAUDE.md
-│   └── execution/             # Executor 오케스트레이션  → CLAUDE.md
+│   ├── execution/             # Executor 오케스트레이션  → CLAUDE.md
+│   └── main.py                # 장중 실행 진입점 (BlockingScheduler + Executor 오케스트레이터)
 ├── scripts/                   # CLI 진입점 3종
 │   ├── healthcheck.py         # KIS 모의 잔고·실시간 시세·텔레그램 확인
 │   ├── backtest.py            # 단일 런 백테스트 (CSV 분봉 입력)
@@ -322,12 +323,38 @@ main 브랜치 보호: required status check `Lint, format, test` 통과 필수,
 | `scripts/healthcheck.py` | KIS 모의 잔고 + 실시간 시세(선택) + 텔레그램 알림 확인 | 없음 (`.env` 로드) | `broker`, `data`, `config` |
 | `scripts/backtest.py` | CSV 분봉 입력 → 단일 런 백테스트 → Markdown/메트릭 CSV/체결 CSV 3종 산출 | `--csv-dir`, `--from`, `--to` | `backtest`, `data`, `config` |
 | `scripts/sensitivity.py` | 파라미터 민감도 32 조합 그리드 → Markdown/CSV 산출 | `--csv-dir`, `--from`, `--to` | `backtest`, `data`, `config` |
+| `python -m stock_agent.main` | 장중 자동매매 실행 — BlockingScheduler + Executor 오케스트레이터 | 없음 (선택: `--dry-run`, `--starting-capital`, `--universe-path`, `--log-dir`) | `execution`, `strategy`, `risk`, `broker`, `data`, `config` |
+
+### 장중 실행 오케스트레이터 (main.py)
+
+`src/stock_agent/main.py` 는 모든 모듈을 조립해 장중 자동매매를 실행하는 단일 진입점이다.
+
+```
+BlockingScheduler(timezone=Asia/Seoul, day_of_week=mon-fri)
+  ├── 09:00  on_session_start — 잔고 조회 → min(CLI 자본, 잔고 total) 로 Executor.start_session
+  ├── 매분   on_step          — Executor.step(now): reconcile → on_bar → on_time
+  ├── 15:00  on_force_close   — Executor.force_close_all(now)
+  └── 15:30  on_daily_report  — 당일 PnL·진입수·활성 포지션 로그 (텔레그램은 후속 PR)
+
+Protocol wiring (build_runtime):
+  RealtimeDataStore  → BarSource
+  LiveOrderSubmitter | DryRunOrderSubmitter  → OrderSubmitter  (--dry-run 플래그로 선택)
+  LiveBalanceProvider  → BalanceProvider
+
+리소스 정리:
+  SIGINT/SIGTERM → _graceful_shutdown → scheduler.shutdown(wait=False)
+                → realtime_store.close() → kis_client.close()
+  finally 블록에서 중복 close 호출 (멱등)
+```
+
+**공휴일 처리**: cron `day_of_week='mon-fri'` 만 적용. KRX 임시공휴일은 운영자가 프로세스를 띄우지 않는 방식으로 처리 (ADR-0011).
 
 ### exit code 규약
 
 | 코드 | 의미 |
 |---|---|
-| `0` | 정상 종료 |
+| `0` | 정상 종료 (SIGINT/SIGTERM/KeyboardInterrupt 포함) |
+| `1` | 예기치 않은 런타임 예외 (`main.py` 스케줄러 루프 한정) |
 | `2` | 입력·설정 오류 (`MinuteCsvLoadError`, `UniverseLoadError`, `RuntimeError`) |
 | `3` | I/O 오류 (`OSError`) |
 | 기타 | Python 기본 traceback 으로 전파 (버그로 간주) |
@@ -345,6 +372,7 @@ Phase 진행 상태와 구체적 산출물은 [CLAUDE.md](../CLAUDE.md) 의 "현
 | 예상 경로 | 역할 | Phase |
 |---|---|---|
 | `src/stock_agent/execution/` | 장중 실시간 루프, 주문 송수신, 체결 추적 | **완료 2026-04-21 (코드·테스트 레벨)** |
+| `src/stock_agent/main.py` | 장중 실행 진입점 (BlockingScheduler + Executor 오케스트레이터) | **완료 2026-04-21 (코드·테스트 레벨)** |
 | `src/stock_agent/monitor/` | 포지션 추적, 텔레그램 알림 라우팅 | Phase 3 (미착수) |
 | `src/stock_agent/storage/` | 체결·주문 영속화 (SQLite) | Phase 3 (미착수) |
 | `src/stock_agent/data/` 의 KIS 과거 분봉 어댑터 | KIS 과거 분봉 API 어댑터 (현재 CSV 만 지원) | 별도 PR |

@@ -154,10 +154,10 @@ stock-agent/
 - **착수 전제**: 실전 APP_KEY (시세 전용) 발급 완료 + KIS Developers 포털에서 IP 화이트리스트 등록 + `healthcheck.py` 4종 통과 (**평일 장중 09:00~15:30 KST에 실행해야 안정적으로 통과** — 4번 체크 `check_realtime_price`는 WebSocket 모드에서 장중 체결 이벤트가 있어야 2초 내 `TickQuote` 수신 가능; 나머지 3종은 시간대 무관).
   - [x] 통과 확인 — 2026-04-21 평일 장중 healthcheck 4종 그린, WebSocket 체결 수신 OK.
 - [x] `execution/executor.py`: 신호 → 주문 → 체결 추적 → 상태 동기화 루프 — 완료 2026-04-21. Protocol 분리(`OrderSubmitter`/`BalanceProvider`/`BarSource`) + `DryRunOrderSubmitter` 주입으로 KIS 접촉 0 드라이런 + 재동기화 halt + `KisClientError` 지수 백오프 + `backtest/costs.py` 비용 산식 재사용. 단위 테스트 63건 green (총 605건). 의존성 추가 없음.
-- `main.py`: APScheduler로 9:00 시작, 9:30 OR 확정, 장중 루프, 15:00 청산, 15:30 리포트
+- [x] `main.py`: APScheduler로 9:00 시작, 장중 루프, 15:00 청산, 15:30 리포트 — 완료 2026-04-21. `BlockingScheduler(timezone='Asia/Seoul')` + 4종 cron job(09:00 session_start·매분 step·15:00 force_close·15:30 daily_report, 평일 한정). `--dry-run` CLI 플래그로 `DryRunOrderSubmitter` 주입 → KIS 주문 접촉 0. SIGINT/SIGTERM graceful shutdown. 단위 테스트 47건 green (총 652건). `apscheduler 3.11.2` 의존성 추가. 9:30 OR 확정 별도 훅 불필요 — `ORBStrategy.on_bar` 가 분봉 경계에서 자동 처리. 공휴일 자동 판정 미도입 — 운영자 수동 처리 (ADR-0011).
 - `monitor/notifier.py`: 진입/청산/에러/일일 요약 텔레그램 알림
 - SQLite에 모든 주문/체결/PnL 기록
-- **드라이런 모드**: `--dry-run` 플래그로 주문 API 호출 없이 로그만 (최종 검증용)
+- **드라이런 모드**: `--dry-run` 플래그로 주문 API 호출 없이 로그만 (최종 검증용) — `main.py` 에서 구현 완료.
 - **산출물**: **모의투자 환경에서 최소 2주 무사고 운영** (에러 0건 · 알림 정상 · PnL 기록 정확)
 
 ### Phase 4 — 소액 실전 전환 (운영 상시)
