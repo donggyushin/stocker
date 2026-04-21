@@ -11,7 +11,7 @@ stock_agent.monitor 패키지와 stock_agent.execution 의 EntryEvent/ExitEvent 
 from __future__ import annotations
 
 import dataclasses
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -810,3 +810,160 @@ class TestFrozenDataclasses:
     def test_daily_summary_pct_none_allowed(self) -> None:
         s = _make_daily_summary(realized_pnl_pct=None)
         assert s.realized_pnl_pct is None
+
+
+# ---------------------------------------------------------------------------
+# 15. _record_failure → stderr 2차 경보 (I1)
+# ---------------------------------------------------------------------------
+
+
+class _FailingStderr:
+    """print(..., file=sys.stderr) 호출 시 예외를 던지는 페이크 stderr."""
+
+    def write(self, _data: str) -> None:
+        raise OSError("stderr broken")
+
+    def flush(self) -> None:
+        raise OSError("stderr broken")
+
+
+class TestStderrSecondaryAlert:
+    """_record_failure 임계값 도달 시 sys.stderr 에도 [CRITICAL] 한 줄 출력 (I1).
+
+    현재 구현에는 stderr write 가 없으므로 모든 케이스가 FAIL 이어야 한다.
+    """
+
+    def _notifier_always_failing(self, threshold: int = 3) -> TelegramNotifier:
+        bot = _make_bot_mock()
+        bot.send_message = AsyncMock(side_effect=TimeoutError())
+        return _make_notifier(bot=bot, consecutive_failure_threshold=threshold)
+
+    def test_stderr_write_on_threshold_reached(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """threshold=3 에서 3번째 실패 시 stderr 에 [CRITICAL] 과 consecutive=3 이 포함된다."""
+        n = self._notifier_always_failing(threshold=3)
+        for _ in range(3):
+            n._record_failure()
+        captured = capsys.readouterr()
+        assert "[CRITICAL]" in captured.err
+        assert "telegram.notifier.persistent_failure" in captured.err
+        assert "consecutive=3" in captured.err
+
+    def test_stderr_not_written_before_threshold(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """threshold=3 에서 2회 실패까지는 stderr 에 경보 미출력."""
+        n = self._notifier_always_failing(threshold=3)
+        for _ in range(2):
+            n._record_failure()
+        captured = capsys.readouterr()
+        assert "telegram.notifier.persistent_failure" not in captured.err
+
+    def test_stderr_not_written_again_after_dedupe(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """4회 실패해도 stderr 경보는 정확히 1회만 출력된다 (dedupe 플래그)."""
+        n = self._notifier_always_failing(threshold=3)
+        for _ in range(4):
+            n._record_failure()
+        captured = capsys.readouterr()
+        assert captured.err.count("telegram.notifier.persistent_failure") == 1
+
+    def test_stderr_failure_silently_swallowed(
+        self, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """sys.stderr 가 OSError 를 던져도 _record_failure 는 예외를 전파하지 않는다.
+
+        logger.critical 은 여전히 호출된다.
+        capsys 는 사용하지 않음 — monkeypatch 로 sys.stderr 자체를 교체.
+        """
+        import sys
+
+        mock_logger = mocker.patch("stock_agent.monitor.notifier.logger")
+        monkeypatch.setattr(sys, "stderr", _FailingStderr())
+        n = self._notifier_always_failing(threshold=3)
+        # 예외 전파 없이 완료되어야 한다
+        for _ in range(3):
+            n._record_failure()
+        mock_logger.critical.assert_called_once()
+
+    def test_stderr_write_resets_with_counter(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """threshold=2 에서 2회 실패 → 성공(리셋) → 다시 2회 실패 → stderr 재방출."""
+        bot = _make_bot_mock()
+        # 처음 2회 실패, 3회째 성공, 4~5회 실패
+        bot.send_message = AsyncMock(
+            side_effect=[TimeoutError(), TimeoutError(), None, TimeoutError(), TimeoutError()]
+        )
+        n = _make_notifier(bot=bot, consecutive_failure_threshold=2)
+        # 1차 실패 사이클 (notify_entry 경유, _record_failure 2회)
+        n.notify_entry(_make_entry_event())
+        n.notify_entry(_make_entry_event())
+        _ = capsys.readouterr()  # 1차 캡처 소비
+        # 성공으로 리셋
+        n.notify_entry(_make_entry_event())
+        # 2차 실패 사이클
+        n.notify_entry(_make_entry_event())
+        n.notify_entry(_make_entry_event())
+        captured_second = capsys.readouterr()
+        assert "telegram.notifier.persistent_failure" in captured_second.err
+
+
+# ---------------------------------------------------------------------------
+# 16. _fmt_time tz-naive / non-KST 가드 (I2)
+# ---------------------------------------------------------------------------
+
+
+class TestFmtTimeGuards:
+    """_fmt_time 이 naive datetime 경고·KST 변환을 처리하는지 검증 (I2).
+
+    현재 구현에는 이 동작이 없으므로 대부분의 케이스가 FAIL 이어야 한다.
+    """
+
+    def test_naive_datetime_emits_warning_and_tz_suffix(self, mocker: MockerFixture) -> None:
+        """naive datetime 을 전달하면 logger.warning 1회 + 반환값에 '(tz?)' 꼬리표."""
+        mock_logger = mocker.patch("stock_agent.monitor.notifier.logger")
+        n = _make_notifier()
+        naive_dt = datetime(2026, 4, 21, 14, 30, 0)  # tzinfo=None
+        result = n._fmt_time(naive_dt)
+        mock_logger.warning.assert_called_once()
+        assert result == "14:30:00 (tz?)"
+
+    def test_naive_warning_deduped_within_instance(self, mocker: MockerFixture) -> None:
+        """같은 notifier 에서 naive datetime 으로 _fmt_time 2회 호출 → warning 은 1회만."""
+        mock_logger = mocker.patch("stock_agent.monitor.notifier.logger")
+        n = _make_notifier()
+        naive_dt = datetime(2026, 4, 21, 14, 30, 0)
+        n._fmt_time(naive_dt)
+        n._fmt_time(naive_dt)
+        assert mock_logger.warning.call_count == 1
+
+    def test_utc_aware_converted_to_kst(self, mocker: MockerFixture) -> None:
+        """UTC+0 14:30 이 아닌 5:30 입력 → KST+9 = 14:30 으로 변환해 출력.
+
+        현재 구현은 .astimezone(KST) 없이 strftime 만 하므로 '05:30:00' 반환 → FAIL.
+        """
+        mocker.patch("stock_agent.monitor.notifier.logger")
+        n = _make_notifier()
+        utc_dt = datetime(2026, 4, 21, 5, 30, 0, tzinfo=UTC)
+        result = n._fmt_time(utc_dt)
+        assert result == "14:30:00"
+        assert "(tz?)" not in result
+
+    def test_kst_aware_unchanged(self, mocker: MockerFixture) -> None:
+        """KST aware datetime 은 그대로 HH:MM:SS 반환 — (tz?) 꼬리표 없음, warning 미호출."""
+        mock_logger = mocker.patch("stock_agent.monitor.notifier.logger")
+        n = _make_notifier()
+        result = n._fmt_time(_FIXED_DT)  # _FIXED_DT = datetime(2026,4,21,14,30,0, tzinfo=KST)
+        assert result == "14:30:00"
+        assert "(tz?)" not in result
+        mock_logger.warning.assert_not_called()
+
+    def test_non_kst_non_utc_aware_converted_to_kst(self, mocker: MockerFixture) -> None:
+        """EST(UTC-5) 0:30 → KST +9 = 14:30 으로 변환해 출력.
+
+        현재 구현은 변환 없이 strftime 이므로 '00:30:00' 반환 → FAIL.
+        """
+        mocker.patch("stock_agent.monitor.notifier.logger")
+        n = _make_notifier()
+        est = timezone(timedelta(hours=-5))
+        est_dt = datetime(2026, 4, 21, 0, 30, 0, tzinfo=est)
+        result = n._fmt_time(est_dt)
+        assert result == "14:30:00"
+        assert "(tz?)" not in result

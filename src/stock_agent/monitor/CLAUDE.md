@@ -12,13 +12,12 @@ notifier 의 존재 자체를 모르며, `main.py` 가 `StepReport.entry_events`
 
 `Notifier`, `TelegramNotifier`, `NullNotifier`, `ErrorEvent`, `DailySummary`
 
-## 현재 상태 (2026-04-21 기준)
+## 현재 상태 (2026-04-22 기준)
 
 **Phase 3 세 번째 산출물 — `monitor/notifier.py` (코드·테스트 레벨) 완료**
-(2026-04-21).
+(2026-04-21). I1/I2 후속 정리 반영 (2026-04-22).
 
-- pytest 71건 신규 (`tests/test_notifier.py`) + executor 회귀 22건 +
-  main notifier 통합 34건 = 전체 780건 green.
+- pytest 전체 788건 green (root CLAUDE.md "현재 상태" 가 정본).
 - 의존성 추가 없음 (`python-telegram-bot>=21.0` 기존 사용).
 - `StepReport` 에 `entry_events`·`exit_events` 필드 추가 —
   `execution/CLAUDE.md` 참조.
@@ -143,6 +142,20 @@ Executor halt=no
 Reconcile mismatch=없음
 ```
 
+## 시간 포맷 정책 (`_fmt_time`)
+
+`TelegramNotifier._fmt_time(ts: datetime) -> str` 의 가드 계약:
+
+| 입력 조건 | 처리 | 결과 |
+|---|---|---|
+| `ts.tzinfo is None` (naive) | `logger.warning("notifier.fmt_time.naive ts={iso}")` **인스턴스당 1회 dedupe** (`_naive_ts_warned` 플래그) | 포맷 결과에 `" (tz?)"` 꼬리표 부착. strftime 값은 그대로 보존. |
+| `ts.tzinfo is not None` 이지만 offset ≠ KST | `ts.astimezone(KST)` 로 정규화 후 포맷 | KST 기준 시각 출력. UTC 등이 naive 로 혼입했을 때의 9시간 오독 방지. |
+| `ts.tzinfo` 가 KST offset | 그대로 포맷 | 정상 경로. |
+
+`RuntimeError` 미사용 근거: notifier 경로 silent-fail 원칙(ADR-0012 결정 3)과 충돌.
+알림 loss 가 포지션 사고로 번질 수 있으므로 포맷 오류로 전송 자체를 막지 않는다.
+시각 정보가 다소 부정확하더라도 알림은 전달된다.
+
 ## 전송 실패 정책
 
 `TelegramNotifier._send` 동작:
@@ -162,10 +175,18 @@ else:
 - `_consecutive_failures += 1`
 - `_consecutive_failures >= _threshold` AND `not _persistent_alert_emitted`
   → `logger.critical` (dedupe 1회) + `_persistent_alert_emitted = True`
+  → 추가로 `print(..., file=sys.stderr, flush=True)` 2차 경보 방출.
+    loguru sink 자체가 죽은 시나리오(디스크 풀·설정 손상 등)에서도 운영자가
+    경보를 놓치지 않도록 `contextlib.suppress(Exception)` 으로 감싼 직접 write.
+    stderr 도 실패하면 silent fail (알림 경로가 더 할 수 있는 일 없음).
 - 전송 성공 시 카운터·플래그 모두 리셋.
 
 세션 연속성이 알림 전송보다 중요하다 — 전송 실패가 `_on_step`·`_on_force_close`
 콜백을 죽이지 않게 한다 (ADR-0011 결정 5 연장).
+
+운영 체크리스트: 매 세션 종료 후 `grep "telegram.notifier.persistent_failure" logs/*.log`
+와 함께 시스템 **stderr(콘솔 출력)** 도 같이 확인할 것 — `logger` sink 가 죽은
+경우 stderr 가 유일한 단서.
 
 ## 예외 경계 설계
 

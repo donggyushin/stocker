@@ -20,7 +20,9 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
@@ -167,6 +169,7 @@ class TelegramNotifier:
         self._bot: Bot = factory(bot_token.get_secret_value())
         self._consecutive_failures: int = 0
         self._persistent_alert_emitted: bool = False
+        self._naive_ts_warned: bool = False
 
     # ---- 공개 메서드 ---------------------------------------------------
 
@@ -257,8 +260,35 @@ class TelegramNotifier:
                 n=self._consecutive_failures,
                 t=self._threshold,
             )
+            # loguru 인프라 우회 raw stderr write — loguru sink 자체가 죽은 시나리오
+            # (디스크 풀·설정 손상 등) 에서도 2차 경보가 남도록 한다. stderr 자체가
+            # 실패해도 silent fail — 알림 경로가 더 이상 할 수 있는 일이 없다.
+            msg = (
+                f"[CRITICAL] telegram.notifier.persistent_failure "
+                f"consecutive={self._consecutive_failures} threshold={self._threshold} "
+                f"— 텔레그램 알림 경로 점검 필요 (Telegram API 연결 실패 의심)."
+            )
+            # stderr 도 죽으면 삼킨다 — 알림 경로가 더 할 수 있는 일이 없다.
+            with suppress(Exception):
+                print(msg, file=sys.stderr, flush=True)
             self._persistent_alert_emitted = True
 
     def _fmt_time(self, ts: datetime) -> str:
-        """KST aware datetime 을 `HH:MM:SS` 로 포맷 (tz-naive 도 그대로 포맷)."""
-        return ts.strftime("%H:%M:%S")
+        """KST aware datetime 을 `HH:MM:SS` 로 포맷.
+
+        - naive 입력: warning 1회(인스턴스당 dedupe) + 결과에 `(tz?)` 꼬리표.
+          `Executor._require_aware` 는 naive 시 `RuntimeError` 를 던지지만,
+          notifier 경로는 silent-fail 원칙(ADR-0012 결정 3) 상 알림 loss 를
+          피하기 위해 warning + 꼬리표로 약하게 대응한다.
+        - non-KST aware 입력: `astimezone(KST)` 로 정규화 후 포맷. UTC 가
+          naive 로 혼입할 때처럼 9 시간 오독을 방지한다.
+        """
+        if ts.tzinfo is None:
+            if not self._naive_ts_warned:
+                logger.warning(
+                    "notifier.fmt_time.naive ts={iso} — tz-aware datetime 기대.",
+                    iso=ts.isoformat(),
+                )
+                self._naive_ts_warned = True
+            return ts.strftime("%H:%M:%S") + " (tz?)"
+        return ts.astimezone(KST).strftime("%H:%M:%S")

@@ -270,6 +270,7 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
   - `main.py` 확장: `Runtime.notifier: Notifier` 필드, `_default_notifier_factory`, `build_runtime(..., notifier_factory=...)`, 콜백 4종에 `notify_*` 호출 삽입.
   - pytest **681 → 778건 green** (notifier 71건 신규 + executor/main 확장분 포함; Issue #13 대응 중복 검출 O(n) 단순화·빈 axes 가드 추가, 허용 테스트 3건 삭제 + 가드 테스트 1건 추가로 순감 2). 회귀 0건. 의존성 추가 없음.
   - 미완료: `storage/db.py` (SQLite 체결 기록, 미착수). **Phase 3 PASS 선언은 모의투자 연속 10영업일 무중단 운영 후.**
+  - (2026-04-22) I1/I2 후속 정리 반영 — 연속 실패 stderr 2차 경보 + `_fmt_time` naive/non-KST 가드. pytest 778 → 788건 green.
 
 - **Phase 3 네 번째 산출물 — storage/db.py (SQLite 원장) 코드·테스트 레벨 완료 (2026-04-22)**
   - `src/stock_agent/storage/` 패키지 신설 — `TradingRecorder` Protocol (`@runtime_checkable`) + `SqliteTradingRecorder` + `NullTradingRecorder` + `StorageError`. 모듈 세부는 [src/stock_agent/storage/CLAUDE.md](./src/stock_agent/storage/CLAUDE.md) 참조.
@@ -285,7 +286,7 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
 - **다음 작업**
   - **Phase 2 잔여 (후속 PR)**: KIS 과거 분봉 API 어댑터(별도 PR) · 2~3년 실데이터 수집(운영자 외부 작업, 리포지토리 미포함) · `uv run python scripts/backtest.py --csv-dir ... --from 2023-01-01 --to 2025-12-31` 실행 후 낙폭 절대값 15% 미만 확인 (MDD > -15%). PASS 라벨이 출력돼도 즉시 실전 전환 아님 — Phase 3 모의투자 2주 무사고 운영이 전제.
   - **Phase 3 착수 전 필수 — 통과 완료 (2026-04-21)**: 운영자 `.env` 실전 키 3종(`KIS_LIVE_APP_KEY`, `KIS_LIVE_APP_SECRET`, `KIS_LIVE_ACCOUNT_NO`) 기입 + KIS Developers 포털 IP 화이트리스트 등록 + `uv run python scripts/healthcheck.py` 4종(삼성전자 현재가 포함) 통과 확인 (**평일 장중 09:00~15:30 KST 실행 필수** — 4번 `check_realtime_price`는 장외 실행 시 2초 타임아웃 후 실패 가능; 나머지 3종은 시간대 무관). **2026-04-21 평일 장중 4종 그린, WebSocket 체결 수신 OK.**
-  - **Phase 3 후속 PR**: `execution/executor.py` 완료 (2026-04-21) · `main.py` 완료 (2026-04-21) · `monitor/notifier.py` 완료 (2026-04-21) · `storage/db.py` 완료 (2026-04-22). Phase 3 코드 산출물 전부 완료 — 이후 **모의투자 연속 10영업일 무중단 운영** 대기.
+  - **Phase 3 후속 PR**: `execution/executor.py` 완료 (2026-04-21) · `main.py` 완료 (2026-04-21) · `monitor/notifier.py` 완료 (2026-04-21) · I1/I2 후속 정리 완료 (2026-04-22) · `storage/db.py` 완료 (2026-04-22). Phase 3 코드 산출물 전부 완료 — 이후 **모의투자 연속 10영업일 무중단 운영** 대기.
 
 ## 참고
 
