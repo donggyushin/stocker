@@ -152,7 +152,8 @@ stock-agent/
 
 ### Phase 3 — 모의투자 자동 실행 (5~7일)
 - **착수 전제**: 실전 APP_KEY (시세 전용) 발급 완료 + KIS Developers 포털에서 IP 화이트리스트 등록 + `healthcheck.py` 4종 통과 (**평일 장중 09:00~15:30 KST에 실행해야 안정적으로 통과** — 4번 체크 `check_realtime_price`는 WebSocket 모드에서 장중 체결 이벤트가 있어야 2초 내 `TickQuote` 수신 가능; 나머지 3종은 시간대 무관).
-- `execution/executor.py`: 신호 → 주문 → 체결 추적 → 상태 동기화 루프
+  - [x] 통과 확인 — 2026-04-21 평일 장중 healthcheck 4종 그린, WebSocket 체결 수신 OK.
+- [x] `execution/executor.py`: 신호 → 주문 → 체결 추적 → 상태 동기화 루프 — 완료 2026-04-21. Protocol 분리(`OrderSubmitter`/`BalanceProvider`/`BarSource`) + `DryRunOrderSubmitter` 주입으로 KIS 접촉 0 드라이런 + 재동기화 halt + `KisClientError` 지수 백오프 + `backtest/costs.py` 비용 산식 재사용. 단위 테스트 63건 green (총 605건). 의존성 추가 없음.
 - `main.py`: APScheduler로 9:00 시작, 9:30 OR 확정, 장중 루프, 15:00 청산, 15:30 리포트
 - `monitor/notifier.py`: 진입/청산/에러/일일 요약 텔레그램 알림
 - SQLite에 모든 주문/체결/PnL 기록
