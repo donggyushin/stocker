@@ -197,11 +197,13 @@ class TelegramNotifier:
         halted = "yes" if summary.halted else "no"
         mismatch = ",".join(summary.mismatch_symbols) if summary.mismatch_symbols else "없음"
         title = f"[stock-agent] 일일 요약 {summary.session_date.isoformat()}"
+        # halted 는 서킷브레이커(RiskManager.is_halted) 와 Executor._halt 의 합집합.
+        # 별도 필드로 쪼개지 않은 이유는 DailySummary.halted 단일 소스라 두 줄에
+        # 같은 값을 찍으면 정보 이득이 없기 때문(ADR-0012 후속 정리 2026-04-21).
         body = (
             f"실현 PnL={summary.realized_pnl_krw}원 ({pct})\n"
             f"진입 횟수={summary.entries_today}\n"
-            f"서킷브레이커={halted}\n"
-            f"Executor halt={halted}\n"
+            f"매매 중단(halted)={halted}\n"
             f"Reconcile mismatch={mismatch}"
         )
         self._send(title, body)

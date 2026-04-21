@@ -57,7 +57,7 @@ from stock_agent.broker import (
 from stock_agent.broker.kis_client import KisClient
 from stock_agent.data import MinuteBar
 from stock_agent.risk import RiskManager
-from stock_agent.strategy import EntrySignal, ExitSignal, ORBStrategy, Signal
+from stock_agent.strategy import EntrySignal, ExitReason, ExitSignal, ORBStrategy, Signal
 
 KST = timezone(timedelta(hours=9))
 
@@ -286,13 +286,14 @@ class ExitEvent:
 
     `net_pnl_krw` 는 수수료·거래세 반영 순손익(`_compute_net_pnl` 결과와 동일).
     `reason` 은 `"stop_loss" | "take_profit" | "force_close"` — `ExitReason`
-    재사용(strategy/base.py).
+    재사용(strategy/base.py). 타입이 `ExitReason` 이므로 소비자(notifier 등)는
+    값 범위 가정을 정적 타입으로 보장받는다 (ADR-0012 후속 보강 2026-04-21).
     """
 
     symbol: str
     qty: int
     fill_price: Decimal
-    reason: str
+    reason: ExitReason
     net_pnl_krw: int
     timestamp: datetime
 

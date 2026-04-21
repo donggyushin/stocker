@@ -160,6 +160,18 @@ stock-agent/
 - **드라이런 모드**: `--dry-run` 플래그로 주문 API 호출 없이 로그만 (최종 검증용) — `main.py` 에서 구현 완료.
 - **산출물**: **모의투자 환경에서 최소 2주 무사고 운영** (에러 0건 · 알림 정상 · PnL 기록 정확)
 
+#### Phase 3 후속 정리 작업 (PR #18 코드 리뷰 피드백 — 모의투자 10영업일 운영 전·중 해소)
+
+PR #18 에서 Critical/Important 중 즉시 수정(C1, I4)만 반영했다. 나머지 5건은 **운영 안정성·테스트 확장** 영역으로 모의투자 운영 중 실제로 만날 가능성이 높은 이슈다. 후속 PR 1~2건으로 묶어 처리한다. 각 항목은 파일/라인과 실패 시나리오를 명시했으므로 착수 시 원본 리뷰로 되돌아갈 필요 없다.
+
+- [ ] **I1 — 연속 실패 경보 자체의 blackout 경로 보강** (`src/stock_agent/monitor/notifier.py:250-258`). `TelegramNotifier._record_failure` 의 `logger.critical` 1회 경보는 텔레그램 채널 자체가 죽은 시나리오에서 loguru sink(단말/파일)에만 남는다 — 야간/주말 운영에서 운영자가 놓칠 가능성. 최소한 (a) 운영 절차서에 `grep "telegram.notifier.persistent_failure" logs/*.log` 매 세션 종료 후 확인 명시, (b) 임계값 도달 시 `sys.stderr` 직접 write 로 2차 경보, (c) 일정 횟수 초과 시 `NullNotifier` 자기 강등 + 다음 호출에서 `RuntimeError` 1회 raise 중 하나 이상 도입.
+- [ ] **I2 — `_fmt_time` tz-naive 조용 포맷 가드** (`src/stock_agent/monitor/notifier.py:260-262`). 현재 docstring 에 "naive 도 그대로 포맷" 이라고 허용. Executor `_require_aware` 기조와 어긋나 naive datetime 혼입 시 UTC 시각을 KST 로 오독할 위험. `if ts.tzinfo is None` 에서 `logger.warning` + "(tz?)" 꼬리표 부착 또는 `astimezone(KST)` 강제.
+- [ ] **I3 — `_on_daily_report` `pct` 계산 타입 드리프트 방어** (`src/stock_agent/main.py:516-517`). 현 시점 `int / int` 라 안전하지만 `starting` 타입이 `Decimal` 로 드리프트하면 `* 100.0` 에서 `TypeError` 가 `except Exception` 에 silent 흡수되어 일일 요약 전체가 누락. `_safe_pct(pnl, starting) -> float | None` 로 분리해 계산 실패와 발송 실패를 직교화.
+- [ ] **I5 — `TelegramNotifier.__init__` factory 예외 전파 테스트 추가** (`tests/test_notifier.py` `TestTelegramNotifierInit` 섹션). 생성자의 `self._bot = factory(token)` 이 `InvalidToken` 등을 던질 때 예외가 그대로 전파되어 `_default_notifier_factory` 의 `except Exception` 에 걸려 `NullNotifier` 폴백이 트리거되는지 회귀 테스트. `factory = MagicMock(side_effect=RuntimeError(...))` 로 1건.
+- [ ] **I6 — `_default_notifier_factory` 다양한 예외 타입 폴백 parametrize 테스트** (`tests/test_main.py`). 현재는 `RuntimeError` 1종만 검증. `ValueError`/`ImportError`/`Exception` 등을 parametrize 로 확장해 향후 `except Exception` 좁힘 실수가 회귀로 잡히게 한다.
+
+합류 기준: 5건 모두 해소 후 Phase 3 PASS 조건(모의투자 10영업일 무중단) 에 재진입. C1/I4 는 PR #18 내 수정으로 반영 완료(ADR-0012 "후속 정리" 섹션 참조). Suggestion(S1~S9)는 우선순위 더 낮아 Phase 3 PASS 선언 이후 정리.
+
 ### Phase 4 — 소액 실전 전환 (운영 상시)
 - 모의 2주 통과 시 실전 APP_KEY로 전환, 환경변수만 교체
 - **초기 1주는 자본 50만원 한도** (`config/strategy.yaml`로 제한), 무사고 확인 후 점진 증액
