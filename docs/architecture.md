@@ -34,7 +34,8 @@ korean-stock-trading-system/
 │   ├── data/                  # 시장 데이터·유니버스  → CLAUDE.md
 │   ├── strategy/              # ORB 전략 엔진  → CLAUDE.md
 │   ├── risk/                  # 리스크 매니저  → CLAUDE.md
-│   └── backtest/              # 백테스트 엔진·민감도  → CLAUDE.md
+│   ├── backtest/              # 백테스트 엔진·민감도  → CLAUDE.md
+│   └── execution/             # Executor 오케스트레이션  → CLAUDE.md
 ├── scripts/                   # CLI 진입점 3종
 │   ├── healthcheck.py         # KIS 모의 잔고·실시간 시세·텔레그램 확인
 │   ├── backtest.py            # 단일 런 백테스트 (CSV 분봉 입력)
@@ -52,6 +53,7 @@ korean-stock-trading-system/
 - [src/stock_agent/strategy/CLAUDE.md](../src/stock_agent/strategy/CLAUDE.md)
 - [src/stock_agent/risk/CLAUDE.md](../src/stock_agent/risk/CLAUDE.md)
 - [src/stock_agent/backtest/CLAUDE.md](../src/stock_agent/backtest/CLAUDE.md)
+- [src/stock_agent/execution/CLAUDE.md](../src/stock_agent/execution/CLAUDE.md)
 
 ---
 
@@ -66,6 +68,7 @@ graph TD
     strategy[strategy/<br/>ORBStrategy · Signal DTO]
     risk[risk/<br/>RiskManager · RiskDecision]
     backtest[backtest/<br/>BacktestEngine · sensitivity]
+    execution[execution/<br/>Executor · Protocol 어댑터]
 
     healthcheck[scripts/healthcheck.py]
     bt_cli[scripts/backtest.py]
@@ -79,6 +82,11 @@ graph TD
     backtest --> strategy
     backtest --> risk
     backtest --> data
+    execution --> strategy
+    execution --> risk
+    execution --> broker
+    execution --> data
+    execution --> backtest
 
     healthcheck --> broker
     healthcheck --> data
@@ -336,14 +344,14 @@ Phase 진행 상태와 구체적 산출물은 [CLAUDE.md](../CLAUDE.md) 의 "현
 
 | 예상 경로 | 역할 | Phase |
 |---|---|---|
-| `src/stock_agent/execution/` | 장중 실시간 루프, 주문 송수신, 체결 추적 | Phase 3 |
-| `src/stock_agent/monitor/` | 포지션 추적, 텔레그램 알림 라우팅 | Phase 3+ |
-| `src/stock_agent/storage/` | 체결·주문 영속화 (SQLite) | Phase 3+ |
+| `src/stock_agent/execution/` | 장중 실시간 루프, 주문 송수신, 체결 추적 | **완료 2026-04-21 (코드·테스트 레벨)** |
+| `src/stock_agent/monitor/` | 포지션 추적, 텔레그램 알림 라우팅 | Phase 3 (미착수) |
+| `src/stock_agent/storage/` | 체결·주문 영속화 (SQLite) | Phase 3 (미착수) |
 | `src/stock_agent/data/` 의 KIS 과거 분봉 어댑터 | KIS 과거 분봉 API 어댑터 (현재 CSV 만 지원) | 별도 PR |
 
 ### 미완료 검증
 
-- 장중 실시간 시세 수신 end-to-end 확인 (실전 키 + IP 화이트리스트 + 평일 장중) — Phase 3 착수 전제
+- 장중 실시간 시세 수신 end-to-end 확인 (실전 키 + IP 화이트리스트 + 평일 장중) — **통과 완료 (2026-04-21)**
 - 2~3년 실데이터 기반 낙폭 절대값 15% 미만 (MDD > -15%) 수동 확인 — Phase 2 잔여
 - Phase 3 모의투자 2주 무사고 운영 — 실전 전환 전제
 

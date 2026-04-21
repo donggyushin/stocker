@@ -14,7 +14,7 @@ YAML 로더, 실시간 분봉 소스를 한 자리에 모아 상위 레이어
 `RealtimeDataStore`, `RealtimeDataError`, `TickQuote`, `MinuteBar`,
 `MinuteCsvBarLoader`, `MinuteCsvLoadError`
 
-## 현재 상태 (2026-04-19 기준)
+## 현재 상태 (2026-04-21 기준)
 
 - **`historical.py`** — Phase 1 세 번째 산출물(축소판, v3)
   - 공개 API 1종: `fetch_daily_ohlcv(symbol, start, end)` + 보조 `close()` / 컨텍스트 매니저.
@@ -45,7 +45,7 @@ YAML 로더, 실시간 분봉 소스를 한 자리에 모아 상위 레이어
     - `TickQuote(symbol: str, price: Decimal, ts: datetime)` — KST aware datetime.
     - `MinuteBar(symbol: str, bar_time: datetime, open: Decimal, high: Decimal, low: Decimal, close: Decimal, volume: int)` — KST aware bar_time. `volume` 은 Phase 1 에서 0 고정(Phase 3 실사 후 확정).
   - **모드 선택**: `start()` 시 `kis.websocket.ensure_connected(timeout=ws_connect_timeout_s)` 시도 → 실패 시 `mode="polling"` 확정. 폴링 모드는 데몬 스레드 1개가 구독 종목을 `polling_interval_s=1.0` 주기로 순회.
-  - **실전(live) 키 전용**: `settings.has_live_keys == False` 이면 `start()` 시 `RealtimeDataError` fail-fast. `has_live_keys == True` 이면 `KIS_LIVE_APP_KEY / KIS_LIVE_APP_SECRET / KIS_LIVE_ACCOUNT_NO` 으로 PyKis 인스턴스 생성 (HTS_ID 는 공유 `kis_hts_id`, `virtual_*` 슬롯 없음). HTS_ID 는 한 사람 당 하나라 paper/실전 구분이 불필요하지만, 계좌번호는 paper/실전이 서로 달라 별도 필드가 필수 (실전 APP_KEY 는 계좌 소유자 일치 검증으로 paper 계좌 주입을 거부).
+  - **실전(live) 키 전용**: `settings.has_live_keys == False` 이면 `start()` 시 `RealtimeDataError` fail-fast. `has_live_keys == True` 이면 `KIS_LIVE_APP_KEY / KIS_LIVE_APP_SECRET / KIS_LIVE_ACCOUNT_NO` 으로 PyKis 인스턴스 생성 (HTS_ID 는 공유 `kis_hts_id`, `virtual_*` 슬롯 없음). HTS_ID 는 한 사람 당 하나라 paper/실전 구분이 불필요하지만, 계좌번호는 paper/실전이 서로 달라 별도 필드가 필수 (실전 APP_KEY 는 계좌 소유자 일치 검증으로 paper 계좌 주입을 거부). **운영자가 2026-04-21 실전 시세 전용 키 3종 셋업 + IP 화이트리스트 등록 완료. `healthcheck.py` 4번 체크 정상 그린 — 더 이상 SKIP 아님.**
   - KIS paper 도메인(`openapivts`)은 `/quotations/*` 시세 API 를 제공하지 않아 paper 키로는 실시간 체결가를 받을 수 없다. KIS 공식 권장 패턴(시세는 실전 도메인 직접 호출)을 따른다.
 - **별도 PyKis 인스턴스** (`use_websocket=True`). 실전 키 PyKis 에 `install_order_block_guard` 설치 — `/trading/order*` 를 도메인 무관 차단하여 시세 전용 인스턴스임을 구조적으로 보장 (`broker/CLAUDE.md` 안전 가드 항목 참조). `install_paper_mode_guard` 는 더 이상 이 인스턴스에 설치하지 않는다.
   - **분봉 집계**: 틱의 분 경계(`second=0, microsecond=0`)로 OHLC 누적. 새 분 진입 시 이전 분봉을 `closed_bars`로 이동.
