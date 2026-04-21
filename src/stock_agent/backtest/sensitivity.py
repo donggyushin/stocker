@@ -118,43 +118,42 @@ class ParameterAxis:
             raise RuntimeError(f"ParameterAxis.name 의 field 가 비어있습니다 (got={self.name!r})")
         if not self.values:
             raise RuntimeError(f"ParameterAxis.values 는 1개 이상이어야 합니다 (name={self.name})")
-        # 중복 검출 — Decimal 등 unhashable 섞임 방지 위해 선형 비교.
-        seen: list[Any] = []
-        for v in self.values:
-            if any(v == s for s in seen):
-                raise RuntimeError(
-                    f"ParameterAxis.values 에 중복 값이 있습니다 (name={self.name}, value={v!r})"
-                )
-            seen.append(v)
+        # 중복 검출 — 축 후보값은 hashable 이어야 한다 (현 그리드는 Decimal·int·time 만 사용).
+        # unhashable 이 섞이면 TypeError 가 호출자에게 즉시 전파된다 (silent fallback 없음).
+        if len(frozenset(self.values)) != len(self.values):
+            seen: set[Any] = set()
+            for v in self.values:
+                if v in seen:
+                    raise RuntimeError(
+                        "ParameterAxis.values 에 중복 값이 있습니다 "
+                        f"(name={self.name}, value={v!r})"
+                    )
+                seen.add(v)
 
 
 @dataclass(frozen=True, slots=True)
 class SensitivityGrid:
     """축 목록을 Cartesian product 로 조합하는 그리드.
 
-    `axes` 가 빈 튜플이면 조합 0개 (즉시 종료). 축 순서 = 조합 dict 의 키 삽입
-    순서 → 결정론적 순회.
+    축 순서 = 조합 dict 의 키 삽입 순서 → 결정론적 순회.
 
     Raises:
-        RuntimeError: `axes` 의 이름이 중복되면 (같은 필드를 두 축에서 변주하는
-            설계 실수).
+        RuntimeError: `axes` 가 빈 튜플이거나, 축 이름이 중복될 때 (같은 필드를
+            두 축에서 변주하는 설계 실수).
     """
 
     axes: tuple[ParameterAxis, ...]
 
     def __post_init__(self) -> None:
+        if not self.axes:
+            raise RuntimeError("SensitivityGrid.axes 는 1개 이상이어야 합니다")
         names = [axis.name for axis in self.axes]
         if len(set(names)) != len(names):
             dupes = sorted({n for n in names if names.count(n) > 1})
             raise RuntimeError(f"SensitivityGrid.axes 에 중복된 이름이 있습니다: {dupes}")
 
     def iter_combinations(self) -> Iterator[dict[str, Any]]:
-        """각 조합을 `{name: value}` dict 로 yield. 축 선언 순서 고정.
-
-        빈 `axes` 면 yield 없음 (조합 0개).
-        """
-        if not self.axes:
-            return
+        """각 조합을 `{name: value}` dict 로 yield. 축 선언 순서 고정."""
         # 재귀 대신 스택 기반 — 축 개수에 상관없이 결정론적.
         indices = [0] * len(self.axes)
         sizes = [len(axis.values) for axis in self.axes]
@@ -175,8 +174,6 @@ class SensitivityGrid:
     @property
     def size(self) -> int:
         """조합 총 개수."""
-        if not self.axes:
-            return 0
         total = 1
         for axis in self.axes:
             total *= len(axis.values)
@@ -256,7 +253,9 @@ def run_sensitivity(
         symbols: 대상 종목 코드 튜플 (1개 이상).
         base_config: 그리드로 덮어쓰지 않은 필드의 기본값을 담은 `BacktestConfig`.
             `starting_capital_krw` · 나머지 비용/전략/리스크 설정이 여기서 출발점.
-        grid: 축 조합 — `grid.size == 0` 이면 빈 튜플 반환.
+        grid: 축 조합 — `SensitivityGrid` 가 축 1개 이상을 강제하므로 빈 결과는
+            나오지 않는다 (`axes=()` 이면 `SensitivityGrid.__post_init__` 에서
+            차단).
 
     Returns:
         조합 순서대로 생성된 `SensitivityRow` 튜플 (결정론).

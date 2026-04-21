@@ -74,7 +74,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **Phase 3 두 번째 산출물 — main.py + APScheduler 통합 (코드·테스트 레벨) 완료** (2026-04-21). `src/stock_agent/main.py` 신설 — `BlockingScheduler` + 4종 cron job(09:00 session_start·매분 step·15:00 force_close·15:30 daily_report, 평일 한정) + `--dry-run` CLI 플래그(KIS 주문 접촉 0). pytest **681건 green**.
 
-**Phase 3 세 번째 산출물 — monitor/notifier.py (텔레그램 알림, 코드·테스트 레벨) 완료** (2026-04-21). `src/stock_agent/monitor/` 패키지 신설 — `Notifier` Protocol + `TelegramNotifier` + `NullNotifier` + `ErrorEvent`/`DailySummary` DTO. 진입·청산·에러·일일 요약 4종 텔레그램 알림. 전송 실패 silent fail + 연속 실패 경보. pytest **780건 green**. 의존성 추가 없음. 후속 산출물(`storage/db.py`) 미착수. **Phase 3 PASS 선언은 모의투자 환경 연속 10영업일 무중단 운영 후.**
+**Phase 3 세 번째 산출물 — monitor/notifier.py (텔레그램 알림, 코드·테스트 레벨) 완료** (2026-04-21). `src/stock_agent/monitor/` 패키지 신설 — `Notifier` Protocol + `TelegramNotifier` + `NullNotifier` + `ErrorEvent`/`DailySummary` DTO. 진입·청산·에러·일일 요약 4종 텔레그램 알림. 전송 실패 silent fail + 연속 실패 경보. pytest **778건 green**. 의존성 추가 없음. 후속 산출물(`storage/db.py`) 미착수. **Phase 3 PASS 선언은 모의투자 환경 연속 10영업일 무중단 운영 후.**
 
 **운영 주의**: KOSPI 200 구성종목은 `config/universe.yaml`에 수동 관리합니다. KRX KOSPI 200 정기변경(연 2회 — 매년 6월·12월의 선물·옵션 동시만기일 익영업일 기준)에 맞춰 운영자가 직접 갱신해야 합니다. 현재 KRX 정보데이터시스템 [11006] 기준 199/200 반영(2026-04-17 조회, 임시 가상 코드 1건 제외). 정식 티커 발급 후 다음 갱신에 추가 예정.
 

@@ -237,17 +237,6 @@ class TestSensitivityGrid:
         grid = SensitivityGrid(axes=(self._axis_a(),))
         assert grid.size == 2
 
-    def test_size_빈_axes(self):
-        """axes=() → size == 0."""
-        grid = SensitivityGrid(axes=())
-        assert grid.size == 0
-
-    def test_iter_combinations_빈_axes_yield_없음(self):
-        """빈 axes → iter_combinations 에서 yield 없음."""
-        grid = SensitivityGrid(axes=())
-        combos = list(grid.iter_combinations())
-        assert combos == []
-
     def test_iter_combinations_개수_정확(self):
         """2 × 3 그리드 → 조합 6개."""
         grid = SensitivityGrid(axes=(self._axis_a(), self._axis_b()))
@@ -287,6 +276,11 @@ class TestSensitivityGrid:
             assert key not in seen, f"중복 조합 발견: {key}"
             seen.add(key)
         assert len(seen) == 6
+
+    def test_빈_axes_RuntimeError(self):
+        """axes=() → __post_init__ 에서 RuntimeError (빈 그리드 조기 실패)."""
+        with pytest.raises(RuntimeError, match="axes"):
+            SensitivityGrid(axes=())
 
     def test_중복_축_이름_RuntimeError(self):
         """동일 name 의 축 2개 → RuntimeError."""
@@ -501,13 +495,6 @@ class TestRunSensitivity:
             assert r1.params == r2.params
             assert r1.metrics.net_pnl_krw == r2.metrics.net_pnl_krw
             assert r1.trade_count == r2.trade_count
-
-    def test_그리드_size_0_빈_튜플_반환(self):
-        """빈 grid (axes=()) → 빈 tuple 반환."""
-        loader = InMemoryBarLoader([])
-        grid = SensitivityGrid(axes=())
-        rows = run_sensitivity(loader, _DATE1, _DATE1, (_SYM_A,), _make_base_config(), grid)
-        assert rows == ()
 
     def test_strategy_prefix_적용(self):
         """strategy.take_profit_pct 변경 → 적용된 파라미터가 row.params_dict() 에 반영."""

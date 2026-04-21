@@ -198,7 +198,7 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
   - 의존성 추가: `pykrx 1.2.7` (+ transitive: pandas, numpy, matplotlib 등), `pyyaml 6.0.3`.
   - **미완료 조건**: 장중 실시간 시세 수신 end-to-end 확인(실전 키 + IP 화이트리스트 + 평일 장중 틱 수신)은 **Phase 3 착수 전제**로 이관. PASS 선언은 코드·테스트 레벨 기준.
 
-- **Phase 2 진행 중 — ORB 전략 엔진 + 리스크 매니저 + 백테스트 엔진 코어 + CSV 분봉 어댑터 완료** (2026-04-20)
+- **Phase 2 진행 중 — ORB 전략 엔진 + 리스크 매니저 + 백테스트 엔진 코어 + CSV 분봉 어댑터 + 파라미터 민감도 그리드 + backtest.py CLI 완료** (2026-04-20)
   - `src/stock_agent/strategy/` 패키지 신설 — `ORBStrategy` + `StrategyConfig` + `Strategy` Protocol + `EntrySignal`/`ExitSignal` DTO. 모듈 세부는 [src/stock_agent/strategy/CLAUDE.md](./src/stock_agent/strategy/CLAUDE.md) 참조.
   - 설계 결정: 진입은 분봉 close 기준 OR-High strict 상향 돌파, 동일 분봉 손절·익절 동시 성립 시 손절 우선, 1일 1회 진입, `StrategyConfig` 생성자 주입(YAML 미도입), `Strategy` Protocol 최소, 세션 경계는 `bar.bar_time.date()` 기반 자동 리셋.
   - `src/stock_agent/risk/` 패키지 신설 — `RiskManager` + `RiskConfig` + `RiskDecision` + `PositionRecord` + `RejectReason` + `RiskManagerError`. 모듈 세부는 [src/stock_agent/risk/CLAUDE.md](./src/stock_agent/risk/CLAUDE.md) 참조.
@@ -233,7 +233,7 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
   - 핵심 결정 (ADR-0012): Protocol 의존성 역전 유지(Executor 는 notifier 모름), `StepReport` 확장(`entry_events`/`exit_events` 기본값 `()` backward compat), 전송 실패 silent fail + 연속 실패 dedupe 경보, 드라이런도 실전송 + `[DRY-RUN]` 프리픽스, plain text 한국어 포맷.
   - `execution/executor.py` 확장: `EntryEvent`/`ExitEvent` DTO 신설, `StepReport.entry_events`/`exit_events` 추가, `Executor.last_reconcile` 프로퍼티 추가.
   - `main.py` 확장: `Runtime.notifier: Notifier` 필드, `_default_notifier_factory`, `build_runtime(..., notifier_factory=...)`, 콜백 4종에 `notify_*` 호출 삽입.
-  - pytest **681 → 780건 green** (notifier 71건 신규 + executor/main 확장분 포함). 회귀 0건. 의존성 추가 없음.
+  - pytest **681 → 778건 green** (notifier 71건 신규 + executor/main 확장분 포함; Issue #13 대응 중복 검출 O(n) 단순화·빈 axes 가드 추가, 허용 테스트 3건 삭제 + 가드 테스트 1건 추가로 순감 2). 회귀 0건. 의존성 추가 없음.
   - 미완료: `storage/db.py` (SQLite 체결 기록, 미착수). **Phase 3 PASS 선언은 모의투자 연속 10영업일 무중단 운영 후.**
 
 - **다음 작업**
