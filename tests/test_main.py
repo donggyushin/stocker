@@ -1325,6 +1325,37 @@ def test_default_notifier_factory_TelegramNotifier_예외시_NullNotifier_폴백
     assert "NullNotifier" in warning_msg or "notifier_factory" in warning_msg
 
 
+@pytest.mark.parametrize(
+    "exc",
+    [
+        RuntimeError("runtime"),
+        ValueError("invalid"),
+        ImportError("missing dep"),
+        OSError("network down"),
+        Exception("generic"),
+    ],
+    ids=["RuntimeError", "ValueError", "ImportError", "OSError", "Exception"],
+)
+def test_default_notifier_factory_예외_5종_모두_NullNotifier_폴백(
+    mocker: Any,
+    exc: Exception,
+) -> None:
+    """예외 5종 parametrize 회귀.
+
+    `except Exception` 을 좁히면 실패하도록 계약 잠금. 관련 이슈 #27.
+    """
+    fake_settings = _make_fake_settings_for_notifier()
+    mocker.patch("stock_agent.main.TelegramNotifier", side_effect=exc)
+    mock_logger = mocker.patch("stock_agent.main.logger")
+
+    result = _default_notifier_factory(fake_settings, dry_run=False)
+
+    assert isinstance(result, NullNotifier)
+    mock_logger.warning.assert_called_once()
+    warning_msg = str(mock_logger.warning.call_args)
+    assert "NullNotifier" in warning_msg or "notifier_factory" in warning_msg
+
+
 def test_default_notifier_factory_dry_run_True_가_TelegramNotifier에_전달됨(
     mocker: Any,
 ) -> None:
