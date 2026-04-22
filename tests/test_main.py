@@ -2544,9 +2544,8 @@ class TestOnSessionStartRestartDetection:
 
         # restart 감지 warning 이 포함됐는지 확인
         warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
-        assert any(
-            "restart" in w for w in warning_calls
-        ), f"logger.warning 에 'restart' 포함 호출 없음. calls={warning_calls}"
+        msg = f"logger.warning 에 'restart' 포함 호출 없음. calls={warning_calls}"
+        assert any("restart" in w for w in warning_calls), msg
 
     def test_신규_세션_시_logger_info에_restart_False_포함(self, mocker: Any) -> None:
         """is_restart=False 경로에서 logger.info 에 'restart=False' 가 포함된다."""
@@ -2569,9 +2568,8 @@ class TestOnSessionStartRestartDetection:
 
         # main.session_start info 로그에 restart=False 포함 여부 검증
         info_calls = [str(c) for c in mock_logger.info.call_args_list]
-        assert any(
-            "restart" in s for s in info_calls
-        ), f"logger.info 에 'restart' 포함 호출 없음. calls={info_calls}"
+        msg = f"logger.info 에 'restart' 포함 호출 없음. calls={info_calls}"
+        assert any("restart" in s for s in info_calls), msg
 
     def test_시작자본_0이면_recorder_load_호출_안함(self) -> None:
         """starting_capital <= 0 이면 recorder.load_* 를 호출하지 않고 조기 반환."""
