@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import decimal
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -699,6 +700,74 @@ class TestRestoreLongPosition:
         strategy = ORBStrategy()
         with pytest.raises(RuntimeError, match="entry_price"):
             strategy.restore_long_position(_SYMBOL, Decimal("0"), _now(9, 45))
+
+
+class TestRestoreLongPositionDecimalException:
+    """restore_long_position — Decimal 연산 실패 시 StrategyError 래핑 (Issue #42).
+
+    현재 restore_long_position 에는 on_bar 의 DecimalException → StrategyError
+    래핑 가드(orb.py:182-187)가 없다. 이 클래스는 그 누락을 RED 테스트로 고정해
+    구현 후 GREEN 전환을 강제한다.
+    """
+
+    def test_decimal_exception_stop_계산_StrategyError_래핑(self):
+        """stop = entry_price * (1 - stop_loss_pct) 에서 InvalidOperation 발생 시
+        StrategyError 로 래핑되고 __cause__ 가 DecimalException 서브클래스여야 한다.
+
+        decimal.localcontext 로 Inexact 트랩 + prec=1 설정 후
+        70000 * Decimal("0.985") 계산이 Inexact → InvalidOperation 을 유발한다.
+        """
+        strategy = ORBStrategy()
+        # prec=1 + Inexact 트랩: "70000 * 0.985" 는 Inexact 이므로 InvalidOperation 발생
+        with decimal.localcontext() as ctx:
+            ctx.prec = 1
+            ctx.traps[decimal.Inexact] = True
+            with pytest.raises(StrategyError) as exc_info:
+                strategy.restore_long_position(_SYMBOL, Decimal("70000"), _now(9, 45))
+
+        err = exc_info.value
+        # __cause__ 가 DecimalException 계열이어야 한다
+        assert isinstance(err.__cause__, decimal.DecimalException)
+        # 오류 메시지에 symbol 이 포함되어야 한다
+        assert _SYMBOL in str(err)
+
+    def test_decimal_exception_take_계산_StrategyError_래핑(self):
+        """take = entry_price * (1 + take_profit_pct) 계산에서도 동일하게 래핑된다.
+
+        stop_loss_pct 를 정확히 계산 가능한 Decimal("0") 으로 강제 불가
+        (StrategyConfig 검증이 0 을 거부하므로) — 대신 prec=1 + Inexact 트랩으로
+        두 곱셈 중 하나에서 트리거한다. 어느 쪽이든 StrategyError 이면 충분.
+        """
+        strategy = ORBStrategy()
+        with decimal.localcontext() as ctx:
+            ctx.prec = 1
+            ctx.traps[decimal.Inexact] = True
+            with pytest.raises(StrategyError) as exc_info:
+                strategy.restore_long_position(_SYMBOL, Decimal("68500"), _now(10, 0))
+
+        err = exc_info.value
+        assert isinstance(err.__cause__, decimal.DecimalException)
+        assert _SYMBOL in str(err)
+
+    def test_runtime_error_경로_변경_없음_symbol_포맷(self):
+        """DecimalException 래핑 추가 후에도 symbol 포맷 오류는 여전히 RuntimeError."""
+        strategy = ORBStrategy()
+        with decimal.localcontext() as ctx:
+            ctx.prec = 1
+            ctx.traps[decimal.Inexact] = True
+            # symbol 검증은 Decimal 연산 이전에 수행되므로 RuntimeError 전파
+            with pytest.raises(RuntimeError, match="symbol"):
+                strategy.restore_long_position("1234", Decimal("70000"), _now(9, 45))
+
+    def test_runtime_error_경로_변경_없음_naive_ts(self):
+        """DecimalException 래핑 추가 후에도 naive entry_ts 는 여전히 RuntimeError."""
+        strategy = ORBStrategy()
+        naive_ts = datetime(2026, 4, 20, 9, 45)  # tzinfo=None
+        with decimal.localcontext() as ctx:
+            ctx.prec = 1
+            ctx.traps[decimal.Inexact] = True
+            with pytest.raises(RuntimeError, match="entry_ts"):
+                strategy.restore_long_position(_SYMBOL, Decimal("70000"), naive_ts)
 
 
 # ---------------------------------------------------------------------------
