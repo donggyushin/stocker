@@ -269,6 +269,24 @@ class TestTelegramNotifierInit:
         """정상 파라미터는 RuntimeError 없이 생성된다."""
         _make_notifier()  # 예외 없이 통과하면 pass
 
+    def test_bot_factory_raising_exception_propagates_from_init(self) -> None:
+        """bot_factory 가 예외를 던지면 __init__ 은 예외를 삼키지 말고 그대로 전파해야 한다.
+
+        근거: main.py._default_notifier_factory 의 `except Exception → NullNotifier` 폴백은
+        생성자가 예외를 전파한다는 하위 계약에 의존한다. 만약 __init__ 이 내부적으로
+        예외를 삼키고 self 를 반환하면, 잘못된 토큰으로 기동해도 NullNotifier 로 폴백되지
+        않고 silent 하게 "정상" 으로 오인된다 (이슈 #26).
+        """
+        boom = RuntimeError("bot factory failure")
+        factory = MagicMock(side_effect=boom)
+        with pytest.raises(RuntimeError) as exc_info:
+            TelegramNotifier(
+                bot_token=_TOKEN,
+                chat_id=_CHAT_ID,
+                bot_factory=factory,
+            )
+        assert exc_info.value is boom
+
 
 # ---------------------------------------------------------------------------
 # 4. bot_factory 주입 계약 — 생성자에서 1회 호출, 각 notify 에서 재사용
