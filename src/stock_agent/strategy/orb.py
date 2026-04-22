@@ -385,8 +385,16 @@ class ORBStrategy:
             state.reset(session)
 
         cfg = self._config
-        stop = entry_price * (Decimal("1") - cfg.stop_loss_pct)
-        take = entry_price * (Decimal("1") + cfg.take_profit_pct)
+        try:
+            stop = entry_price * (Decimal("1") - cfg.stop_loss_pct)
+            take = entry_price * (Decimal("1") + cfg.take_profit_pct)
+        except DecimalException as e:
+            # `on_bar` 와 동일 계약 — Decimal 연산 실패만 좁혀 StrategyError 로
+            # 래핑. AttributeError 같은 코드 버그는 의도적으로 propagate.
+            logger.exception(f"ORB restore_long_position Decimal 연산 실패 ({symbol})")
+            raise StrategyError(
+                f"ORB restore_long_position Decimal 연산 실패 ({symbol}): {e}"
+            ) from e
         state.position_state = "long"
         state.entry_price = entry_price
         state.stop_price = stop
