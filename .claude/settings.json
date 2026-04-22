@@ -34,6 +34,11 @@
             "type": "command",
             "command": "bash .claude/hooks/pyright-full-scope.sh",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/ci-lint-full-scope.sh",
+            "timeout": 30
           }
         ]
       }

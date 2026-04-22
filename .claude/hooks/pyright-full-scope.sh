@@ -80,17 +80,25 @@ if printf '%s' "$COMMAND" | grep -Eq -- '--dry-run'; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4) PROJECT_ROOT 확보 + stock-agent 인지 판정.
+# 4) PROJECT_ROOT 확보 — stock-agent 저장소 시그니처 기반.
+#    디렉터리 이름(`*/stock-agent`) 만으로 gate 하면 claude-squad worktree
+#    에서 훅이 비활성화되어 오히려 실수가 터지는 곳에서 발동 안 한다.
+#    시그니처 2종 — (1) `.github/workflows/ci.yml` 의 pyright 커맨드 존재,
+#    (2) `pyproject.toml` 의 `[tool.pyright]` 섹션 존재 — 으로 판정해
+#    worktree 포함 모든 체크아웃을 커버한다.
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [ -z "$PROJECT_ROOT" ] && exit 0
 
 PROJECT_ROOT="$(cd "$PROJECT_ROOT" 2>/dev/null && pwd -P || echo "$PROJECT_ROOT")"
-case "$PROJECT_ROOT" in
-  */stock-agent) : ;;
-  *) exit 0 ;;
-esac
+
+CI_FILE="$PROJECT_ROOT/.github/workflows/ci.yml"
+PYPROJECT="$PROJECT_ROOT/pyproject.toml"
+[ -f "$CI_FILE" ] || exit 0
+[ -f "$PYPROJECT" ] || exit 0
+grep -qE 'uv run pyright[[:space:]]+src[[:space:]]+scripts[[:space:]]+tests' "$CI_FILE" || exit 0
+grep -qE '^\[tool\.pyright\]' "$PYPROJECT" || exit 0
 
 # ---------------------------------------------------------------------------
 # 5) pyright 실행 — CI 와 정확히 동일 범위.

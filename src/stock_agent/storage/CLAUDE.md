@@ -19,6 +19,7 @@ stock-agent 의 영속화 경계 모듈. `Executor` 가 방출한 `EntryEvent`·
 
 **Phase 3 네 번째 산출물 — `storage/db.py` (코드·테스트 레벨) 완료** (2026-04-22).
 **Phase 3 다섯 번째 산출물 — 세션 재기동 복원 경로 (코드·테스트 레벨) 완료** (2026-04-22, Issue #33): `load_open_positions` · `load_daily_pnl` 2 메서드 + `OpenPositionRow` · `DailyPnlSnapshot` DTO 추가.
+**2026-04-22 후속 — `load_*` 행 단위 예외 격리 (Issue #40) 완료**: 쿼리 자체 실패는 빈 결과 + 카운터 +1, 개별 행 파싱 실패는 행 단위 skip + `logger.error`, 파싱 실패 1건 이상이면 메서드 카운터 +1 경로로 묶음.
 
 의도적으로 미포함(defer):
 - 주간 회고 리포트 CLI (`scripts/weekly_report.py` 등) — MVP 는 SQL 직접 쿼리
@@ -128,7 +129,7 @@ def load_daily_pnl(self, session_date: date) -> DailyPnlSnapshot:
 
 **`has_state` 공식** — `entries_today > 0 or bool(closed_symbols) or realized_pnl_krw != 0` (3항 OR). `_on_session_start` 가 이 값으로 "신규 세션 / 재기동 복원" 을 분기.
 
-**실패 정책 (silent fail 확장)**: `load_*` 내부의 `sqlite3.Error`·`DecimalException`·`ValueError`·`TypeError` 를 `logger.warning` + 연속 실패 카운터로 흡수한다. `_TRACKED_OPS` 에 `load_open_positions` · `load_daily_pnl` 가 추가되어 메서드별 독립 실패 카운터 를 유지한다. 읽기 실패 시 빈 결과(`tuple()` / `DailyPnlSnapshot(session_date, 0, 0, ())`)를 반환해 호출자가 신규 세션으로 폴백할 수 있도록 한다.
+**실패 정책 (silent fail 확장)**: `load_*` 의 실패는 두 계층으로 구분된다. ① 쿼리 자체 실패(`sqlite3.Error`·`ValueError`·`TypeError`) → `logger.warning` + 연속 실패 카운터 +1, 빈 결과 반환. ② 개별 행 파싱 실패(`Decimal` 변환·`datetime.fromisoformat`·`OpenPositionRow.__post_init__` RuntimeError 등) → 해당 행 `logger.error` + skip, 나머지 행은 정상 반환. 파싱 실패 1건 이상이면 카운터 +1 경보 경로를 탄다 (Issue #40). `_TRACKED_OPS` 에 `load_open_positions` · `load_daily_pnl` 가 추가되어 메서드별 독립 실패 카운터를 유지한다. 읽기 실패 시 빈 결과(`tuple()` / `DailyPnlSnapshot(session_date, 0, 0, ())`)를 반환해 호출자가 신규 세션으로 폴백할 수 있도록 한다.
 
 **NullTradingRecorder 대칭**: `load_open_positions` → `()`, `load_daily_pnl` → `DailyPnlSnapshot(session_date=입력, realized_pnl_krw=0, entries_today=0, closed_symbols=())` 반환 (no-op).
 
@@ -244,12 +245,13 @@ CREATE TABLE IF NOT EXISTS daily_pnl (
 3. 성공 1회 → 카운터 0 리셋 + `_critical_emitted = False`.
 4. `close()` 이후 `record_*` 호출 → `logger.warning` 1회 + silent 반환. 카운터 불변.
 5. naive timestamp 입력 → `logger.warning` + 카운터 +1 + silent 반환 (DTO `__post_init__` 가 이미 차단하지만 defensive depth).
+6. **`load_*` 행 단위 격리 (Issue #40)** — 쿼리 자체 실패(`sqlite3.Error`·`ValueError`·`TypeError`) → 빈 결과 + `_on_failure` + 카운터 +1. 개별 행 파싱 실패(`Decimal` 변환·`datetime.fromisoformat`·`OpenPositionRow.__post_init__` RuntimeError 등) → 해당 행만 `logger.error` 로 skip, 나머지 행 정상 반환. 파싱 실패 1건 이상이면 `_on_failure` 를 1회 호출해 메서드별 카운터 +1 + dedupe 경보 경로를 탄다. 모든 행이 실패해도 크래시 없이 빈 결과(`()` / `DailyPnlSnapshot(session_date, 0, 0, ())`). `load_daily_pnl` 내부에서 `sold.add(symbol)` 은 `int(net_pnl)` 성공 이후에 실행해, 파싱 실패 시 해당 심볼이 `closed_symbols` 에 잘못 포함되지 않도록 한다.
 
 ## 테스트 정책
 
 - 실제 파일 I/O: `":memory:"` (단위 테스트) 또는 `tmp_path` fixture (경로 테스트). 외부 의존 0.
 - KIS 네트워크·텔레그램·시계·실파일 절대 접촉 금지.
-- 관련 테스트 파일: `tests/test_storage_db.py`. 카테고리 — 공개 심볼 노출, `SqliteTradingRecorder` 생성·스키마·PRAGMA, `record_entry`/`record_exit`/`record_daily_summary` 정상·가드·DB 행 검증, silent fail + 연속 실패 dedupe, close 후 호출 내구성, `NullTradingRecorder` no-op, `StorageError` 계약, 컨텍스트 매니저, close 멱등.
+- 관련 테스트 파일: `tests/test_storage_db.py`. 카테고리 — 공개 심볼 노출, `SqliteTradingRecorder` 생성·스키마·PRAGMA, `record_entry`/`record_exit`/`record_daily_summary` 정상·가드·DB 행 검증, silent fail + 연속 실패 dedupe, close 후 호출 내구성, `NullTradingRecorder` no-op, `StorageError` 계약, 컨텍스트 매니저, close 멱등. Issue #40 대응으로 `TestLoadOpenPositionsRowIsolation` · `TestLoadDailyPnlRowIsolation` 클래스 추가 (행 단위 파싱 실패 격리 검증).
 - SKIP 케이스 3건: naive timestamp 는 DTO `__post_init__` 가드가 선점하므로 `record_*` 진입 전 `RuntimeError` — SKIP 처리. 자세한 사유는 테스트 파일 내 주석 참조.
 - 테스트 파일 작성·수정은 반드시 `unit-test-writer` 서브에이전트 경유 (root CLAUDE.md 하드 규칙).
 

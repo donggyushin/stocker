@@ -76,7 +76,7 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, DecimalException
+from decimal import Decimal
 from pathlib import Path
 from types import TracebackType
 from typing import Protocol, runtime_checkable
@@ -565,17 +565,18 @@ class SqliteTradingRecorder:
         동일 심볼의 buy 가 재등장해도 마지막 buy 를 보존한다(데이터 오염 방어적
         허용 — 일반 경로에서는 발생하지 않음).
 
-        실패 정책 — `record_*` 와 동일 silent fail:
+        실패 정책 — `record_*` 와 동일 silent fail, **행 단위 격리 (Issue #40)**:
             close 후 호출 → warning 1회 + 빈 tuple 반환 (카운터 불변).
-            `sqlite3.Error` 및 기타 `Exception` → silent fail + 연속 실패
-            dedupe 경보 + 빈 tuple 반환. `DecimalException` 등 데이터 파싱
-            실패도 동일 경로.
+            쿼리 자체 실패 (`sqlite3.Error`·`ValueError`·`TypeError`) → silent
+            fail + 연속 실패 dedupe 경보 + 빈 tuple 반환.
+            **개별 행 파싱 실패** (`DecimalException`·`ValueError`·`TypeError`·
+            `RuntimeError` — DTO `__post_init__` 가드 포함) → 해당 행만
+            `logger.error` 로 skip, 나머지 행은 반환. 1건 이상 파싱 실패가
+            발생하면 메서드 카운터를 +1 하고 `_maybe_emit_critical` 경유.
 
         Raises:
             이 메서드는 raise 하지 않는다 — 매매 루프 보호 계약(ADR-0013) 을
-            load 경로까지 확장한다. 복원 실패 시 호출자(main) 는 빈 결과를
-            "신규 세션" 으로 해석하므로 절전 복구가 데이터 손실로 이어질 수
-            있지만, 부분 복원(예: 일부 포지션만 복원) 보다는 전체 스킵이 안전.
+            load 경로까지 확장한다.
         """
         if self._closed:
             logger.warning(
@@ -589,8 +590,16 @@ class SqliteTradingRecorder:
                 "FROM orders WHERE session_date = ? ORDER BY filled_at ASC, rowid ASC",
                 (session_date.isoformat(),),
             ).fetchall()
-            open_map: dict[str, OpenPositionRow] = {}
-            for side, symbol, qty, fill_price, order_number, filled_at in rows:
+        except (sqlite3.Error, ValueError, TypeError) as e:
+            self._on_failure(_OP_LOAD_OPEN_POSITIONS, e)
+            return ()
+
+        open_map: dict[str, OpenPositionRow] = {}
+        failed_count = 0
+        last_err: Exception | None = None
+        for raw in rows:
+            try:
+                side, symbol, qty, fill_price, order_number, filled_at = raw
                 if side == "buy":
                     open_map[symbol] = OpenPositionRow(
                         symbol=symbol,
@@ -606,11 +615,20 @@ class SqliteTradingRecorder:
                         "storage.load_open_positions: 알 수 없는 side={side} 무시",
                         side=side,
                     )
+            except Exception as e:  # noqa: BLE001 — Issue #40: 행 단위 격리
+                failed_count += 1
+                last_err = e
+                logger.error(
+                    f"storage.load_open_positions: 행 파싱 실패 skip "
+                    f"(raw={raw!r}): {e.__class__.__name__}: {e}"
+                )
+
+        if failed_count > 0:
+            assert last_err is not None
+            self._on_failure(_OP_LOAD_OPEN_POSITIONS, last_err)
+        else:
             self._on_success(_OP_LOAD_OPEN_POSITIONS)
-            return tuple(open_map.values())
-        except (sqlite3.Error, DecimalException, ValueError, TypeError) as e:
-            self._on_failure(_OP_LOAD_OPEN_POSITIONS, e)
-            return ()
+        return tuple(open_map.values())
 
     def load_daily_pnl(self, session_date: date) -> DailyPnlSnapshot:
         """Issue #33 — 재기동 시 당일 PnL·진입 횟수·청산 심볼 집계.
@@ -620,8 +638,10 @@ class SqliteTradingRecorder:
             - sell 의 `net_pnl_krw` 합 → `realized_pnl_krw`.
             - sell 의 symbol 집합 (정렬 tuple) → `closed_symbols`.
 
-        실패 정책 — `load_open_positions` 와 동일 silent fail. 실패 시 "빈
-        상태" snapshot 을 반환해 호출자(main) 가 신규 세션 분기로 폴백.
+        실패 정책 — `load_open_positions` 와 동일 silent fail + **행 단위 격리
+        (Issue #40)**. 쿼리 자체 실패 시 빈 snapshot + 카운터 +1. 개별 행
+        파싱 실패는 해당 행만 `logger.error` skip, 나머지 행은 집계에 반영,
+        실패 1건 이상이면 메서드 카운터 +1.
         """
         empty = DailyPnlSnapshot(
             session_date=session_date,
@@ -640,26 +660,43 @@ class SqliteTradingRecorder:
                 "SELECT side, symbol, net_pnl_krw FROM orders WHERE session_date = ?",
                 (session_date.isoformat(),),
             ).fetchall()
-            entries = 0
-            pnl = 0
-            sold: set[str] = set()
-            for side, symbol, net_pnl in rows:
-                if side == "buy":
-                    entries += 1
-                elif side == "sell":
-                    sold.add(symbol)
-                    if net_pnl is not None:
-                        pnl += int(net_pnl)
-            self._on_success(_OP_LOAD_DAILY_PNL)
-            return DailyPnlSnapshot(
-                session_date=session_date,
-                realized_pnl_krw=pnl,
-                entries_today=entries,
-                closed_symbols=tuple(sorted(sold)),
-            )
         except (sqlite3.Error, ValueError, TypeError) as e:
             self._on_failure(_OP_LOAD_DAILY_PNL, e)
             return empty
+
+        entries = 0
+        pnl = 0
+        sold: set[str] = set()
+        failed_count = 0
+        last_err: Exception | None = None
+        for raw in rows:
+            try:
+                side, symbol, net_pnl = raw
+                if side == "buy":
+                    entries += 1
+                elif side == "sell":
+                    if net_pnl is not None:
+                        pnl += int(net_pnl)
+                    sold.add(symbol)
+            except Exception as e:  # noqa: BLE001 — Issue #40: 행 단위 격리
+                failed_count += 1
+                last_err = e
+                logger.error(
+                    f"storage.load_daily_pnl: 행 집계 실패 skip "
+                    f"(raw={raw!r}): {e.__class__.__name__}: {e}"
+                )
+
+        if failed_count > 0:
+            assert last_err is not None
+            self._on_failure(_OP_LOAD_DAILY_PNL, last_err)
+        else:
+            self._on_success(_OP_LOAD_DAILY_PNL)
+        return DailyPnlSnapshot(
+            session_date=session_date,
+            realized_pnl_krw=pnl,
+            entries_today=entries,
+            closed_symbols=tuple(sorted(sold)),
+        )
 
     def close(self) -> None:
         """멱등 close. 실패 경로에서도 호출 가능."""

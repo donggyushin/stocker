@@ -1546,3 +1546,374 @@ class TestLoadDailyPnl:
         assert result.entries_today == 0
         assert result.realized_pnl_krw == 0
         assert r._consecutive_failures["load_daily_pnl"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Issue #40 — load_open_positions 행 단위 파싱 실패 격리 (RED 모드)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadOpenPositionsRowIsolation:
+    """load_open_positions 의 행 단위 파싱 실패 격리 검증.
+
+    현재 구현(db.py:586-613)은 try/except 가 루프 전체를 감싸므로 1행 실패 시
+    전체 () 를 반환한다. Issue #40 수용 기준은 행 단위 격리 — 이 클래스의
+    모든 테스트는 현재 구현 대상 RED(FAIL) 이다.
+    """
+
+    # --- 클래스 내 전용 헬퍼 (TestLoadOpenPositions 와 동일 구조) ----------
+
+    def _insert_buy(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        symbol: str = _SYMBOL,
+        qty: int = 10,
+        fill_price: str = "70000",
+        order_number: str = _ORDER_BUY,
+        session_date: str | None = None,
+        filled_at: str | None = None,
+    ) -> None:
+        sd = session_date or _DATE.isoformat()
+        fa = filled_at or _kst(9, 31).isoformat()
+        conn.execute(
+            "INSERT INTO orders "
+            "(order_number, session_date, symbol, side, qty, fill_price, ref_price, "
+            " exit_reason, net_pnl_krw, filled_at) "
+            "VALUES (?, ?, ?, 'buy', ?, ?, ?, NULL, NULL, ?)",
+            (order_number, sd, symbol, qty, fill_price, fill_price, fa),
+        )
+
+    def test_fill_price_파싱_실패_1건_나머지_2건_반환(self) -> None:
+        """3개 buy 행 중 1개 fill_price='abc' → 나머지 2건 반환 (길이 == 2).
+
+        스키마는 fill_price TEXT NOT NULL 이므로 CHECK 제약 없이 'abc' 직접 삽입
+        가능. Decimal('abc') 파싱 실패는 애플리케이션 측에서 발생.
+        """
+        r = _make_recorder()
+        conn = _get_conn(r)
+        self._insert_buy(conn, symbol="005930", order_number="ORD-B-1", fill_price="70000")
+        self._insert_buy(conn, symbol="000660", order_number="ORD-B-2", fill_price="abc")  # 오염
+        self._insert_buy(conn, symbol="035420", order_number="ORD-B-3", fill_price="72000")
+
+        result = r.load_open_positions(_DATE)
+
+        # 현재 구현은 루프 전체 except → () 반환 → 이 단언이 FAIL
+        assert len(result) == 2
+        symbols = {p.symbol for p in result}
+        assert "005930" in symbols
+        assert "035420" in symbols
+        assert "000660" not in symbols  # 실패 행 제외
+
+    def test_fill_price_파싱_실패_logger_error_호출(self, mocker: MockerFixture) -> None:
+        """fill_price='abc' 파싱 실패 행 → logger.error 최소 1회 호출.
+
+        행 단위 격리 구현에서는 개별 행 실패 시 logger.error 를 방출해야 한다.
+        현재 구현은 전체 except 에서 logger.warning 만 방출하므로 FAIL.
+        """
+        r = _make_recorder()
+        conn = _get_conn(r)
+        self._insert_buy(conn, symbol="005930", order_number="ORD-B-1", fill_price="70000")
+        self._insert_buy(conn, symbol="000660", order_number="ORD-B-2", fill_price="abc")
+
+        mock_logger = mocker.patch("stock_agent.storage.db.logger")
+        r.load_open_positions(_DATE)
+
+        # logger.error 가 최소 1회 호출되어야 한다
+        assert mock_logger.error.call_count >= 1
+
+    def test_filled_at_isoformat_실패_해당행만_skip(self) -> None:
+        """filled_at='not-a-datetime' 인 행은 skip → 나머지 정상 행 반환.
+
+        datetime.fromisoformat('not-a-datetime') 은 ValueError.
+        행 단위 격리 시 나머지 2행은 정상 반환되어야 한다.
+        """
+        r = _make_recorder()
+        conn = _get_conn(r)
+        self._insert_buy(
+            conn,
+            symbol="005930",
+            order_number="ORD-B-1",
+            filled_at=_kst(9, 31).isoformat(),
+        )
+        self._insert_buy(
+            conn,
+            symbol="000660",
+            order_number="ORD-B-2",
+            filled_at="not-a-datetime",  # 오염
+        )
+        self._insert_buy(
+            conn,
+            symbol="035420",
+            order_number="ORD-B-3",
+            filled_at=_kst(9, 33).isoformat(),
+        )
+
+        result = r.load_open_positions(_DATE)
+
+        # 현재 구현은 루프 전체 except → () → FAIL
+        assert len(result) == 2
+        symbols = {p.symbol for p in result}
+        assert "000660" not in symbols
+
+    def test_모든_행_실패_빈_tuple_반환(self) -> None:
+        """3행 전부 fill_price='xxx' 오염 → 빈 tuple + 카운터 증가.
+
+        모든 행이 실패해도 크래시 없이 () 를 반환해야 한다.
+        부분 실패 처리 구현 후에도 "전체 실패 → ()" 계약은 유지되어야 한다.
+        """
+        r = _make_recorder()
+        conn = _get_conn(r)
+        self._insert_buy(conn, symbol="005930", order_number="ORD-B-1", fill_price="xxx")
+        self._insert_buy(conn, symbol="000660", order_number="ORD-B-2", fill_price="yyy")
+        self._insert_buy(conn, symbol="035420", order_number="ORD-B-3", fill_price="zzz")
+
+        result = r.load_open_positions(_DATE)
+
+        assert result == ()
+        # 현재 구현은 루프 전체 except 1회 → 카운터 1 증가하므로 이 단언은 통과.
+        # 행 단위 격리 후에는 3회 증가 가능하나, 1 이상이면 충분.
+        assert r._consecutive_failures["load_open_positions"] >= 1
+
+    def test_부분_실패_시_메서드별_카운터_1증가_warning_방출(self, mocker: MockerFixture) -> None:
+        """1행 실패 + 2행 성공 → 카운터 == 1 + logger.warning 호출 + critical 없음.
+
+        행 단위 격리 구현에서 부분 실패는 메서드 단위 카운터를 증가시키고
+        logger.warning 을 방출해야 한다. threshold(기본 5) 미달이므로 critical 없음.
+        """
+        r = _make_recorder()
+        conn = _get_conn(r)
+        self._insert_buy(conn, symbol="005930", order_number="ORD-B-1", fill_price="70000")
+        self._insert_buy(conn, symbol="000660", order_number="ORD-B-2", fill_price="abc")
+        self._insert_buy(conn, symbol="035420", order_number="ORD-B-3", fill_price="72000")
+
+        mock_logger = mocker.patch("stock_agent.storage.db.logger")
+        r.load_open_positions(_DATE)
+
+        # 행 단위 격리 후: 부분 실패 → 카운터 1, warning 방출, critical 없음
+        # 현재 구현: 루프 전체 except → 카운터도 1로 일치하지만
+        # 반환값이 () 여서 이 케이스 단독으로는 RED 판정이 어려움.
+        # warning 방출은 공통 경로이나, 부분 성공 반환은 위 테스트들이 담당.
+        assert r._consecutive_failures["load_open_positions"] == 1
+        mock_logger.warning.assert_called()
+        mock_logger.critical.assert_not_called()
+
+    def test_dto_post_init_실패_행도_skip(self) -> None:
+        """OpenPositionRow.__post_init__ 실패 (qty=0 오염) → 해당 행 skip + 나머지 반환.
+
+        qty 는 INTEGER 컬럼이므로 직접 0 삽입 가능 (CHECK qty>0 제약이 있어
+        일반 INSERT 는 거부되지만 'PRAGMA foreign_keys=OFF' 없이도 직접
+        sqlite3.connect(check_same_thread=False) 로 우회 불가 — 대신 정상 INSERT
+        후 UPDATE 로 제약 우회 또는 fill_price 오염 방식으로 대체).
+
+        여기서는 symbol 이 6자리 숫자 아닌 값을 직접 삽입해 __post_init__ 가드를
+        트리거한다 (symbol TEXT 컬럼에는 CHECK 제약이 없음).
+        """
+        r = _make_recorder()
+        conn = _get_conn(r)
+        # 정상 행 2개
+        self._insert_buy(conn, symbol="005930", order_number="ORD-B-1", fill_price="70000")
+        self._insert_buy(conn, symbol="035420", order_number="ORD-B-3", fill_price="72000")
+        # __post_init__ 실패 유발: symbol 이 6자리 숫자가 아님
+        conn.execute(
+            "INSERT INTO orders "
+            "(order_number, session_date, symbol, side, qty, fill_price, ref_price, "
+            " exit_reason, net_pnl_krw, filled_at) "
+            "VALUES (?, ?, ?, 'buy', 10, '70000', '70000', NULL, NULL, ?)",
+            ("ORD-B-BAD", _DATE.isoformat(), "INVALID_SYM", _kst(9, 32).isoformat()),
+        )
+
+        result = r.load_open_positions(_DATE)
+
+        # 현재 구현: 루프 전체 except → () → FAIL
+        assert len(result) == 2
+        symbols = {p.symbol for p in result}
+        assert "INVALID_SYM" not in symbols
+
+
+# ---------------------------------------------------------------------------
+# Issue #40 — load_daily_pnl 행 단위 파싱 실패 격리 (RED 모드)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadDailyPnlRowIsolation:
+    """load_daily_pnl 의 행 단위 파싱 실패 격리 검증.
+
+    현재 구현(db.py:638-662)은 try/except 가 루프 전체를 감싸므로 1행 실패 시
+    빈 snapshot 을 반환한다. Issue #40 수용 기준은 행 단위 격리.
+
+    load_daily_pnl 은 net_pnl_krw 가 INTEGER 컬럼이라 직접 문자열 삽입이
+    CHECK 제약 없이도 Python의 sqlite3 타입 변환 때문에 어렵다. 따라서
+    _conn.execute().fetchall() 래퍼로 일부 row 를 오염 형태로 던지는 방식을
+    사용한다.
+    """
+
+    def _insert_buy(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        symbol: str,
+        order_number: str,
+        session_date: str | None = None,
+        filled_at: str | None = None,
+    ) -> None:
+        sd = session_date or _DATE.isoformat()
+        fa = filled_at or _kst(9, 31).isoformat()
+        conn.execute(
+            "INSERT INTO orders "
+            "(order_number, session_date, symbol, side, qty, fill_price, ref_price, "
+            " exit_reason, net_pnl_krw, filled_at) "
+            "VALUES (?, ?, ?, 'buy', 10, '70000', '70000', NULL, NULL, ?)",
+            (order_number, sd, symbol, fa),
+        )
+
+    def _insert_sell(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        symbol: str,
+        order_number: str,
+        net_pnl_krw: int | None = 8500,
+        session_date: str | None = None,
+        filled_at: str | None = None,
+    ) -> None:
+        sd = session_date or _DATE.isoformat()
+        fa = filled_at or _kst(14, 0).isoformat()
+        conn.execute(
+            "INSERT INTO orders "
+            "(order_number, session_date, symbol, side, qty, fill_price, ref_price, "
+            " exit_reason, net_pnl_krw, filled_at) "
+            "VALUES (?, ?, ?, 'sell', 10, '71050', '71050', 'take_profit', ?, ?)",
+            (order_number, sd, symbol, net_pnl_krw, fa),
+        )
+
+    def _make_row_injection_recorder(
+        self,
+        mocker: MockerFixture,
+        *,
+        real_rows: list[tuple[str, str, int | None]],
+        injected_rows: list[tuple[str, str, object]],
+    ) -> SqliteTradingRecorder:
+        """실제 DB 대신 fetchall() 이 지정된 rows 를 반환하도록 conn 을 wrapping.
+
+        real_rows: 정상 행 (side, symbol, net_pnl_krw)
+        injected_rows: 오염 행 — net_pnl_krw 를 파싱 불가 타입으로 주입.
+        all_rows 를 fetchall() 반환값으로 주입한다.
+        """
+        r = _make_recorder()
+        all_rows = real_rows + injected_rows
+
+        original_conn = _get_conn(r)
+        fake_cursor = mocker.MagicMock()
+        fake_cursor.fetchall.return_value = all_rows
+
+        fake_conn = mocker.MagicMock()
+        # 스키마 init 등 다른 execute 호출은 실제 conn 에 위임
+        fake_conn.execute.side_effect = lambda sql, *a, **kw: (
+            fake_cursor
+            if "SELECT side, symbol, net_pnl_krw" in sql
+            else original_conn.execute(sql, *a, **kw)
+        )
+        r._conn = fake_conn
+        return r
+
+    def test_sell_net_pnl_파싱_실패_1건_나머지_정상_집계(self, mocker: MockerFixture) -> None:
+        """buy 2건 + sell 2건 중 1건 net_pnl 오염 → 정상 sell 만 집계.
+
+        오염 sell 은 net_pnl_krw 에 TypeError 유발 오브젝트 주입.
+        기대: realized_pnl_krw == 정상 sell 의 net_pnl 값, entries_today == 2,
+              closed_symbols 에서 오염 심볼 제외.
+        """
+        normal_sell_pnl = 8500
+        r = self._make_row_injection_recorder(
+            mocker,
+            real_rows=[
+                ("buy", "005930", None),
+                ("buy", "000660", None),
+                ("sell", "005930", normal_sell_pnl),  # 정상
+            ],
+            injected_rows=[
+                ("sell", "000660", object()),  # int() 변환 불가 → TypeError
+            ],
+        )
+
+        mocker.patch("stock_agent.storage.db.logger")
+        result = r.load_daily_pnl(_DATE)
+
+        # 현재 구현: 루프 전체 except → 빈 snapshot → FAIL
+        assert result.entries_today == 2
+        assert result.realized_pnl_krw == normal_sell_pnl
+        assert "005930" in result.closed_symbols
+        assert "000660" not in result.closed_symbols  # 오염 행 제외
+
+    def test_부분_실패_시_logger_error_호출(self, mocker: MockerFixture) -> None:
+        """sell net_pnl 오염 1건 → logger.error 최소 1회 호출.
+
+        행 단위 격리 구현에서는 각 행 실패 시 logger.error 를 방출해야 한다.
+        현재 구현: 전체 except 에서 logger.warning 이므로 FAIL.
+        """
+        r = self._make_row_injection_recorder(
+            mocker,
+            real_rows=[
+                ("buy", "005930", None),
+                ("sell", "005930", 8500),
+            ],
+            injected_rows=[
+                ("sell", "000660", object()),
+            ],
+        )
+
+        mock_logger = mocker.patch("stock_agent.storage.db.logger")
+        r.load_daily_pnl(_DATE)
+
+        assert mock_logger.error.call_count >= 1
+
+    def test_모든_행_파싱_실패_빈_snapshot(self, mocker: MockerFixture) -> None:
+        """sell 3건 전부 net_pnl 오염 → DailyPnlSnapshot(realized=0, entries=0, closed=()).
+
+        모든 행이 실패해도 크래시 없이 빈 snapshot 을 반환해야 한다.
+        """
+        from stock_agent.storage import DailyPnlSnapshot
+
+        r = self._make_row_injection_recorder(
+            mocker,
+            real_rows=[],
+            injected_rows=[
+                ("sell", "005930", object()),
+                ("sell", "000660", object()),
+                ("sell", "035420", object()),
+            ],
+        )
+
+        mocker.patch("stock_agent.storage.db.logger")
+        result = r.load_daily_pnl(_DATE)
+
+        assert isinstance(result, DailyPnlSnapshot)
+        assert result.realized_pnl_krw == 0
+        assert result.entries_today == 0
+        assert result.closed_symbols == ()
+        assert r._consecutive_failures["load_daily_pnl"] >= 1
+
+    def test_부분_실패_카운터_1증가_warning_방출(self, mocker: MockerFixture) -> None:
+        """sell 1건 실패 + 1건 성공 → _consecutive_failures["load_daily_pnl"] == 1
+        + logger.warning 호출 + critical 없음 (threshold 기본 5).
+        """
+        r = self._make_row_injection_recorder(
+            mocker,
+            real_rows=[
+                ("buy", "005930", None),
+                ("sell", "005930", 8500),  # 정상
+            ],
+            injected_rows=[
+                ("sell", "000660", object()),  # 오염
+            ],
+        )
+
+        mock_logger = mocker.patch("stock_agent.storage.db.logger")
+        r.load_daily_pnl(_DATE)
+
+        # 현재 구현: 루프 전체 except → 카운터 1 → warning → 이 단언은 통과.
+        # 하지만 부분 성공/실패 분리가 안 되어 위 테스트들이 FAIL.
+        assert r._consecutive_failures["load_daily_pnl"] == 1
+        mock_logger.warning.assert_called()
+        mock_logger.critical.assert_not_called()

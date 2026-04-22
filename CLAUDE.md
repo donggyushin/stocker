@@ -185,7 +185,7 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
 4. `uv run pytest -x tests/<target>` 로 GREEN 확인.
 5. (선택) 리팩터 — `mode=refactor-invariant` 로 불변성 테스트 보강해 회귀 방지.
 
-훅 4 종 역할:
+훅 5 종 역할:
 
 | 훅 | 시점 | 차단 조건 |
 | --- | --- | --- |
@@ -193,6 +193,9 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
 | [`src-first-requires-tests.sh`](./.claude/hooks/src-first-requires-tests.sh) | PreToolUse / `Write` | `src/stock_agent/` 신규 파일 + 대응 `tests/test_*.py` 부재 |
 | [`test-coverage-check.sh`](./.claude/hooks/test-coverage-check.sh) | Stop | `src/` 변경 O + `tests/` 변경 X (세션당 1회 리마인더) |
 | [`pyright-full-scope.sh`](./.claude/hooks/pyright-full-scope.sh) | PreToolUse / `Bash` | `git push` 직전 `uv run pyright src scripts tests` 실패. CI pyright job 과 로컬 검사 범위 일치 강제. 긴급 우회는 `STOCK_AGENT_PYRIGHT_BYPASS=1 git push ...` (24 시간 내 회귀 테스트 + 원인 제거 필수) |
+| [`ci-lint-full-scope.sh`](./.claude/hooks/ci-lint-full-scope.sh) | PreToolUse / `Bash` | `git push` 직전 CI 3 종 lint (`uv run ruff check` + `uv run ruff format --check` + `uv run black --check`, 모두 `src scripts tests` 범위) 중 하나라도 실패. CI "Lint, format, test" job 과 동일 범위 강제로 좁은 경로만 로컬 체크하거나 black 재포맷 후 ruff 재실행 누락으로 CI 에서 터지는 사고(PR #43 UP037 재발) 방지. 긴급 우회는 `STOCK_AGENT_LINT_BYPASS=1 git push ...` (24 시간 내 원인 제거 필수) |
+
+`pyright-full-scope.sh` · `ci-lint-full-scope.sh` 두 훅은 저장소 시그니처 (`.github/workflows/ci.yml` 의 대응 명령 + `pyproject.toml` 의 `[tool.ruff]` / `[tool.pyright]`) 로 프로젝트를 판정하므로 claude-squad worktree (`*/.claude-squad/worktrees/**`) 에서도 동일하게 작동한다.
 
 훅 없이도 통과하는 예외 (이 훅 스코프 밖):
 
@@ -299,6 +302,7 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
   - `src/stock_agent/execution/executor.py` 확장 — `OrderSubmitter` Protocol 에 `cancel_order(order_number: str) -> None` 추가. `LiveOrderSubmitter.cancel_order` (KisClient 위임) + `DryRunOrderSubmitter.cancel_order` (info 로그 + no-op). 내부 `_FillOutcome` DTO 신설 (`filled_qty: int`, `status: Literal["full","partial","none"]`). `_wait_fill` → `_resolve_fill(ticket) -> _FillOutcome` 교체 — 타임아웃 시 `cancel_order` 호출 + 부분/0 체결 수습. `_handle_entry`: partial → `filled_qty` 만 기록·warning 로그, zero → skip·info 로그. `_handle_exit`: `status != "full"` → `ExecutorError` 승격 (운영자 개입 유도). 모듈 세부는 [src/stock_agent/execution/CLAUDE.md](./src/stock_agent/execution/CLAUDE.md) 참조.
   - pytest **963건 green** (`tests/test_kis_client.py` + `tests/test_executor.py` 확장, 기존 대비 +183). 회귀 0건. 의존성 추가 없음.
   - Phase 3 코드 산출물 전부 완료 (broker 체결조회까지). **Phase 3 PASS 선언은 모의투자 연속 10영업일 무중단 운영 후.**
+  - (2026-04-22) 후속 — `storage/db.py` `load_*` 행 단위 예외 격리 (Issue #40) 완료: 쿼리 자체 실패 → 빈 결과 + 카운터 +1, 개별 행 파싱 실패 → 행 skip + `logger.error`, 1건 이상 파싱 실패 시 메서드 카운터 +1 경로 합류.
 
 - **다음 작업**
   - **Phase 2 잔여 (후속 PR)**: KIS 과거 분봉 API 어댑터(별도 PR) · 2~3년 실데이터 수집(운영자 외부 작업, 리포지토리 미포함) · `uv run python scripts/backtest.py --csv-dir ... --from 2023-01-01 --to 2025-12-31` 실행 후 낙폭 절대값 15% 미만 확인 (MDD > -15%). PASS 라벨이 출력돼도 즉시 실전 전환 아님 — Phase 3 모의투자 2주 무사고 운영이 전제.
