@@ -1591,7 +1591,7 @@ class TestResponseNormalization:
         mock_sleep,
         tmp_path: Path,
     ) -> None:
-        """`fetch` 가 dict 도 `__data__` 도 없는 완전히 관련 없는 객체 반환 → `KisMinuteBarLoadError`."""
+        """dict·__data__ 모두 없으면 KisMinuteBarLoadError 래핑."""
         KisMinuteBarLoader, KisMinuteBarLoadError = _import_loader()
         settings = _make_settings_with_live_keys(monkeypatch)
 
@@ -1625,7 +1625,7 @@ class TestMultiSymbolPartialCache:
         mock_sleep,
         tmp_path: Path,
     ) -> None:
-        """005930 은 DB 캐시 hit, 000660 은 miss → fetch 1회(000660만), 결과 (bar_time, symbol) 정렬."""
+        """일부 심볼만 캐시 hit — fetch 는 miss 심볼만 호출, 정렬 안정성 유지."""
         KisMinuteBarLoader, _ = _import_loader()
         settings = _make_settings_with_live_keys(monkeypatch)
 

@@ -44,6 +44,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import heapq
 import re
 import sqlite3
@@ -371,10 +372,9 @@ class KisMinuteBarLoader:
             )
             self._conn.execute("COMMIT")
         except sqlite3.Error as exc:
-            try:
+            # ROLLBACK 실패는 원 예외를 가리지 않도록 무시.
+            with contextlib.suppress(sqlite3.Error):
                 self._conn.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass  # ROLLBACK 실패는 원 예외를 가리지 않도록 무시.
             raise KisMinuteBarLoadError(
                 f"SQLite 저장 실패: symbol={bars[0].symbol} rows={len(rows)}"
             ) from exc
