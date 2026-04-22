@@ -23,10 +23,24 @@
   캐시 초기화 가능.
 - 가격은 `TEXT` 로 저장해 `Decimal` 정밀도 보존 (`historical.py` · `storage/db.py` 와
   동일 기조).
-- `bar_time` 은 ISO8601 with tz (`"2026-04-22T09:31:00+09:00"`).
+- `bar_time` 계약: **KST aware ISO8601** (`"2026-04-22T09:31:00+09:00"`),
+  `second=0, microsecond=0` 강제 (분 경계). `_parse_row` 가 KST 부여 + 초/마이크로초
+  절삭을 수행하므로 이 모듈이 직접 쓴 값은 계약을 지킨다. `_date_cached` 의
+  `BETWEEN '...T00:00:00+09:00' AND '...T23:59:59+09:00'` 쿼리는 이 계약에
+  의존 — 외부 도구가 같은 테이블에 다른 tz 문자열로 쓰면 캐시 판정이 어긋난다.
 - 캐시 hit 판정은 `(symbol, 날짜)` 단위. 해당 날짜 bar 가 한 건이라도 있으면
-  API 재호출 생략. `date == clock().date()` 인 "오늘" 자는 항상 재조회 —
-  실시간 분봉은 `realtime.py` 경로와 별개로 장중에는 미확정.
+  API 재호출 생략. `date == clock().date()` 인 "오늘" 자는 항상 재조회 (**쓰기·읽기
+  모두 skip** — 이전 실행에서 어떤 경로로든 오늘 자 행이 DB 에 있어도 장중
+  미확정 데이터가 사용되지 않도록 분기 자체를 분리한다). 실시간 분봉은
+  `realtime.py` 경로와 별개로 장중에는 미확정.
+
+동시성 (ADR-0008 단일 프로세스 전용)
+- 이 어댑터는 **단일 스레드 전용**. `sqlite3.Connection` 은 `check_same_thread=True`
+  기본값을 사용하므로 다른 스레드에서 `stream`/`_fetch_day`/`_write_bars_to_db`/
+  `_read_day_from_db`/`_date_cached` 를 호출하면 `sqlite3.ProgrammingError` 로 폭파한다.
+- `_lock` 은 `_ensure_kis` 의 지연 초기화 race 만 보호한다 — 단일 스레드 전제
+  하에서는 DB 호출을 전역 락으로 감쌀 필요가 없다. 백테스트 엔진 병렬화
+  요구가 생기면 별도 ADR 로 전환 재평가.
 
 에러 정책 (`historical.py` / `minute_csv.py` 와 동일 기조)
 - `RuntimeError` 는 전파 — 호출자 계약 위반 (`start > end`, 빈 `symbols`,
@@ -286,7 +300,9 @@ class KisMinuteBarLoader:
         """한 심볼의 `[start, end]` 구간 bar 를 수집. 시간 오름차순 반환.
 
         날짜는 `end → start` 역방향 순회. 각 날짜마다:
-        - `date == today` → 항상 API 재호출 (캐시 쓰지도 않음).
+        - `date == today` → 항상 API 재호출. DB 쓰기 **와 읽기 모두 skip**
+          (stale bar 방어 — 이전 실행에서 어떤 경로로든 오늘 자 행이 이미
+          DB 에 있어도 장중 미확정 데이터가 사용되지 않도록 분기 자체를 분리).
         - DB 에 해당 날짜 bar 존재 → DB 재사용.
         - 그 외 → API 호출 + DB 쓰기.
         """
@@ -295,14 +311,15 @@ class KisMinuteBarLoader:
 
         current = end
         while current >= start:
-            is_today = current == today
-            if is_today or not self._date_cached(symbol, current):
+            if current == today:
                 day_bars = self._fetch_day(symbol, current)
-                if not is_today:
-                    self._write_bars_to_db(day_bars)
                 collected.extend(day_bars)
-            else:
+            elif self._date_cached(symbol, current):
                 collected.extend(self._read_day_from_db(symbol, current))
+            else:
+                day_bars = self._fetch_day(symbol, current)
+                self._write_bars_to_db(day_bars)
+                collected.extend(day_bars)
             current -= timedelta(days=1)
 
         # 날짜별 수집이라 bar_time 오름차순으로 재정렬.
@@ -385,6 +402,11 @@ class KisMinuteBarLoader:
         """단일 날짜의 전체 bar 를 120 건 역방향 커서 페이지네이션으로 수집.
 
         빈 응답은 주말·공휴일 또는 KIS 서버 보관 경계 밖으로 간주해 빈 리스트 반환.
+
+        운영 경보 (M2): `rows` 는 비어있지 않은데 `page_bars` 가 비는 (전원
+        파싱 실패) 상황은 KIS 응답 스키마 변경 또는 수신 오염 징후라 빈 응답
+        (정상 공휴일) 과 구별되어야 한다. `(symbol, day)` 단위로 최초 1 회만
+        `logger.error` 방출해 로그 폭주 방지.
         """
         kis = self._ensure_kis()
         date_str = day.strftime("%Y%m%d")
@@ -392,6 +414,7 @@ class KisMinuteBarLoader:
         collected: list[MinuteBar] = []
         seen: set[datetime] = set()
         is_first_page = True
+        malformed_warned = False
 
         while True:
             if not is_first_page and self._throttle_s > 0:
@@ -415,6 +438,15 @@ class KisMinuteBarLoader:
                     continue
                 seen.add(bar.bar_time)
                 page_bars.append(bar)
+
+            if not page_bars and not malformed_warned:
+                logger.error(
+                    "KIS 분봉 페이지 전원 파싱 실패 — symbol={s} date={d} rows={n}",
+                    s=symbol,
+                    d=date_str,
+                    n=len(rows),
+                )
+                malformed_warned = True
 
             collected.extend(page_bars)
 

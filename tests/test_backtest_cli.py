@@ -315,6 +315,48 @@ class TestVerdictLabel:
         """_MDD_PASS_THRESHOLD 상수가 Decimal('-0.15') 임을 확인."""
         assert Decimal("-0.15") == _MDD_PASS_THRESHOLD
 
+    # --- M3: daily_equity_len / symbol_count 확장 시그니처 테스트 ---
+
+    def test_표본_240_미만_PASS_참고용_표본_240_미만(self):
+        """daily_equity_len=239 → caveat '표본 240 미만' 포함."""
+        result = _verdict_label(Decimal("-0.10"), daily_equity_len=239, symbol_count=3)
+        assert result == "PASS (참고용 — 표본 240 미만)", (
+            f"표본 239일 때 caveat 포함 라벨 기대, 실제={result!r}"
+        )
+
+    def test_단일_종목_PASS_참고용_단일_종목(self):
+        """symbol_count=1 → caveat '단일 종목' 포함."""
+        result = _verdict_label(Decimal("-0.10"), daily_equity_len=240, symbol_count=1)
+        assert result == "PASS (참고용 — 단일 종목)", (
+            f"단일 종목일 때 caveat 포함 라벨 기대, 실제={result!r}"
+        )
+
+    def test_표본_240_미만_AND_단일_종목_두_caveat_모두_포함(self):
+        """daily_equity_len=100, symbol_count=1 → caveat 2개 모두 포함, 순서 고정."""
+        result = _verdict_label(Decimal("-0.10"), daily_equity_len=100, symbol_count=1)
+        assert result == "PASS (참고용 — 표본 240 미만, 단일 종목)", (
+            f"두 caveat 모두 포함, 순서='표본 240 미만' → '단일 종목' 기대, 실제={result!r}"
+        )
+
+    def test_표본_240_이상_다중_종목_caveat_없음(self):
+        """daily_equity_len=240, symbol_count=3 → caveat 없음 → 'PASS'."""
+        result = _verdict_label(Decimal("-0.10"), daily_equity_len=240, symbol_count=3)
+        assert result == "PASS", (
+            f"표본 충분 + 다중 종목이면 caveat 없는 'PASS' 기대, 실제={result!r}"
+        )
+
+    def test_FAIL_이면_caveat_붙지_않음(self):
+        """mdd <= -0.15 이면 daily_equity_len/symbol_count 관계없이 'FAIL'."""
+        result = _verdict_label(Decimal("-0.20"), daily_equity_len=100, symbol_count=1)
+        assert result == "FAIL", f"FAIL 판정에는 caveat 를 붙이지 않아야 함, 실제={result!r}"
+
+    def test_backward_compat_인자_없으면_PASS(self):
+        """기존 _verdict_label(mdd) 단독 호출 — backward compat 확인."""
+        result = _verdict_label(Decimal("-0.10"))
+        assert result == "PASS", (
+            f"기존 단독 호출은 backward compat 으로 'PASS' 반환, 실제={result!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 4. _format_pct / _format_decimal
@@ -389,10 +431,15 @@ class TestRenderMarkdown:
             assert label in md, f"레이블 '{label}' 미포함"
 
     def test_PASS_verdict(self):
-        """MDD > -0.15 (낙폭 절대값 15% 미만) → '**PASS**' 가 포함된다."""
+        """MDD > -0.15 (낙폭 절대값 15% 미만) → '**PASS' 로 시작하는 verdict 가 포함된다.
+
+        caveat 유무(표본 수·종목 수)에 따라 라벨이 '**PASS**' 또는
+        '**PASS (참고용 — ...)**' 형태로 달라질 수 있으므로 '**PASS' 포함 여부만 검증.
+        caveat 동작 자체는 TestVerdictLabel 케이스가 커버한다.
+        """
         metrics = _make_metrics(max_drawdown_pct=Decimal("-0.10"))
         md = _render_markdown(_make_result(metrics=metrics), self._ctx())
-        assert "**PASS**" in md
+        assert "**PASS" in md and "**FAIL**" not in md
 
     def test_FAIL_verdict(self):
         """MDD <= -0.15 → '**FAIL**' 가 포함된다."""

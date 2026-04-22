@@ -1149,6 +1149,81 @@ class TestCacheTodayAlwaysRefetches:
         fake_kis.fetch.assert_called()
         loader.close()
 
+    def test_오늘_날짜_DB선삽입값이_아닌_API기반값_반환(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+    ) -> None:
+        """오늘 자 bar 는 DB 에 무엇이 있든 API 응답값을 반환 — DB 읽기 skip 증명.
+
+        H1: is_today 분기에서 DB 읽기 경로(else 분기)로 빠지면 DB 선삽입값(71200)이
+        반환되어 이 테스트가 실패한다. API 기반값(70100)이 반환돼야 GREEN.
+        """
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        db_path = tmp_path / "test.db"
+        # DB 에 오늘 자 bar 선삽입 — close=71200 (구분 가능한 "stale" 값)
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS minute_bars (
+                symbol TEXT,
+                bar_time TEXT,
+                open TEXT,
+                high TEXT,
+                low TEXT,
+                close TEXT,
+                volume INTEGER,
+                PRIMARY KEY (symbol, bar_time)
+            );
+            CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
+            INSERT OR IGNORE INTO schema_version VALUES (1);
+        """)
+        bar_time_str = f"{_TODAY.isoformat()}T09:31:00+09:00"
+        conn.execute(
+            "INSERT OR REPLACE INTO minute_bars VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (_SYMBOL, bar_time_str, "71000", "71500", "70800", "71200", 1234),
+        )
+        conn.commit()
+        conn.close()
+
+        # API 응답은 DB 와 다른 값 — close=70100 (기본 _make_output2_row 기본값과 다르게 설정)
+        fake_kis.fetch.return_value = _make_api_response(
+            [
+                _make_output2_row(
+                    _TODAY,
+                    9,
+                    31,
+                    oprc="70000",
+                    hgpr="70500",
+                    lwpr="69800",
+                    prpr="70100",
+                    vol="999",
+                ),
+            ]
+        )
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=db_path,
+            sleep=mock_sleep,
+        )
+        bars = list(loader.stream(_TODAY, _TODAY, (_SYMBOL,)))
+        loader.close()
+
+        assert len(bars) >= 1, "bar 가 1건 이상 반환돼야 한다"
+        # DB 선삽입값(71200)이 아니라 API 응답값(70100)이어야 함 — DB 읽기 skip 증명
+        assert bars[0].close == Decimal("70100"), (
+            f"오늘 자 bar 는 DB 읽기를 skip 하고 API 기반값(70100)을 반환해야 한다 "
+            f"(실제 반환값={bars[0].close})"
+        )
+
 
 # ===========================================================================
 # TestSchemaV1Init — 스키마 초기화 검증
@@ -1307,6 +1382,154 @@ class TestErrorWrapping:
 
         assert exc_info.value.__cause__ is original_error
         loader.close()
+
+
+# ===========================================================================
+# TestMalformedPageWarning — output2 rows 있지만 전원 parse 실패 시 logger.error 경보
+# ===========================================================================
+
+
+class TestMalformedPageWarning:
+    """M2: _fetch_day 내에서 rows ≥1 이지만 page_bars 가 빈 경우 logger.error 방출 검증.
+
+    dedupe 규칙: 동일 (symbol, day) 조합의 _fetch_day 한 번당 최초 1회만 방출.
+    """
+
+    @pytest.fixture
+    def _loguru_errors(self):
+        """loguru ERROR 레벨 메시지 캡처 — 프로젝트 관례(test_rate_limiter.py 패턴) 재사용."""
+        from loguru import logger as _logger
+
+        captured: list[dict] = []
+
+        def _sink(message) -> None:  # type: ignore[no-untyped-def]
+            record = message.record
+            captured.append({"level": record["level"].name, "message": record["message"]})
+
+        handler_id = _logger.add(_sink, level="ERROR", format="{message}")
+        try:
+            yield captured
+        finally:
+            _logger.remove(handler_id)
+
+    def test_rows_전원_malformed_logger_error_1회_심볼_날짜_포함(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_errors,
+    ) -> None:
+        """rows 3건 모두 stck_oprc='' malformed → page_bars 비고 rows ≥1 → logger.error 1회.
+
+        에러 메시지에 symbol 과 date(날짜) 정보가 포함되어야 한다.
+        """
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        # stck_oprc="" → _parse_decimal 이 ValueError → _parse_row 가 None 반환
+        malformed_rows = [_make_output2_row(_YESTERDAY, 9, 31 + i, oprc="") for i in range(3)]
+        fake_kis.fetch.return_value = _make_api_response(malformed_rows)
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+        )
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        errors = [m for m in _loguru_errors if m["level"] == "ERROR"]
+        assert len(errors) == 1, (
+            f"rows ≥1 이고 page_bars 비면 logger.error 를 정확히 1회 방출해야 한다 "
+            f"(실제 {len(errors)}회, messages={[m['message'] for m in errors]})"
+        )
+        # 에러 메시지에 symbol 과 날짜 정보가 포함돼야 한다
+        msg = errors[0]["message"]
+        assert _SYMBOL in msg, f"에러 메시지에 symbol={_SYMBOL!r} 포함 필수 (실제: {msg!r})"
+        assert _YESTERDAY.strftime("%Y%m%d") in msg or str(_YESTERDAY) in msg, (
+            f"에러 메시지에 날짜={_YESTERDAY} 정보 포함 필수 (실제: {msg!r})"
+        )
+
+    def test_rows_0건_정상_공휴일_logger_error_없음(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_errors,
+    ) -> None:
+        """rows 0건(정상 주말·공휴일 경계) → logger.error 미방출 — 빈 응답과 구별."""
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        # 빈 output2 — 주말/공휴일 정상 케이스
+        fake_kis.fetch.return_value = _make_api_response([])
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+        )
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        errors = [m for m in _loguru_errors if m["level"] == "ERROR"]
+        assert len(errors) == 0, (
+            f"rows=0 (빈 응답) 은 logger.error 를 방출하면 안 됨 "
+            f"(실제 {len(errors)}회, messages={[m['message'] for m in errors]})"
+        )
+
+    def test_2페이지_모두_malformed_logger_error_1회만_dedupe(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_errors,
+    ) -> None:
+        """2페이지 모두 rows ≥1 + 전원 malformed → 같은 (symbol, day) 쌍 → logger.error 1회만.
+
+        dedupe: _fetch_day 한 번당 동일 (symbol, day) 조합은 최초 페이지 1회만 방출.
+        첫 응답 120건(전원 malformed), 두 번째 응답 3건(전원 malformed).
+        """
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        # 첫 페이지: 120건 전원 malformed (페이지네이션이 다음 페이지로 계속 진행하게 len=120)
+        first_malformed = [_make_output2_row(_YESTERDAY, 9, 31, oprc="") for _ in range(120)]
+        # 두 번째 페이지: 3건 전원 malformed (len < 120 → 종료)
+        second_malformed = [_make_output2_row(_YESTERDAY, 9, 28 + i, oprc="") for i in range(3)]
+        fake_kis.fetch.side_effect = [
+            _make_api_response(first_malformed),
+            _make_api_response(second_malformed),
+        ]
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+        )
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        errors = [m for m in _loguru_errors if m["level"] == "ERROR"]
+        assert len(errors) == 1, (
+            f"동일 (symbol, day) 에 대해 _fetch_day 내 logger.error 는 1회만 방출해야 한다 "
+            f"(dedupe, 실제 {len(errors)}회, messages={[m['message'] for m in errors]})"
+        )
 
 
 # ===========================================================================

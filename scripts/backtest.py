@@ -239,14 +239,22 @@ def _run_pipeline(args: argparse.Namespace) -> None:
         r=sum(result.rejected_counts.values()),
         p=result.post_slippage_rejections,
         m=_format_pct(result.metrics.max_drawdown_pct),
-        v=_verdict_label(result.metrics.max_drawdown_pct),
+        v=_verdict_label(
+            result.metrics.max_drawdown_pct,
+            daily_equity_len=len(result.daily_equity),
+            symbol_count=len(symbols),
+        ),
     )
 
 
 def _render_markdown(result: BacktestResult, context: _ReportContext) -> str:
     """`BacktestResult` → 사람이 읽는 Markdown 리포트."""
     metrics = result.metrics
-    verdict = _verdict_label(metrics.max_drawdown_pct)
+    verdict = _verdict_label(
+        metrics.max_drawdown_pct,
+        daily_equity_len=len(result.daily_equity),
+        symbol_count=len(context.symbols),
+    )
     lines: list[str] = []
 
     lines.append("# ORB 백테스트 리포트")
@@ -370,7 +378,12 @@ def _write_trades_csv(trades: tuple[TradeRecord, ...], path: Path) -> None:
             )
 
 
-def _verdict_label(mdd: Decimal) -> str:
+def _verdict_label(
+    mdd: Decimal,
+    *,
+    daily_equity_len: int | None = None,
+    symbol_count: int | None = None,
+) -> str:
     """`mdd > -0.15` (낙폭 절대값 15% 미만) 이면 PASS.
 
     MDD 는 음수 또는 0 (`BacktestMetrics.max_drawdown_pct` 계약). 임계값
@@ -380,8 +393,24 @@ def _verdict_label(mdd: Decimal) -> str:
 
     의도: plan.md Phase 2 Verification "MDD 낙폭 15% 이내" — "낙폭 제한
     기준" 이므로 낙폭이 더 깊을수록 FAIL 이 되어야 한다.
+
+    Caveat (ADR-0017 결정 3·4 코드 반영):
+    - `daily_equity_len < 240` → "표본 240 미만" 주의 추가.
+    - `symbol_count == 1` → "단일 종목" 주의 추가.
+    PASS 인 경우에만 caveat 를 합쳐 `"PASS (참고용 — ...)"` 로 반환하고,
+    FAIL 은 caveat 무관 `"FAIL"` 만 반환. 두 인자 모두 `None` 이면 기존
+    단순 이진 라벨 동작 (backward compat).
     """
-    return "PASS" if mdd > _MDD_PASS_THRESHOLD else "FAIL"
+    if mdd <= _MDD_PASS_THRESHOLD:
+        return "FAIL"
+    caveats: list[str] = []
+    if daily_equity_len is not None and daily_equity_len < 240:
+        caveats.append("표본 240 미만")
+    if symbol_count is not None and symbol_count == 1:
+        caveats.append("단일 종목")
+    if not caveats:
+        return "PASS"
+    return f"PASS (참고용 — {', '.join(caveats)})"
 
 
 def _format_pct(value: Decimal) -> str:
