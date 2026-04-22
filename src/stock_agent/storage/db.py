@@ -1,10 +1,14 @@
-"""SQLite 원장 — EntryEvent / ExitEvent / DailySummary 영속화.
+"""SQLite 원장 — EntryEvent / ExitEvent / DailySummary 영속화 + 재기동 상태 복원.
 
 책임 범위
 - Executor 가 방출한 `EntryEvent`·`ExitEvent` 를 `orders` 테이블에 1행 1이벤트로
   append.
 - `main._on_daily_report` 가 조립한 `DailySummary` 를 `daily_pnl` 테이블에
   session_date PK `INSERT OR REPLACE` 로 기록.
+- **재기동 시 당일 상태 복원 (Issue #33, ADR-0014)** — `load_open_positions`·
+  `load_daily_pnl` 로 `orders` 를 재생해 오픈 포지션·실현 PnL·진입 횟수·청산
+  완료 심볼을 복원. `main._on_session_start` 가 감지 후 `Executor.restore_session`
+  을 호출한다.
 
 범위 제외 (의도적 defer)
 - 주간 회고 리포트 CLI (`scripts/weekly_report.py` 등) — MVP 는 SQL 직접 쿼리.
@@ -25,6 +29,12 @@
 - `NullTradingRecorder` — 생성자 실패 폴백 (notifier 의 `NullNotifier` 와 동일
   기조 — 부분 기능 손실 > 세션 전체 실패).
 - `StorageError` — 스키마 init 실패·치명적 초기화 실패 래퍼 (`__cause__` 보존).
+- `OpenPositionRow` — `load_open_positions` 반환 DTO. 재기동 시 Executor 가
+  `_open_lots` / `RiskManager.active_positions` / `ORBStrategy` long 상태 복원
+  입력으로 소비.
+- `DailyPnlSnapshot` — `load_daily_pnl` 반환 DTO. `realized_pnl_krw`,
+  `entries_today`, `closed_symbols` 를 묶어 Executor 복원 + ORB 재진입 차단
+  입력으로 소비.
 
 실패 정책 (notifier.py `_record_failure` 패턴 재사용)
 - `record_*` 메서드 내부의 `sqlite3.Error` **및 기타 `Exception`** 은 raise
@@ -62,8 +72,11 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, DecimalException
 from pathlib import Path
 from types import TracebackType
 from typing import Protocol, runtime_checkable
@@ -79,13 +92,19 @@ _DEFAULT_DB_PATH = Path("data/trading.db")
 _SCHEMA_VERSION = 1
 _DEFAULT_FAILURE_THRESHOLD = 5
 
+_SYMBOL_RE = re.compile(r"^\d{6}$")
+
 _OP_RECORD_ENTRY = "record_entry"
 _OP_RECORD_EXIT = "record_exit"
 _OP_RECORD_DAILY_SUMMARY = "record_daily_summary"
+_OP_LOAD_OPEN_POSITIONS = "load_open_positions"
+_OP_LOAD_DAILY_PNL = "load_daily_pnl"
 _TRACKED_OPS: tuple[str, ...] = (
     _OP_RECORD_ENTRY,
     _OP_RECORD_EXIT,
     _OP_RECORD_DAILY_SUMMARY,
+    _OP_LOAD_OPEN_POSITIONS,
+    _OP_LOAD_DAILY_PNL,
 )
 
 
@@ -136,6 +155,83 @@ class StorageError(Exception):
     """스토리지 초기화·치명 실패 래퍼. 원본은 `__cause__` 에 보존."""
 
 
+@dataclass(frozen=True, slots=True)
+class OpenPositionRow:
+    """재기동 시 `load_open_positions` 가 반환하는 오픈 포지션 DTO.
+
+    `orders` 테이블을 `filled_at` 순으로 재생한 뒤 아직 청산되지 않은
+    포지션을 나타낸다. `Executor.restore_session` 이 이 DTO 를 받아
+    `_open_lots` / `RiskManager.active_positions` / `ORBStrategy` long 상태
+    복원에 사용한다 (ADR-0014).
+
+    Attributes:
+        symbol: 6자리 종목 코드.
+        qty: 보유 수량. 양수.
+        entry_price: 체결 단가 (`EntryEvent.fill_price` 그대로 — 슬리피지 반영).
+        entry_ts: 체결 시각. KST aware datetime.
+        order_number: 브로커 주문번호 (감사 추적용).
+    """
+
+    symbol: str
+    qty: int
+    entry_price: Decimal
+    entry_ts: datetime
+    order_number: str
+
+    def __post_init__(self) -> None:
+        if not _SYMBOL_RE.fullmatch(self.symbol):
+            raise RuntimeError(
+                f"OpenPositionRow.symbol 은 6자리 숫자여야 합니다 (got={self.symbol!r})."
+            )
+        if self.qty <= 0:
+            raise RuntimeError(f"OpenPositionRow.qty 는 양수여야 합니다 (got={self.qty}).")
+        if self.entry_price <= 0:
+            raise RuntimeError(
+                f"OpenPositionRow.entry_price 는 양수여야 합니다 (got={self.entry_price})."
+            )
+        if self.entry_ts.tzinfo is None:
+            raise RuntimeError("OpenPositionRow.entry_ts 는 tz-aware datetime 이어야 합니다.")
+        if not self.order_number:
+            raise RuntimeError("OpenPositionRow.order_number 는 비어있을 수 없습니다.")
+
+
+@dataclass(frozen=True, slots=True)
+class DailyPnlSnapshot:
+    """재기동 시 `load_daily_pnl` 이 반환하는 당일 집계 DTO.
+
+    `orders` 테이블의 당일 buy/sell 행을 기반으로 RiskManager 가 **카운터·
+    실현 PnL·재진입 차단** 을 동일하게 유지할 수 있도록 집계한다.
+
+    Attributes:
+        session_date: 집계 기준 세션 날짜.
+        realized_pnl_krw: 당일 sell 행의 `net_pnl_krw` 합계 (수익 양수, 손실 음수).
+        entries_today: 당일 buy 행 개수 (성공 진입 = 1건 buy = 1건 기록).
+        closed_symbols: 당일 sell 이 기록된 심볼 집합 (정렬 tuple). ORB
+            `mark_session_closed` 로 재진입 차단 용도.
+    """
+
+    session_date: date
+    realized_pnl_krw: int
+    entries_today: int
+    closed_symbols: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.entries_today < 0:
+            raise RuntimeError(
+                f"DailyPnlSnapshot.entries_today 는 0 이상이어야 합니다 (got={self.entries_today})."
+            )
+
+    @property
+    def has_state(self) -> bool:
+        """당일 상태 존재 여부 — 어느 것이든 0 이 아니면 재기동 복원 분기.
+
+        `entries_today > 0` 이면 이미 매수 이력이 있다는 뜻. `closed_symbols`
+        나 `realized_pnl_krw != 0` 은 `entries_today > 0` 일 때만 가능하므로
+        전자만 검사해도 충분하지만, 방어적으로 셋 다 확인한다.
+        """
+        return self.entries_today > 0 or bool(self.closed_symbols) or self.realized_pnl_krw != 0
+
+
 @runtime_checkable
 class TradingRecorder(Protocol):
     """거래 이벤트 영속화 경계 (Protocol).
@@ -143,6 +239,10 @@ class TradingRecorder(Protocol):
     `main.py` 콜백이 `StepReport.entry_events`·`exit_events` 와 `DailySummary`
     를 notifier 와 나란히 이 인터페이스로 포워딩한다. Executor 는 이 타입을
     직접 의존하지 않는다 (Protocol 의존성 역전, notifier 와 동일 기조).
+
+    Issue #33 (ADR-0014) — `load_open_positions`·`load_daily_pnl` 은
+    `_on_session_start` 재기동 복원 경로가 사용. `NullTradingRecorder` 는
+    빈 결과를 반환(기존 `record_*` no-op 기조와 동일).
     """
 
     def record_entry(self, event: EntryEvent) -> None: ...
@@ -150,6 +250,10 @@ class TradingRecorder(Protocol):
     def record_exit(self, event: ExitEvent) -> None: ...
 
     def record_daily_summary(self, summary: DailySummary) -> None: ...
+
+    def load_open_positions(self, session_date: date) -> tuple[OpenPositionRow, ...]: ...
+
+    def load_daily_pnl(self, session_date: date) -> DailyPnlSnapshot: ...
 
     def close(self) -> None: ...
 
@@ -161,6 +265,9 @@ class NullTradingRecorder:
     으로 주입한다 — 영속화 부재가 세션 전체 실패보다 덜 위험하다는
     판단(ADR-0013). 로그(loguru sink) 는 여전히 유지되므로 사후 재구성 경로가
     완전히 닫히지 않는다.
+
+    `load_*` 는 "기록 없음" 과 동일한 빈 결과를 반환 — 재기동 복원 경로가
+    Null 폴백에서는 자연스럽게 "신규 세션" 분기를 타도록.
     """
 
     def record_entry(self, event: EntryEvent) -> None:  # noqa: ARG002
@@ -171,6 +278,20 @@ class NullTradingRecorder:
 
     def record_daily_summary(self, summary: DailySummary) -> None:  # noqa: ARG002
         return None
+
+    def load_open_positions(
+        self,
+        session_date: date,  # noqa: ARG002
+    ) -> tuple[OpenPositionRow, ...]:
+        return ()
+
+    def load_daily_pnl(self, session_date: date) -> DailyPnlSnapshot:
+        return DailyPnlSnapshot(
+            session_date=session_date,
+            realized_pnl_krw=0,
+            entries_today=0,
+            closed_symbols=(),
+        )
 
     def close(self) -> None:
         return None
@@ -434,6 +555,111 @@ class SqliteTradingRecorder:
             self._on_success(_OP_RECORD_DAILY_SUMMARY)
         except Exception as e:  # noqa: BLE001 — I2: silent fail 계약
             self._on_failure(_OP_RECORD_DAILY_SUMMARY, e)
+
+    def load_open_positions(self, session_date: date) -> tuple[OpenPositionRow, ...]:
+        """Issue #33 — 재기동 시 당일 오픈 포지션 복원.
+
+        `orders` 테이블에서 `session_date` 의 buy·sell 을 `filled_at` 순으로
+        재생해 아직 청산되지 않은 포지션을 반환. 1일 1심볼 1회 진입 계약
+        (`ORBStrategy._dispatch_bar` 의 closed 재진입 차단) 을 전제로 하므로
+        동일 심볼의 buy 가 재등장해도 마지막 buy 를 보존한다(데이터 오염 방어적
+        허용 — 일반 경로에서는 발생하지 않음).
+
+        실패 정책 — `record_*` 와 동일 silent fail:
+            close 후 호출 → warning 1회 + 빈 tuple 반환 (카운터 불변).
+            `sqlite3.Error` 및 기타 `Exception` → silent fail + 연속 실패
+            dedupe 경보 + 빈 tuple 반환. `DecimalException` 등 데이터 파싱
+            실패도 동일 경로.
+
+        Raises:
+            이 메서드는 raise 하지 않는다 — 매매 루프 보호 계약(ADR-0013) 을
+            load 경로까지 확장한다. 복원 실패 시 호출자(main) 는 빈 결과를
+            "신규 세션" 으로 해석하므로 절전 복구가 데이터 손실로 이어질 수
+            있지만, 부분 복원(예: 일부 포지션만 복원) 보다는 전체 스킵이 안전.
+        """
+        if self._closed:
+            logger.warning(
+                "storage.load_open_positions: 이미 close() 된 recorder — 빈 결과 반환 "
+                f"(session_date={session_date.isoformat()})"
+            )
+            return ()
+        try:
+            rows = self._conn.execute(
+                "SELECT side, symbol, qty, fill_price, order_number, filled_at "
+                "FROM orders WHERE session_date = ? ORDER BY filled_at ASC, rowid ASC",
+                (session_date.isoformat(),),
+            ).fetchall()
+            open_map: dict[str, OpenPositionRow] = {}
+            for side, symbol, qty, fill_price, order_number, filled_at in rows:
+                if side == "buy":
+                    open_map[symbol] = OpenPositionRow(
+                        symbol=symbol,
+                        qty=int(qty),
+                        entry_price=Decimal(fill_price),
+                        entry_ts=datetime.fromisoformat(filled_at),
+                        order_number=order_number,
+                    )
+                elif side == "sell":
+                    open_map.pop(symbol, None)
+                else:  # pragma: no cover — CHECK 제약이 이미 차단
+                    logger.warning(
+                        "storage.load_open_positions: 알 수 없는 side={side} 무시",
+                        side=side,
+                    )
+            self._on_success(_OP_LOAD_OPEN_POSITIONS)
+            return tuple(open_map.values())
+        except (sqlite3.Error, DecimalException, ValueError, TypeError) as e:
+            self._on_failure(_OP_LOAD_OPEN_POSITIONS, e)
+            return ()
+
+    def load_daily_pnl(self, session_date: date) -> DailyPnlSnapshot:
+        """Issue #33 — 재기동 시 당일 PnL·진입 횟수·청산 심볼 집계.
+
+        `orders` 테이블에서 `session_date` 행을 훑어:
+            - buy 개수 → `entries_today` (성공 진입 = 1건 buy 기록).
+            - sell 의 `net_pnl_krw` 합 → `realized_pnl_krw`.
+            - sell 의 symbol 집합 (정렬 tuple) → `closed_symbols`.
+
+        실패 정책 — `load_open_positions` 와 동일 silent fail. 실패 시 "빈
+        상태" snapshot 을 반환해 호출자(main) 가 신규 세션 분기로 폴백.
+        """
+        empty = DailyPnlSnapshot(
+            session_date=session_date,
+            realized_pnl_krw=0,
+            entries_today=0,
+            closed_symbols=(),
+        )
+        if self._closed:
+            logger.warning(
+                "storage.load_daily_pnl: 이미 close() 된 recorder — 빈 결과 반환 "
+                f"(session_date={session_date.isoformat()})"
+            )
+            return empty
+        try:
+            rows = self._conn.execute(
+                "SELECT side, symbol, net_pnl_krw FROM orders WHERE session_date = ?",
+                (session_date.isoformat(),),
+            ).fetchall()
+            entries = 0
+            pnl = 0
+            sold: set[str] = set()
+            for side, symbol, net_pnl in rows:
+                if side == "buy":
+                    entries += 1
+                elif side == "sell":
+                    sold.add(symbol)
+                    if net_pnl is not None:
+                        pnl += int(net_pnl)
+            self._on_success(_OP_LOAD_DAILY_PNL)
+            return DailyPnlSnapshot(
+                session_date=session_date,
+                realized_pnl_krw=pnl,
+                entries_today=entries,
+                closed_symbols=tuple(sorted(sold)),
+            )
+        except (sqlite3.Error, ValueError, TypeError) as e:
+            self._on_failure(_OP_LOAD_DAILY_PNL, e)
+            return empty
 
     def close(self) -> None:
         """멱등 close. 실패 경로에서도 호출 가능."""

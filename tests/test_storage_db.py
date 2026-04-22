@@ -931,3 +931,618 @@ class TestRecordExitRefPriceCopy:
         assert row is not None, "ORD-EXIT-REF 행이 orders 에 없음"
         assert row[0] == row[1], f"ref_price({row[0]}) != fill_price({row[1]})"
         assert row[0] == str(fill)
+
+
+# ---------------------------------------------------------------------------
+# Issue #33 — OpenPositionRow DTO
+# ---------------------------------------------------------------------------
+
+
+class TestOpenPositionRowDTO:
+    """OpenPositionRow frozen dataclass 계약 검증."""
+
+    def test_정상_생성(self) -> None:
+        from stock_agent.storage import OpenPositionRow
+
+        row = OpenPositionRow(
+            symbol="005930",
+            qty=10,
+            entry_price=Decimal("70000"),
+            entry_ts=_kst(9, 31),
+            order_number="ORD-001",
+        )
+        assert row.symbol == "005930"
+        assert row.qty == 10
+        assert row.entry_price == Decimal("70000")
+        assert row.order_number == "ORD-001"
+
+    def test_frozen_변경_불가(self) -> None:
+        import dataclasses
+
+        from stock_agent.storage import OpenPositionRow
+
+        row = OpenPositionRow(
+            symbol="005930",
+            qty=10,
+            entry_price=Decimal("70000"),
+            entry_ts=_kst(9, 31),
+            order_number="ORD-001",
+        )
+        with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
+            row.qty = 99  # type: ignore[misc]
+
+    def test_symbol_포맷_위반_RuntimeError(self) -> None:
+        from stock_agent.storage import OpenPositionRow
+
+        with pytest.raises(RuntimeError, match="symbol"):
+            OpenPositionRow(
+                symbol="ABC",  # 6자리 숫자 아님
+                qty=10,
+                entry_price=Decimal("70000"),
+                entry_ts=_kst(9, 31),
+                order_number="ORD-001",
+            )
+
+    def test_qty_0이하_RuntimeError(self) -> None:
+        from stock_agent.storage import OpenPositionRow
+
+        with pytest.raises(RuntimeError, match="qty"):
+            OpenPositionRow(
+                symbol="005930",
+                qty=0,
+                entry_price=Decimal("70000"),
+                entry_ts=_kst(9, 31),
+                order_number="ORD-001",
+            )
+
+    def test_qty_음수_RuntimeError(self) -> None:
+        from stock_agent.storage import OpenPositionRow
+
+        with pytest.raises(RuntimeError, match="qty"):
+            OpenPositionRow(
+                symbol="005930",
+                qty=-1,
+                entry_price=Decimal("70000"),
+                entry_ts=_kst(9, 31),
+                order_number="ORD-001",
+            )
+
+    def test_entry_price_0이하_RuntimeError(self) -> None:
+        from stock_agent.storage import OpenPositionRow
+
+        with pytest.raises(RuntimeError, match="entry_price"):
+            OpenPositionRow(
+                symbol="005930",
+                qty=10,
+                entry_price=Decimal("0"),
+                entry_ts=_kst(9, 31),
+                order_number="ORD-001",
+            )
+
+    def test_entry_ts_naive_RuntimeError(self) -> None:
+        from stock_agent.storage import OpenPositionRow
+
+        naive_ts = datetime(_DATE.year, _DATE.month, _DATE.day, 9, 31)  # tzinfo=None
+        with pytest.raises(RuntimeError, match="tz-aware"):
+            OpenPositionRow(
+                symbol="005930",
+                qty=10,
+                entry_price=Decimal("70000"),
+                entry_ts=naive_ts,
+                order_number="ORD-001",
+            )
+
+    def test_order_number_빈문자열_RuntimeError(self) -> None:
+        from stock_agent.storage import OpenPositionRow
+
+        with pytest.raises(RuntimeError, match="order_number"):
+            OpenPositionRow(
+                symbol="005930",
+                qty=10,
+                entry_price=Decimal("70000"),
+                entry_ts=_kst(9, 31),
+                order_number="",
+            )
+
+
+# ---------------------------------------------------------------------------
+# Issue #33 — DailyPnlSnapshot DTO
+# ---------------------------------------------------------------------------
+
+
+class TestDailyPnlSnapshotDTO:
+    """DailyPnlSnapshot frozen dataclass + has_state 계약 검증."""
+
+    def test_정상_생성(self) -> None:
+        from stock_agent.storage import DailyPnlSnapshot
+
+        snap = DailyPnlSnapshot(
+            session_date=_DATE,
+            realized_pnl_krw=0,
+            entries_today=0,
+            closed_symbols=(),
+        )
+        assert snap.session_date == _DATE
+        assert snap.realized_pnl_krw == 0
+        assert snap.entries_today == 0
+        assert snap.closed_symbols == ()
+
+    def test_frozen_변경_불가(self) -> None:
+        import dataclasses
+
+        from stock_agent.storage import DailyPnlSnapshot
+
+        snap = DailyPnlSnapshot(
+            session_date=_DATE,
+            realized_pnl_krw=0,
+            entries_today=0,
+            closed_symbols=(),
+        )
+        with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
+            snap.entries_today = 5  # type: ignore[misc]
+
+    def test_entries_today_음수_RuntimeError(self) -> None:
+        from stock_agent.storage import DailyPnlSnapshot
+
+        with pytest.raises(RuntimeError, match="entries_today"):
+            DailyPnlSnapshot(
+                session_date=_DATE,
+                realized_pnl_krw=0,
+                entries_today=-1,
+                closed_symbols=(),
+            )
+
+    def test_has_state_모든_필드_0이면_False(self) -> None:
+        from stock_agent.storage import DailyPnlSnapshot
+
+        snap = DailyPnlSnapshot(
+            session_date=_DATE,
+            realized_pnl_krw=0,
+            entries_today=0,
+            closed_symbols=(),
+        )
+        assert snap.has_state is False
+
+    def test_has_state_entries_today_양수이면_True(self) -> None:
+        from stock_agent.storage import DailyPnlSnapshot
+
+        snap = DailyPnlSnapshot(
+            session_date=_DATE,
+            realized_pnl_krw=0,
+            entries_today=1,
+            closed_symbols=(),
+        )
+        assert snap.has_state is True
+
+    def test_has_state_closed_symbols_비어있지_않으면_True(self) -> None:
+        from stock_agent.storage import DailyPnlSnapshot
+
+        snap = DailyPnlSnapshot(
+            session_date=_DATE,
+            realized_pnl_krw=0,
+            entries_today=0,
+            closed_symbols=("005930",),
+        )
+        assert snap.has_state is True
+
+    def test_has_state_realized_pnl_nonzero이면_True(self) -> None:
+        from stock_agent.storage import DailyPnlSnapshot
+
+        snap = DailyPnlSnapshot(
+            session_date=_DATE,
+            realized_pnl_krw=-1000,
+            entries_today=0,
+            closed_symbols=(),
+        )
+        assert snap.has_state is True
+
+
+# ---------------------------------------------------------------------------
+# Issue #33 — NullTradingRecorder load 메서드
+# ---------------------------------------------------------------------------
+
+
+class TestNullTradingRecorderLoadMethods:
+    """NullTradingRecorder.load_open_positions / load_daily_pnl 계약 검증."""
+
+    def test_load_open_positions_빈_tuple_반환(self) -> None:
+        from stock_agent.storage import NullTradingRecorder
+
+        r = NullTradingRecorder()
+        result = r.load_open_positions(_DATE)
+        assert result == ()
+
+    def test_load_open_positions_다른_날짜도_빈_tuple(self) -> None:
+        from stock_agent.storage import NullTradingRecorder
+
+        r = NullTradingRecorder()
+        assert r.load_open_positions(date(2025, 1, 1)) == ()
+
+    def test_load_daily_pnl_빈_snapshot_반환(self) -> None:
+        from stock_agent.storage import DailyPnlSnapshot, NullTradingRecorder
+
+        r = NullTradingRecorder()
+        result = r.load_daily_pnl(_DATE)
+
+        assert isinstance(result, DailyPnlSnapshot)
+        assert result.session_date == _DATE
+        assert result.realized_pnl_krw == 0
+        assert result.entries_today == 0
+        assert result.closed_symbols == ()
+
+    def test_load_daily_pnl_has_state_False(self) -> None:
+        from stock_agent.storage import NullTradingRecorder
+
+        r = NullTradingRecorder()
+        assert r.load_daily_pnl(_DATE).has_state is False
+
+    def test_load_daily_pnl_다른_날짜_session_date_일치(self) -> None:
+        from stock_agent.storage import NullTradingRecorder
+
+        target = date(2025, 6, 15)
+        r = NullTradingRecorder()
+        result = r.load_daily_pnl(target)
+        assert result.session_date == target
+
+
+# ---------------------------------------------------------------------------
+# Issue #33 — load_open_positions (SqliteTradingRecorder)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadOpenPositions:
+    """load_open_positions 의 재기동 복원 로직 검증."""
+
+    def _insert_buy(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        symbol: str = _SYMBOL,
+        qty: int = 10,
+        fill_price: str = "70000",
+        order_number: str = _ORDER_BUY,
+        session_date: str | None = None,
+        filled_at: str | None = None,
+    ) -> None:
+        sd = session_date or _DATE.isoformat()
+        fa = filled_at or _kst(9, 31).isoformat()
+        conn.execute(
+            "INSERT INTO orders "
+            "(order_number, session_date, symbol, side, qty, fill_price, ref_price, "
+            " exit_reason, net_pnl_krw, filled_at) "
+            "VALUES (?, ?, ?, 'buy', ?, ?, ?, NULL, NULL, ?)",
+            (order_number, sd, symbol, qty, fill_price, fill_price, fa),
+        )
+
+    def _insert_sell(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        symbol: str = _SYMBOL,
+        qty: int = 10,
+        fill_price: str = "71050",
+        order_number: str = _ORDER_SELL,
+        net_pnl_krw: int = 8500,
+        session_date: str | None = None,
+        filled_at: str | None = None,
+    ) -> None:
+        sd = session_date or _DATE.isoformat()
+        fa = filled_at or _kst(14, 0).isoformat()
+        conn.execute(
+            "INSERT INTO orders "
+            "(order_number, session_date, symbol, side, qty, fill_price, ref_price, "
+            " exit_reason, net_pnl_krw, filled_at) "
+            "VALUES (?, ?, ?, 'sell', ?, ?, ?, 'take_profit', ?, ?)",
+            (order_number, sd, symbol, qty, fill_price, fill_price, net_pnl_krw, fa),
+        )
+
+    def test_buy만_있으면_1건_반환(self) -> None:
+        """buy 만 있을 때 open position 1건 반환 — 모든 필드 검증."""
+        r = _make_recorder()
+        conn = _get_conn(r)
+        self._insert_buy(conn)
+
+        result = r.load_open_positions(_DATE)
+
+        assert len(result) == 1
+        pos = result[0]
+        assert pos.symbol == _SYMBOL
+        assert pos.qty == 10
+        assert pos.entry_price == Decimal("70000")
+        assert pos.entry_ts.tzinfo is not None  # tz-aware
+        assert pos.order_number == _ORDER_BUY
+
+    def test_buy_sell_쌍이면_빈_tuple(self) -> None:
+        """buy → sell 쌍이 완성되면 오픈 포지션 없음."""
+        r = _make_recorder()
+        conn = _get_conn(r)
+        self._insert_buy(conn)
+        self._insert_sell(conn)
+
+        result = r.load_open_positions(_DATE)
+        assert result == ()
+
+    def test_여러_심볼_중_하나만_sell_나머지_open(self) -> None:
+        """3종목 중 1종목만 sell → 나머지 2종목 반환."""
+        r = _make_recorder()
+        conn = _get_conn(r)
+        self._insert_buy(conn, symbol="005930", order_number="ORD-B-1")
+        self._insert_buy(conn, symbol="000660", order_number="ORD-B-2")
+        self._insert_buy(conn, symbol="035420", order_number="ORD-B-3")
+        # 000660 만 청산
+        self._insert_sell(conn, symbol="000660", order_number="ORD-S-2")
+
+        result = r.load_open_positions(_DATE)
+        symbols = {p.symbol for p in result}
+        assert "005930" in symbols
+        assert "035420" in symbols
+        assert "000660" not in symbols
+
+    def test_다른_날짜_buy는_반환_안함(self) -> None:
+        """어제 buy 는 오늘 session_date 쿼리에서 제외된다."""
+        r = _make_recorder()
+        conn = _get_conn(r)
+        yesterday = date(_DATE.year, _DATE.month, _DATE.day - 1)
+        yesterday_filled_at = datetime(
+            yesterday.year, yesterday.month, yesterday.day, 9, 31, tzinfo=KST
+        ).isoformat()
+        self._insert_buy(
+            conn,
+            session_date=yesterday.isoformat(),
+            filled_at=yesterday_filled_at,
+        )
+
+        result = r.load_open_positions(_DATE)
+        assert result == ()
+
+    def test_filled_at_역순_insert_해도_ORDER_BY_정렬(self) -> None:
+        """나중에 INSERT 된 심볼이라도 filled_at ASC 순으로 재생된다 (buy→sell 순서 보장)."""
+        r = _make_recorder()
+        conn = _get_conn(r)
+        # 늦은 시각 insert 먼저, 이른 시각 insert 나중
+        self._insert_buy(
+            conn,
+            symbol="000660",
+            order_number="ORD-B-LATE",
+            filled_at=_kst(10, 0).isoformat(),
+        )
+        self._insert_buy(
+            conn,
+            symbol="005930",
+            order_number="ORD-B-EARLY",
+            filled_at=_kst(9, 31).isoformat(),
+        )
+        # 005930 청산 — 정렬이 맞으면 buy→sell 순서 처리, 잘못되면 open 으로 남음
+        self._insert_sell(
+            conn,
+            symbol="005930",
+            order_number="ORD-S-1",
+            filled_at=_kst(11, 0).isoformat(),
+        )
+
+        result = r.load_open_positions(_DATE)
+        symbols = {p.symbol for p in result}
+        assert "005930" not in symbols
+        assert "000660" in symbols
+
+    def test_close_후_호출_빈_tuple_카운터_불변(self) -> None:
+        """close() 이후 load_open_positions → warning + 빈 tuple, 카운터 불변."""
+        r = _make_recorder()
+        r.close()
+        result = r.load_open_positions(_DATE)
+
+        assert result == ()
+        assert r._consecutive_failures["load_open_positions"] == 0
+
+    def test_sqlite_오류_silent_fail_빈_tuple_카운터_증가(self, mocker: MockerFixture) -> None:
+        """sqlite3.Error 주입 시 silent fail — 빈 tuple 반환 + 카운터 1 증가."""
+        r = _make_recorder()
+        fake_conn = mocker.MagicMock()
+        fake_conn.execute.side_effect = sqlite3.OperationalError("forced db error")
+        r._conn = fake_conn
+        mocker.patch("stock_agent.storage.db.logger")
+
+        result = r.load_open_positions(_DATE)
+
+        assert result == ()
+        assert r._consecutive_failures["load_open_positions"] == 1
+
+    def test_연속_5회_실패_critical_1회_dedupe(self, mocker: MockerFixture) -> None:
+        """연속 5회 실패 → logger.critical 정확히 1회 방출(dedupe)."""
+        r = SqliteTradingRecorder(db_path=":memory:", consecutive_failure_threshold=5)
+        fake_conn = mocker.MagicMock()
+        fake_conn.execute.side_effect = sqlite3.OperationalError("forced")
+        r._conn = fake_conn
+        mock_logger = mocker.patch("stock_agent.storage.db.logger")
+
+        for _ in range(5):
+            r.load_open_positions(_DATE)
+
+        mock_logger.critical.assert_called_once()
+
+        # 6번째 실패 시 critical 추가 방출 없음
+        r.load_open_positions(_DATE)
+        mock_logger.critical.assert_called_once()  # 여전히 1회
+
+    def test_성공_1회_후_카운터_리셋(self, mocker: MockerFixture) -> None:
+        """성공 1회 → 연속 실패 카운터·dedupe 플래그 리셋."""
+        r = _make_recorder()
+        fake_conn = mocker.MagicMock()
+        fake_conn.execute.side_effect = sqlite3.OperationalError("forced")
+        r._conn = fake_conn
+        mocker.patch("stock_agent.storage.db.logger")
+
+        # 실패 2회
+        r.load_open_positions(_DATE)
+        r.load_open_positions(_DATE)
+        assert r._consecutive_failures["load_open_positions"] == 2
+
+        # 실제 연결 복원 후 성공
+        r._conn = _get_conn(_make_recorder())
+        r.load_open_positions(_DATE)
+
+        assert r._consecutive_failures["load_open_positions"] == 0
+        assert r._critical_emitted["load_open_positions"] is False
+
+
+# ---------------------------------------------------------------------------
+# Issue #33 — load_daily_pnl (SqliteTradingRecorder)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadDailyPnl:
+    """load_daily_pnl 의 집계 로직 검증."""
+
+    def _insert_buy(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        symbol: str = _SYMBOL,
+        order_number: str = "ORD-B",
+        session_date: str | None = None,
+        filled_at: str | None = None,
+    ) -> None:
+        sd = session_date or _DATE.isoformat()
+        fa = filled_at or _kst(9, 31).isoformat()
+        conn.execute(
+            "INSERT INTO orders "
+            "(order_number, session_date, symbol, side, qty, fill_price, ref_price, "
+            " exit_reason, net_pnl_krw, filled_at) "
+            "VALUES (?, ?, ?, 'buy', 10, '70000', '70000', NULL, NULL, ?)",
+            (order_number, sd, symbol, fa),
+        )
+
+    def _insert_sell(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        symbol: str = _SYMBOL,
+        order_number: str = "ORD-S",
+        net_pnl_krw: int | None = 8500,
+        session_date: str | None = None,
+        filled_at: str | None = None,
+    ) -> None:
+        sd = session_date or _DATE.isoformat()
+        fa = filled_at or _kst(14, 0).isoformat()
+        conn.execute(
+            "INSERT INTO orders "
+            "(order_number, session_date, symbol, side, qty, fill_price, ref_price, "
+            " exit_reason, net_pnl_krw, filled_at) "
+            "VALUES (?, ?, ?, 'sell', 10, '71050', '71050', 'take_profit', ?, ?)",
+            (order_number, sd, symbol, net_pnl_krw, fa),
+        )
+
+    def test_빈_DB_빈_snapshot(self) -> None:
+        """orders 가 비어있으면 realized=0, entries=0, closed=()."""
+        from stock_agent.storage import DailyPnlSnapshot
+
+        r = _make_recorder()
+        result = r.load_daily_pnl(_DATE)
+
+        assert isinstance(result, DailyPnlSnapshot)
+        assert result.realized_pnl_krw == 0
+        assert result.entries_today == 0
+        assert result.closed_symbols == ()
+
+    def test_buy_3건_entries_today_3(self) -> None:
+        """buy 3건 → entries_today=3."""
+        r = _make_recorder()
+        conn = _get_conn(r)
+        for i, sym in enumerate(["005930", "000660", "035420"]):
+            self._insert_buy(conn, symbol=sym, order_number=f"ORD-B-{i}")
+
+        result = r.load_daily_pnl(_DATE)
+        assert result.entries_today == 3
+
+    def test_buy_2건_sell_1건_집계(self) -> None:
+        """buy 2건 + sell 1건 → entries=2, closed=(symbol,), realized=net_pnl."""
+        r = _make_recorder()
+        conn = _get_conn(r)
+        self._insert_buy(conn, symbol="005930", order_number="ORD-B-1")
+        self._insert_buy(conn, symbol="000660", order_number="ORD-B-2")
+        self._insert_sell(conn, symbol="005930", order_number="ORD-S-1", net_pnl_krw=8500)
+
+        result = r.load_daily_pnl(_DATE)
+        assert result.entries_today == 2
+        assert result.realized_pnl_krw == 8500
+        assert "005930" in result.closed_symbols
+
+    def test_여러_sell_합계_음수_포함(self) -> None:
+        """sell 여러 건의 net_pnl_krw 합계를 정확히 계산한다."""
+        r = _make_recorder()
+        conn = _get_conn(r)
+        self._insert_buy(conn, symbol="005930", order_number="ORD-B-1")
+        self._insert_buy(conn, symbol="000660", order_number="ORD-B-2")
+        self._insert_buy(conn, symbol="035420", order_number="ORD-B-3")
+        self._insert_sell(conn, symbol="005930", order_number="ORD-S-1", net_pnl_krw=5000)
+        self._insert_sell(conn, symbol="000660", order_number="ORD-S-2", net_pnl_krw=-8000)
+
+        result = r.load_daily_pnl(_DATE)
+        assert result.realized_pnl_krw == 5000 + (-8000)
+
+    def test_sell_net_pnl_None_무시(self) -> None:
+        """sell 행 net_pnl_krw=NULL 은 pnl 합계에서 무시된다 (buy 행 정상)."""
+        r = _make_recorder()
+        conn = _get_conn(r)
+        self._insert_buy(conn, symbol="005930", order_number="ORD-B-1")
+        self._insert_sell(conn, symbol="005930", order_number="ORD-S-1", net_pnl_krw=None)
+
+        result = r.load_daily_pnl(_DATE)
+        assert result.realized_pnl_krw == 0  # NULL 은 무시
+
+    def test_다른_날짜_session_date_집계_제외(self) -> None:
+        """어제 날짜 행은 오늘 session_date 집계에서 제외된다."""
+        r = _make_recorder()
+        conn = _get_conn(r)
+        yesterday = date(_DATE.year, _DATE.month, _DATE.day - 1)
+        yesterday_filled_at = datetime(
+            yesterday.year, yesterday.month, yesterday.day, 9, 31, tzinfo=KST
+        ).isoformat()
+        self._insert_buy(
+            conn,
+            symbol="005930",
+            order_number="ORD-B-Y",
+            session_date=yesterday.isoformat(),
+            filled_at=yesterday_filled_at,
+        )
+
+        result = r.load_daily_pnl(_DATE)
+        assert result.entries_today == 0
+        assert result.realized_pnl_krw == 0
+
+    def test_closed_symbols_정렬_tuple(self) -> None:
+        """closed_symbols 는 정렬된 tuple 이어야 한다."""
+        r = _make_recorder()
+        conn = _get_conn(r)
+        for sym in ["035420", "005930", "000660"]:
+            self._insert_buy(conn, symbol=sym, order_number=f"ORD-B-{sym}")
+            self._insert_sell(conn, symbol=sym, order_number=f"ORD-S-{sym}")
+
+        result = r.load_daily_pnl(_DATE)
+        assert list(result.closed_symbols) == sorted(result.closed_symbols)
+
+    def test_close_후_호출_빈_snapshot(self) -> None:
+        """close() 이후 load_daily_pnl → warning + 빈 snapshot."""
+        from stock_agent.storage import DailyPnlSnapshot
+
+        r = _make_recorder()
+        r.close()
+        result = r.load_daily_pnl(_DATE)
+
+        assert isinstance(result, DailyPnlSnapshot)
+        assert result.entries_today == 0
+        assert result.realized_pnl_krw == 0
+
+    def test_sqlite_오류_silent_fail_빈_snapshot_카운터_증가(self, mocker: MockerFixture) -> None:
+        """sqlite3.Error 주입 시 silent fail — 빈 snapshot 반환 + 카운터 1 증가."""
+        r = _make_recorder()
+        fake_conn = mocker.MagicMock()
+        fake_conn.execute.side_effect = sqlite3.OperationalError("forced")
+        r._conn = fake_conn
+        mocker.patch("stock_agent.storage.db.logger")
+
+        result = r.load_daily_pnl(_DATE)
+
+        assert result.entries_today == 0
+        assert result.realized_pnl_krw == 0
+        assert r._consecutive_failures["load_daily_pnl"] == 1

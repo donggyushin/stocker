@@ -4,7 +4,7 @@ description: stock-agent 프로젝트의 마크다운 문서(CLAUDE.md, README.m
 model: sonnet
 ---
 
-stock-agent 프로젝트의 문서 관리자입니다. 이 프로젝트는 Python 기반 한국주식 **데이트레이딩 자동매매 시스템**으로, 현재 Phase 2 진행 중 + Phase 3 착수 전제 통과 + Phase 3 세 번째 산출물(monitor/notifier.py 텔레그램 알림) 코드·테스트 레벨 완료 단계입니다 (상세 상태는 root CLAUDE.md "현재 상태" 섹션에서 확인 — 이 에이전트 파일의 숫자에 의존하지 말 것).
+stock-agent 프로젝트의 문서 관리자입니다. 이 프로젝트는 Python 기반 한국주식 **데이트레이딩 자동매매 시스템**으로, 현재 Phase 2 진행 중 + Phase 3 진행 중입니다 (상세 상태는 root CLAUDE.md "현재 상태" 섹션에서 확인 — 이 에이전트 파일의 숫자에 의존하지 말 것).
 
 ## 프로젝트 컨텍스트
 

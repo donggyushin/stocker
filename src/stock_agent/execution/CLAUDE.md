@@ -12,8 +12,9 @@ stock-agent 의 오케스트레이션 경계 모듈. `ORBStrategy` (시그널) +
 
 `Executor`, `ExecutorConfig`, `OrderSubmitter`, `LiveOrderSubmitter`,
 `DryRunOrderSubmitter`, `BalanceProvider`, `LiveBalanceProvider`, `BarSource`,
-`ExecutorError`, `StepReport`, `ReconcileReport`, `EntryEvent`, `ExitEvent`
-(총 13종)
+`ExecutorError`, `StepReport`, `ReconcileReport`, `EntryEvent`, `ExitEvent`,
+`OpenPositionInput`
+(총 14종)
 
 ## 현재 상태 (2026-04-21 기준)
 
@@ -63,6 +64,29 @@ error + 모든 주문이 SQLite 기록 + 텔레그램 알림 100% 수신** 후. 
 이 분리는 plan.md 의 "신호 → 주문 → 체결 추적 → 상태 동기화 루프" 문구를 가장
 검증 가능한 형태로 구현한 결과다.
 
+### 재기동 복원용 구조적 타입 (Issue #33)
+
+`OpenPositionInput` Protocol 은 `restore_session` 이 받는 포지션 항목의 최소 계약이다.
+
+```python
+class OpenPositionInput(Protocol):
+    @property
+    def symbol(self) -> str: ...
+    @property
+    def qty(self) -> int: ...
+    @property
+    def entry_price(self) -> Decimal: ...
+    @property
+    def entry_ts(self) -> datetime: ...
+    @property
+    def order_number(self) -> str: ...
+```
+
+`storage.OpenPositionRow` 가 이 Protocol 을 구조적으로 만족한다. `execution` 이
+`storage` 를 직접 import 하면 단방향 의존 계층(`data → strategy → risk →
+execution`) 이 깨지므로, Protocol 을 `execution` 쪽에 선언해 역방향 import
+를 원천 차단한다. `main.py` 가 양쪽을 알고 있는 유일한 조립 지점이다.
+
 ## 공개 API
 
 ### `Executor`
@@ -82,6 +106,16 @@ Executor(
 )
 
 start_session(session_date: date, starting_capital_krw: int) -> None
+    # _last_reconcile = None 으로 초기화 (Issue #33 추가)
+restore_session(
+    session_date: date,
+    starting_capital_krw: int,
+    *,
+    open_positions: Sequence[OpenPositionInput],
+    closed_symbols: Sequence[str] = (),
+    entries_today: int,
+    daily_realized_pnl_krw: int,
+) -> None
 step(now: datetime) -> StepReport          # 1 sweep
 force_close_all(now: datetime) -> StepReport
 reconcile() -> ReconcileReport
@@ -150,7 +184,22 @@ last_reconcile: ReconcileReport | None   # property, read-only
 
 `reconcile()` 호출 시마다 내부 캐시 갱신. `_on_daily_report` 콜백이 추가 네트워크
 호출 없이 최신 mismatch 상태를 `DailySummary.mismatch_symbols` 에 담을 수 있도록.
-`start_session` 에서 `None` 으로 초기화.
+`start_session` 및 `restore_session` 에서 `None` 으로 초기화.
+
+### `restore_session` 흐름 (Issue #33)
+
+```text
+1. RiskManager.restore_session(session_date, starting_capital_krw,
+       open_positions=..., entries_today=..., daily_realized_pnl_krw=...) 위임.
+2. open_positions 순회 → _open_lots[symbol] = _OpenLot(entry_price, qty).
+3. open_positions 의 각 symbol 에 대해 strategy.restore_long_position(symbol, ...) 호출.
+4. closed_symbols \ open_symbols 에 대해 strategy.mark_session_closed(symbol, session_date) 호출.
+5. _halt = False, _last_reconcile = None 리셋.
+```
+
+`main.py` 의 `_on_session_start` 콜백이 `recorder.load_open_positions(today)` +
+`recorder.load_daily_pnl(today)` 를 먼저 호출해 재기동 여부를 판단하고,
+재기동이면 `restore_session`, 아니면 `start_session` 을 선택한다.
 
 ## `step(now)` 흐름
 

@@ -34,6 +34,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -186,6 +187,84 @@ class RiskManager:
         self._entries_today = 0
         self._active_positions = {}
         self._halt_logged = False
+
+    def restore_session(
+        self,
+        session_date: date,
+        starting_capital_krw: int,
+        *,
+        open_positions: Sequence[PositionRecord],
+        entries_today: int,
+        daily_realized_pnl_krw: int,
+    ) -> None:
+        """Issue #33 — 세션 중간 재기동 시 DB 기록에서 상태 복원.
+
+        `start_session` 과 달리 카운터·PnL·active_positions 를 **외부 값으로
+        직접 주입**한다. `storage.load_open_positions`·`load_daily_pnl` 이
+        조합해 전달한 스냅샷이 입력. 기존 `start_session` 경로와는 달리
+        "0 으로 리셋 → record_* 재생" 하지 않는다 — 재생 방식은 PnL 계산을
+        executor 에 다시 돌려야 하고(부호 계약), 외부 체결이 있었다면 더
+        위험.
+
+        `entries_today` 는 당일 총 매수 횟수(이미 청산된 포지션 포함) 여야
+        하므로 `len(open_positions) ≤ entries_today` 를 강제한다.
+
+        Args:
+            session_date: 복원 대상 세션 날짜.
+            starting_capital_krw: 세션 시작 자본. 양수. `start_session` 과 동일.
+            open_positions: 현재 활성 포지션 목록. 심볼 중복 금지, 필드
+                검증은 `PositionRecord` 생성자가 이미 수행하므로 추가
+                중복·형식 검증만 수행.
+            entries_today: 당일 총 진입 횟수. `len(open_positions)` 이상.
+            daily_realized_pnl_krw: 당일 실현손익 누계 (수익 양수 / 손실 음수).
+
+        Raises:
+            RuntimeError: 입력 오류 — `starting_capital_krw ≤ 0`,
+                `entries_today < 0`, `entries_today < len(open_positions)`,
+                open_positions 심볼 중복.
+        """
+        if starting_capital_krw <= 0:
+            raise RuntimeError(
+                f"starting_capital_krw 는 양수여야 합니다 (got={starting_capital_krw})"
+            )
+        if entries_today < 0:
+            raise RuntimeError(f"entries_today 는 0 이상이어야 합니다 (got={entries_today})")
+        open_list = list(open_positions)
+        if entries_today < len(open_list):
+            raise RuntimeError(
+                "entries_today 는 len(open_positions) 이상이어야 합니다 "
+                f"(entries_today={entries_today}, open={len(open_list)})"
+            )
+        seen: set[str] = set()
+        active: dict[str, PositionRecord] = {}
+        for pos in open_list:
+            if not _SYMBOL_RE.fullmatch(pos.symbol):
+                raise RuntimeError(
+                    f"open_positions.symbol 형식이 올바르지 않습니다 (got={pos.symbol!r})"
+                )
+            if pos.symbol in seen:
+                raise RuntimeError(f"open_positions 에 중복 symbol 이 있습니다 ({pos.symbol})")
+            seen.add(pos.symbol)
+            active[pos.symbol] = pos
+
+        self._session_date = session_date
+        self._starting_capital_krw = starting_capital_krw
+        self._daily_realized_pnl_krw = daily_realized_pnl_krw
+        self._entries_today = entries_today
+        self._active_positions = active
+        # halt 전환 로그는 record_exit 에서 방출 — 복원 시점에는 이미 과거에
+        # 로그가 남았을 수 있으므로 중복 방출 방지를 위해 즉시 플래그 on.
+        self._halt_logged = self._daily_realized_pnl_krw <= self._halt_threshold_krw()
+        logger.warning(
+            "risk_manager.restore_session date={d} capital={c} entries={e} "
+            "pnl={pnl} open={op} halted={h}",
+            d=session_date,
+            c=starting_capital_krw,
+            e=entries_today,
+            pnl=daily_realized_pnl_krw,
+            op=len(active),
+            h=self.is_halted,
+        )
 
     def evaluate_entry(self, signal: EntrySignal, available_cash_krw: int) -> RiskDecision:
         """진입 시그널 승인/거부 판정.

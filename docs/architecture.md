@@ -57,6 +57,7 @@ korean-stock-trading-system/
 - [src/stock_agent/backtest/CLAUDE.md](../src/stock_agent/backtest/CLAUDE.md)
 - [src/stock_agent/execution/CLAUDE.md](../src/stock_agent/execution/CLAUDE.md)
 - [src/stock_agent/monitor/CLAUDE.md](../src/stock_agent/monitor/CLAUDE.md)
+- [src/stock_agent/storage/CLAUDE.md](../src/stock_agent/storage/CLAUDE.md)
 
 ---
 
@@ -71,8 +72,9 @@ graph TD
     strategy[strategy/<br/>ORBStrategy · Signal DTO]
     risk[risk/<br/>RiskManager · RiskDecision]
     backtest[backtest/<br/>BacktestEngine · sensitivity]
-    execution[execution/<br/>Executor · Protocol 어댑터<br/>EntryEvent · ExitEvent]
+    execution[execution/<br/>Executor · Protocol 어댑터<br/>EntryEvent · ExitEvent · OpenPositionInput]
     monitor[monitor/<br/>Notifier · TelegramNotifier<br/>ErrorEvent · DailySummary]
+    storage[storage/<br/>TradingRecorder · SqliteTradingRecorder<br/>OpenPositionRow · DailyPnlSnapshot]
 
     healthcheck[scripts/healthcheck.py]
     bt_cli[scripts/backtest.py]
@@ -94,6 +96,7 @@ graph TD
     execution --> backtest
     main_py --> execution
     main_py --> monitor
+    main_py --> storage
     main_py --> broker
     main_py --> data
     main_py --> risk
@@ -179,10 +182,12 @@ flowchart LR
 | `PositionRecord` | `risk.manager` | `symbol`, `entry_price`, `qty`, `entry_ts` | `frozen=True, slots=True` |
 | `TradeRecord` | `backtest.engine` | `entry/exit` 각각의 `ts`, `price`, `gross/commission/tax/net_pnl_krw` | `frozen=True, slots=True` |
 | `DailyEquity` | `backtest.engine` | `session_date`, `cash_krw` | `frozen=True, slots=True` |
-| `EntryEvent` | `execution.executor` | `symbol`, `qty: int`, `fill_price: Decimal`, `ref_price: Decimal`, `timestamp` | `frozen=True, slots=True` |
-| `ExitEvent` | `execution.executor` | `symbol`, `qty: int`, `fill_price: Decimal`, `reason: ExitReason`, `net_pnl_krw: int`, `timestamp` | `frozen=True, slots=True` |
+| `EntryEvent` | `execution.executor` | `symbol`, `qty: int`, `fill_price: Decimal`, `ref_price: Decimal`, `timestamp`, `order_number: str` | `frozen=True, slots=True` |
+| `ExitEvent` | `execution.executor` | `symbol`, `qty: int`, `fill_price: Decimal`, `reason: ExitReason`, `net_pnl_krw: int`, `timestamp`, `order_number: str` | `frozen=True, slots=True` |
 | `ErrorEvent` | `monitor.notifier` | `stage: str`, `error_class: str`, `message: str`, `timestamp`, `severity: Literal["error", "critical"]` | `frozen=True, slots=True` |
 | `DailySummary` | `monitor.notifier` | `session_date`, `starting_capital_krw`, `realized_pnl_krw`, `realized_pnl_pct`, `entries_today`, `halted`, `mismatch_symbols` | `frozen=True, slots=True` |
+| `OpenPositionRow` | `storage.db` | `symbol`, `qty: int`, `entry_price: Decimal`, `entry_ts: datetime`, `order_number: str` | `frozen=True, slots=True` |
+| `DailyPnlSnapshot` | `storage.db` | `session_date`, `realized_pnl_krw: int`, `entries_today: int`, `closed_symbols: tuple[str, ...]`, `has_state (property)` | `frozen=True, slots=True` |
 
 ### `BarLoader` Protocol 재호출 안전 계약
 
@@ -396,7 +401,7 @@ Phase 진행 상태와 구체적 산출물은 [CLAUDE.md](../CLAUDE.md) 의 "현
 | `src/stock_agent/execution/` | 장중 실시간 루프, 주문 송수신, 체결 추적 | **완료 2026-04-21 (코드·테스트 레벨)** |
 | `src/stock_agent/main.py` | 장중 실행 진입점 (BlockingScheduler + Executor 오케스트레이터) | **완료 2026-04-21 (코드·테스트 레벨)** |
 | `src/stock_agent/monitor/` | 텔레그램 알림 라우팅 (Notifier Protocol + TelegramNotifier/NullNotifier) | **완료 2026-04-21** — [monitor/CLAUDE.md](../src/stock_agent/monitor/CLAUDE.md) 참조 |
-| `src/stock_agent/storage/` | 체결·주문 영속화 (SQLite) | Phase 3 (미착수) |
+| `src/stock_agent/storage/` | 체결·주문 영속화 (SQLite) + 세션 재기동 복원 경로 | **완료 2026-04-22** — [storage/CLAUDE.md](../src/stock_agent/storage/CLAUDE.md) 참조 |
 | `src/stock_agent/data/` 의 KIS 과거 분봉 어댑터 | KIS 과거 분봉 API 어댑터 (현재 CSV 만 지원) | 별도 PR |
 
 ### 미완료 검증

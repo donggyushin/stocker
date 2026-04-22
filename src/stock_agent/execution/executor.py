@@ -32,7 +32,7 @@
 from __future__ import annotations
 
 import time as _time_module
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -56,7 +56,7 @@ from stock_agent.broker import (
 )
 from stock_agent.broker.kis_client import KisClient
 from stock_agent.data import MinuteBar
-from stock_agent.risk import RiskManager
+from stock_agent.risk import PositionRecord, RiskManager
 from stock_agent.strategy import EntrySignal, ExitReason, ExitSignal, ORBStrategy, Signal
 
 KST = timezone(timedelta(hours=9))
@@ -101,6 +101,30 @@ class BarSource(Protocol):
     """분봉 조회 경계. `RealtimeDataStore` 가 자연스럽게 만족."""
 
     def get_minute_bars(self, symbol: str) -> list[MinuteBar]: ...
+
+
+class OpenPositionInput(Protocol):
+    """Issue #33 — `Executor.restore_session` 이 받는 오픈 포지션 구조적 타입.
+
+    `storage.OpenPositionRow` 가 자연스럽게 만족한다. Protocol 로 둠으로써
+    `execution` → `storage` 역방향 import 를 피한다 (`storage/db.py` 가 이미
+    `execution.EntryEvent/ExitEvent` 를 import 하므로 순환 회피).
+    """
+
+    @property
+    def symbol(self) -> str: ...
+
+    @property
+    def qty(self) -> int: ...
+
+    @property
+    def entry_price(self) -> Decimal: ...
+
+    @property
+    def entry_ts(self) -> datetime: ...
+
+    @property
+    def order_number(self) -> str: ...
 
 
 # ---- 라이브 어댑터 -------------------------------------------------------
@@ -406,10 +430,130 @@ class Executor:
         self._last_processed_bar_time.clear()
         self._open_lots.clear()
         self._halt = False
+        self._last_reconcile = None
         logger.info(
             "executor.start_session date={d} capital={c}",
             d=session_date,
             c=starting_capital_krw,
+        )
+
+    def restore_session(
+        self,
+        session_date: date,
+        starting_capital_krw: int,
+        *,
+        open_positions: Sequence[OpenPositionInput],
+        closed_symbols: Sequence[str] = (),
+        entries_today: int,
+        daily_realized_pnl_krw: int,
+    ) -> None:
+        """Issue #33 — 세션 중간 재기동 시 Executor 상태 복원 (원자성 보장).
+
+        `start_session` 은 "0 으로 리셋" 이지만 본 메서드는 DB 재생 결과를
+        직접 주입한다. 실제 코드 순서:
+
+        1. **사전 계산** (상태 변경 0) — `PositionRecord` 변환·`open_symbols`·
+           `overlap`·`effective_closed` 도출. 여기서 `RuntimeError` (심볼
+           포맷·qty≤0 등) 가 떠도 RiskManager/Executor/Strategy 상태는 변경
+           전이라 롤백 불필요.
+        2. **RiskManager** — `restore_session` 위임. RM 내부는 입력 검증
+           사전 통과 후 원자 대입 구조라 중간 실패 상태가 없다.
+        3. **ORBStrategy 루프** — `restore_long_position` · `mark_session_closed`.
+           중간 실패 시 `touched_symbols` 로 **부분 복원된 심볼만 `reset_session`**
+           으로 제거하고 `RiskManager.start_session` 으로 clean 세션 리셋 후
+           `ExecutorError` 로 래핑 전파. 이 경로는 `_on_session_start` 가
+           `except Exception` 으로 받아 `session_status.started=False` + `notify_error`.
+        4. **커밋** — Executor 로컬(`_open_lots`, `_halt`, `_last_reconcile`,
+           `_last_processed_bar_time`) 는 ORB 루프 성공 이후에만 주입. 실패
+           시엔 건드리지 않아 이전 세션의 stale 값이 남지만, 상위에서 세션이
+           `started=False` 로 마크되므로 다음 영업일 첫 `start_session` 까지
+           사용되지 않는다.
+
+        `closed_symbols ∩ open_positions.symbols` 는 무시(open 쪽 우선) — 정상
+        경로에선 발생하지 않음. 발생 시 storage 데이터 이상이므로 warning.
+
+        Args:
+            session_date: 복원 대상 세션 날짜.
+            starting_capital_krw: 세션 시작 자본. `RiskManager` 가 검증.
+            open_positions: `storage.load_open_positions` 결과.
+            closed_symbols: `storage.load_daily_pnl().closed_symbols`.
+            entries_today: 당일 총 진입 횟수 (청산 포함).
+            daily_realized_pnl_krw: 당일 실현손익 누계.
+
+        Raises:
+            RuntimeError: 사전 검증 실패 (PositionRecord 생성·RiskManager 입력).
+                이 시점엔 RM/Executor/Strategy 상태 불변.
+            ExecutorError: ORB 복원 루프 중간 실패를 래핑. `__cause__` 에 원본.
+                경고 critical 로그 방출 후 RM 은 `start_session` 으로 clean
+                리셋, Strategy 는 해당 심볼들만 `reset_session` 으로 제거.
+        """
+        positions = tuple(open_positions)
+        closed = tuple(closed_symbols)
+        position_records = [
+            PositionRecord(
+                symbol=p.symbol,
+                entry_price=p.entry_price,
+                qty=p.qty,
+                entry_ts=p.entry_ts,
+            )
+            for p in positions
+        ]
+        open_symbols = {p.symbol for p in positions}
+        overlap = open_symbols.intersection(closed)
+        if overlap:
+            logger.warning(
+                "executor.restore_session: closed_symbols 에 open_positions 심볼이 섞여 있음 — "
+                "open 을 우선 적용. overlap={overlap}",
+                overlap=sorted(overlap),
+            )
+        effective_closed = tuple(s for s in closed if s not in open_symbols)
+
+        self._risk_manager.restore_session(
+            session_date,
+            starting_capital_krw,
+            open_positions=position_records,
+            entries_today=entries_today,
+            daily_realized_pnl_krw=daily_realized_pnl_krw,
+        )
+
+        touched_symbols: list[str] = []
+        try:
+            for pos in positions:
+                self._strategy.restore_long_position(pos.symbol, pos.entry_price, pos.entry_ts)
+                touched_symbols.append(pos.symbol)
+            for sym in effective_closed:
+                self._strategy.mark_session_closed(sym, session_date)
+                touched_symbols.append(sym)
+        except Exception as e:  # noqa: BLE001 — 부분 복원 롤백 경로 (CRITICAL 재발 방지)
+            self._strategy.reset_session(touched_symbols)
+            self._risk_manager.start_session(session_date, starting_capital_krw)
+            logger.critical(
+                "executor.restore_session 부분 실패 — ORB/RiskManager clean 세션으로 롤백. "
+                "touched={touched} error={cls}: {err}",
+                touched=touched_symbols,
+                cls=e.__class__.__name__,
+                err=str(e),
+            )
+            raise ExecutorError(
+                "restore_session 중 ORBStrategy 복원 실패 — clean 세션으로 롤백: "
+                f"{e.__class__.__name__}: {e}"
+            ) from e
+
+        self._last_processed_bar_time.clear()
+        self._open_lots = {
+            p.symbol: _OpenLot(entry_price=p.entry_price, qty=p.qty) for p in positions
+        }
+        self._halt = False
+        self._last_reconcile = None
+        logger.warning(
+            "executor.restore_session date={d} capital={c} open={op} closed={cl} "
+            "entries={e} pnl={pnl}",
+            d=session_date,
+            c=starting_capital_krw,
+            op=len(positions),
+            cl=len(closed),
+            e=entries_today,
+            pnl=daily_realized_pnl_krw,
         )
 
     # ---- 주 루프 --------------------------------------------------------

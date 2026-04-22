@@ -42,6 +42,23 @@ def start_session(session_date: date, starting_capital_krw: int) -> None
 일일 상태 리셋. `session_date`, `starting_capital_krw`, `active_positions`, `entries_today`, `daily_realized_pnl_krw` 전부 초기화.
 잔여 `active_positions` 가 있으면 `logger.warning` (이전 세션 미청산 포지션 감지).
 
+```python
+def restore_session(
+    session_date: date,
+    starting_capital_krw: int,
+    *,
+    open_positions: Sequence[PositionRecord],
+    entries_today: int,
+    daily_realized_pnl_krw: int,
+) -> None
+```
+
+세션 중간 재기동 복원용 (`start_session` 과의 차이점). `start_session` 이 모든 카운터를 0 으로 리셋하는 것과 달리, 외부에서 DB 로부터 읽어 온 값을 직접 주입한다.
+
+- `entries_today < len(open_positions)` 이면 논리 불일치 → `RuntimeError`.
+- 복원 시점에 이미 halt 임계치(`daily_realized_pnl_krw ≤ -starting_capital_krw × daily_loss_limit_pct`)를 넘으면 `_halt_logged=True` 로 세팅해 중복 halt 로그 방출을 방지한다.
+- 호출 후 `is_halted` 프로퍼티가 즉시 올바른 상태를 반환한다.
+
 ### 진입 판정
 
 ```python
