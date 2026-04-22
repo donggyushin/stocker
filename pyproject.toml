@@ -53,6 +53,9 @@ target-version = ["py312"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "preserve_env_file: autouse fixture 의 env_file=None 덮기를 건너뛴다 (model_config 계약 검증용)",
+]
 
 [tool.pyright]
 # 에디터 LSP 와 CI 게이트 공통 설정.

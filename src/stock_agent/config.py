@@ -1,8 +1,45 @@
+import os
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _resolve_env_files() -> tuple[Path, ...]:
+    """`.env` 로드 경로를 (홈 공용, repo-local) 순서로 돌려준다.
+
+    - 1순위: ``${XDG_CONFIG_HOME:-~/.config}/stocker/.env`` — worktree 와 무관하게
+      운영자가 한 번 설정해두는 공용 파일 (POSIX 관례, macOS/Linux 전제).
+    - 2순위 (override): 본 모듈을 포함한 repo 루트의 ``.env`` — worktree-local 로
+      일부 값을 덮고 싶을 때만 작성. 부재해도 무방.
+
+    repo-local 은 ``Path(__file__).resolve().parents[2]`` 기준 **절대경로** 로
+    고정한다. APScheduler · CLI 등에서 cwd 가 repo 루트와 다르더라도 override
+    계약이 깨지지 않도록 한다.
+
+    pydantic-settings 는 시퀀스 뒤쪽 파일이 앞쪽을 override 한다 — 따라서
+    repo-local 이 뒤에 온다. 존재하지 않는 파일은 조용히 skip 된다. 환경변수는
+    파일값보다 우선한다.
+
+    주의: 이 함수는 `Settings` 클래스 정의 시점(import) 에 1회 호출돼
+    `model_config["env_file"]` 에 고정된다. 프로세스 기동 후 ``XDG_CONFIG_HOME``
+    을 바꿔도 반영되지 않는다 (Python 표준: 프로세스 재시작이 정석).
+
+    claude-squad 가 worktree 를 새로 만들 때마다 ``.env`` 를 수동 복사하지
+    않아도 되게 하기 위한 경로 설계. 자세한 운영자 절차는 README.md 참조.
+
+    정본: 이 경로 문자열(``~/.config/stocker/.env``)은 본 헬퍼의 반환값이
+    정본이며 README.md · CLAUDE.md · .env.example 에 동일 경로가 사본으로
+    존재한다. 경로 변경 시 4곳을 함께 갱신한다.
+    """
+    xdg_root = os.environ.get("XDG_CONFIG_HOME")
+    home_base = Path(xdg_root) if xdg_root else Path.home() / ".config"
+    shared = home_base / "stocker" / ".env"
+    return (shared, _REPO_ROOT / ".env")
 
 
 class Settings(BaseSettings):
@@ -12,7 +49,7 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_resolve_env_files(),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,

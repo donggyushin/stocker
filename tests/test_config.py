@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -22,16 +23,19 @@ _VALID_BASE_ENV: dict[str, str] = {
 @pytest.fixture(autouse=True)
 def _clear_settings_cache_and_env(  # pyright: ignore[reportUnusedFunction]
     monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
 ) -> Iterator[None]:
     """매 테스트 시작·종료 시 lru_cache 와 .env 영향 제거.
 
-    pydantic-settings 는 env_file 을 프로세스 환경변수와 별개로 직접 파일에서
-    읽으므로, model_config 의 env_file 을 존재하지 않는 경로로 교체해
-    .env 로드를 완전히 차단한다.
+    autouse fixture 가 `model_config["env_file"] = None` 으로 덮어 운영자 홈/repo 의
+    `.env` 가 테스트에 섞이는 경로를 차단한다.
+    `@pytest.mark.preserve_env_file` 마커가 붙은 테스트는 이 덮기를 건너뛴다
+    (helper 가 실제 `model_config` 에 연결됐는지 검증용).
     """
     from stock_agent.config import Settings as _Settings
 
-    monkeypatch.setattr(_Settings, "model_config", {**_Settings.model_config, "env_file": None})
+    if not request.node.get_closest_marker("preserve_env_file"):
+        monkeypatch.setattr(_Settings, "model_config", {**_Settings.model_config, "env_file": None})
     for k in (
         "KIS_ENV",
         "KIS_KEY_ORIGIN",
@@ -230,3 +234,151 @@ def test_live_키_SecretStr은_repr에_원본_노출_안됨(
     assert "**********" in repr(settings.kis_live_app_secret)
     assert live_key not in repr(settings.kis_live_app_key)
     assert live_secret not in repr(settings.kis_live_app_secret)
+
+
+# ---------------------------------------------------------------------------
+# env_file 다중 경로 (홈 공용 + repo-local) 로드 테스트
+# ---------------------------------------------------------------------------
+# 아래 두 테스트는 Settings.model_config["env_file"] 이 홈 경로를 포함하는
+# 튜플(시퀀스)임을 전제로 동작한다.
+#
+# 현재 src 는 env_file=".env" (단일 문자열) — 이 단언이 먼저 FAIL 해야
+# 올바른 RED 상태다.  src 가 _resolve_env_files() 를 도입해 튜플을 반환하면
+# GREEN 으로 전환된다.
+
+
+def _write_env_file(path: Path, overrides: dict[str, str] | None = None) -> None:
+    """테스트용 .env 파일 작성 헬퍼."""
+    base = {
+        "KIS_HTS_ID": "home-only-user",
+        "KIS_APP_KEY": "A" * 36,
+        "KIS_APP_SECRET": "B" * 180,
+        "KIS_ACCOUNT_NO": "12345678-01",
+        "TELEGRAM_BOT_TOKEN": "tg-token",
+        "TELEGRAM_CHAT_ID": "1",
+        "KIS_ENV": "paper",
+        "KIS_KEY_ORIGIN": "paper",
+    }
+    if overrides:
+        base.update(overrides)
+    path.write_text(
+        "\n".join(f"{k}={v}" for k, v in base.items()),
+        encoding="utf-8",
+    )
+
+
+def test_홈_공용_env_파일에서_값을_로드한다(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """홈 공용 .env 파일만 존재할 때 Settings 가 그 파일 값을 로드한다.
+
+    시나리오:
+    - XDG_CONFIG_HOME = tmp_path → 홈 .env = tmp_path/stocker/.env
+    - repo-local .env 부재
+    - Settings.model_config["env_file"] 에 홈 경로 튜플을 직접 주입해 로드 검증.
+    """
+    # 공개 심볼 계약 가드 — 심볼이 사라지거나 이름이 바뀌면 ImportError 로 즉시 감지된다.
+    from stock_agent.config import _resolve_env_files  # type: ignore[attr-defined]
+
+    # XDG_CONFIG_HOME 주입 (실 홈 디렉터리 오염 방지)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    # 홈 공용 .env 파일 작성
+    home_env_dir = tmp_path / "stocker"
+    home_env_dir.mkdir(parents=True)
+    home_env_file = home_env_dir / ".env"
+    _write_env_file(home_env_file)
+
+    # 프로세스 환경변수에는 설정값 없음 — 파일에서만 읽어야 성공
+    for k in list(_VALID_BASE_ENV.keys()) + ["KIS_ENV", "KIS_KEY_ORIGIN"]:
+        monkeypatch.delenv(k, raising=False)
+
+    reset_settings_cache()
+
+    # autouse fixture 가 env_file=None 으로 덮었으므로, 홈 경로 단독 튜플을 직접 주입.
+    # src 의 repo-local 경로 변경(절대경로화 등)과 무관하게 이 테스트는 독립적으로 동작한다.
+    from stock_agent.config import Settings as _Settings
+
+    _ = _resolve_env_files  # noqa: F841 — 심볼 존재 확인용
+    monkeypatch.setattr(
+        _Settings,
+        "model_config",
+        {**_Settings.model_config, "env_file": (home_env_file,)},
+    )
+
+    # [로드 단언] 홈 파일에서 값을 읽어야 한다.
+    settings = Settings()  # type: ignore[call-arg]
+    assert settings.kis_hts_id == "home-only-user"
+
+
+def test_repo_로컬_env_가_홈_env_를_override_한다(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """repo-local .env 의 값이 홈 공용 .env 값을 덮어쓴다.
+
+    pydantic-settings 2.x 에서 env_file 튜플의 뒤 파일이 앞 파일을 override 한다.
+    시나리오:
+    - 홈 .env: KIS_HTS_ID=home-user
+    - repo-local .env: KIS_HTS_ID=local-user
+    기대: settings.kis_hts_id == "local-user"
+
+    홈·repo-local 경로를 절대경로 튜플로 직접 주입하므로 cwd 와 무관하다.
+    """
+    # 공개 심볼 계약 가드 — 심볼이 사라지거나 이름이 바뀌면 ImportError 로 즉시 감지된다.
+    from stock_agent.config import _resolve_env_files  # type: ignore[attr-defined]
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    # 홈 공용 .env (KIS_HTS_ID=home-user)
+    home_env_dir = tmp_path / "stocker"
+    home_env_dir.mkdir(parents=True)
+    home_env_file = home_env_dir / ".env"
+    _write_env_file(home_env_file, {"KIS_HTS_ID": "home-user"})
+
+    # repo-local .env (KIS_HTS_ID=local-user) — 절대경로 사용, chdir 불필요
+    repo_local_env = tmp_path / ".env"
+    repo_local_env.write_text("KIS_HTS_ID=local-user\n", encoding="utf-8")
+
+    # 프로세스 환경변수 정리
+    for k in list(_VALID_BASE_ENV.keys()) + ["KIS_ENV", "KIS_KEY_ORIGIN"]:
+        monkeypatch.delenv(k, raising=False)
+
+    reset_settings_cache()
+
+    # autouse fixture 가 env_file=None 으로 덮었으므로, 절대경로 튜플을 직접 주입.
+    # pydantic-settings 2.x: 튜플 뒤쪽 파일이 앞쪽을 override — 홈 경로 먼저, repo-local 나중.
+    # src 의 repo-local 경로 변경(절대경로화 등)과 무관하게 이 테스트는 독립적으로 동작한다.
+    from stock_agent.config import Settings as _Settings
+
+    _ = _resolve_env_files  # noqa: F841 — 심볼 존재 확인용
+    monkeypatch.setattr(
+        _Settings,
+        "model_config",
+        {**_Settings.model_config, "env_file": (home_env_file, repo_local_env)},
+    )
+
+    # [override 단언] repo-local 값이 홈 값을 덮어야 한다.
+    settings = Settings()  # type: ignore[call-arg]
+    assert settings.kis_hts_id == "local-user"
+
+
+@pytest.mark.preserve_env_file
+def test_Settings_model_config_env_file_은_resolve_env_files_반환과_일치한다() -> None:
+    """env_file 설정이 `_resolve_env_files()` 반환값과 같아야 한다.
+
+    누가 `env_file=".env"` 같은 상수로 되돌리면 이 테스트가 FAIL —
+    헬퍼가 실제 `model_config` 에 연결돼 있는지 고정한다.
+
+    autouse fixture 의 `env_file=None` 덮기를 건너뛰기 위해
+    `preserve_env_file` 마커를 단다.
+    """
+    from stock_agent.config import (  # type: ignore[attr-defined]
+        Settings as _Settings,
+    )
+    from stock_agent.config import (
+        _resolve_env_files,
+    )
+
+    assert _Settings.model_config.get("env_file") == _resolve_env_files()
