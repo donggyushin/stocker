@@ -88,7 +88,7 @@ YAML 로더, 실시간 분봉 소스를 한 자리에 모아 상위 레이어
   - **fail-fast 누락 파일**: 요청 심볼 중 CSV 가 없으면 `MinuteCsvLoadError` (경로 포함). `InMemoryBarLoader` 의 조용한 필터링과 의도적 차이 — 원천 I/O 경계는 엄격.
   - **가드·에러**: `start > end` → `RuntimeError` (래핑 안 함). 심볼 `^\d{6}$` 위반 → `MinuteCsvLoadError`. 생성자에 비-Path·파일·미존재 경로 전달 → `MinuteCsvLoadError`.
   - **의존성**: stdlib `csv.reader` + `heapq.merge` + `decimal.Decimal` 만. 추가 라이브러리 0.
-  - **범위 제외(의도적 defer)**: SQLite 캐시(성능 실측 후 후속 PR), CSV 자동 생성·수집(운영자가 외부에서 준비). KIS 과거 분봉 API 어댑터는 `kis_minute_bars.py`로 완료(2026-04-22). 단, **KIS 서버 최대 1년 보관 제약**으로 2~3년 PASS 기준 자체를 못 맞춰 Phase 2 PASS 검증은 CSV(`minute_csv.py`)로 수행한다.
+  - **범위 제외(의도적 defer)**: SQLite 캐시(성능 실측 후 후속 PR), CSV 자동 생성·수집(운영자가 외부에서 준비). KIS 과거 분봉 API 어댑터는 `kis_minute_bars.py`로 완료(2026-04-22). 단, **KIS 서버 최대 1년 보관 제약**으로 2~3년 PASS 기준 자체를 못 맞춰 Phase 2 PASS 검증은 CSV(`minute_csv.py`)로 수행한다. 대량 백필은 전용 CLI `scripts/backfill_minute_bars.py` (Issue #47) 로 수행한다.
 
 ## 설계 원칙
 
