@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal, DecimalException
@@ -406,6 +407,28 @@ class ORBStrategy:
             tp=take,
             d=session,
         )
+
+    def reset_session(self, symbols: Sequence[str] = ()) -> None:
+        """재기동 복원 롤백용 — 지정된 심볼들의 `_SymbolState` 를 제거한다.
+
+        `Executor.restore_session` 이 ORB 복원 루프 중간에 실패했을 때 부분
+        상태를 제거해 재호출 시 fresh `_SymbolState` 가 재생성되도록 보장한다
+        (Issue #33 후속 보강 — 부분 복원 일관성 사고 방지).
+
+        Args:
+            symbols: 초기화할 심볼 목록. 빈 Sequence 이면 모든 `_states` 를
+                제거한다. 동일 심볼이 중복돼도 무방.
+
+        Raises:
+            이 메서드는 raise 하지 않는다 — 알 수 없는 심볼은 조용히 무시.
+            호출자(Executor.restore_session) 가 이미 예외 경로에 있으므로
+            추가 실패는 매매 루프 보호 계약에 역행한다.
+        """
+        if not symbols:
+            self._states.clear()
+            return
+        for sym in symbols:
+            self._states.pop(sym, None)
 
     def mark_session_closed(
         self,

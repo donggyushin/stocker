@@ -447,22 +447,27 @@ class Executor:
         entries_today: int,
         daily_realized_pnl_krw: int,
     ) -> None:
-        """Issue #33 — 세션 중간 재기동 시 Executor 상태 복원.
+        """Issue #33 — 세션 중간 재기동 시 Executor 상태 복원 (원자성 보장).
 
         `start_session` 은 "0 으로 리셋" 이지만 본 메서드는 DB 재생 결과를
-        직접 주입한다. 흐름:
+        직접 주입한다. 실제 코드 순서:
 
-        1. `RiskManager.restore_session` — active_positions · entries_today ·
-           daily_realized_pnl_krw 복원.
-        2. `_open_lots` 를 open_positions 로 초기화 — 후속 ExitSignal 이 들어
-           왔을 때 PnL 계산이 원래 진입가 기준으로 동작하도록.
-        3. `ORBStrategy.restore_long_position` 을 오픈 포지션별 호출 — 이후
-           분봉 처리에서 손절/익절 판정이 원래 진입가 기준으로 동작.
-        4. `ORBStrategy.mark_session_closed` 를 당일 이미 청산된 심볼별 호출
-           — 당일 재돌파에도 재진입 차단 (1일 1심볼 1회 진입 계약 보존).
-        5. `_halt`/`_last_processed_bar_time` 리셋. `_last_reconcile` 는
-           None — 재기동 후 첫 step 에서 reconcile 이 다시 실행돼 잔고/RM
-           일관성을 재검증.
+        1. **사전 계산** (상태 변경 0) — `PositionRecord` 변환·`open_symbols`·
+           `overlap`·`effective_closed` 도출. 여기서 `RuntimeError` (심볼
+           포맷·qty≤0 등) 가 떠도 RiskManager/Executor/Strategy 상태는 변경
+           전이라 롤백 불필요.
+        2. **RiskManager** — `restore_session` 위임. RM 내부는 입력 검증
+           사전 통과 후 원자 대입 구조라 중간 실패 상태가 없다.
+        3. **ORBStrategy 루프** — `restore_long_position` · `mark_session_closed`.
+           중간 실패 시 `touched_symbols` 로 **부분 복원된 심볼만 `reset_session`**
+           으로 제거하고 `RiskManager.start_session` 으로 clean 세션 리셋 후
+           `ExecutorError` 로 래핑 전파. 이 경로는 `_on_session_start` 가
+           `except Exception` 으로 받아 `session_status.started=False` + `notify_error`.
+        4. **커밋** — Executor 로컬(`_open_lots`, `_halt`, `_last_reconcile`,
+           `_last_processed_bar_time`) 는 ORB 루프 성공 이후에만 주입. 실패
+           시엔 건드리지 않아 이전 세션의 stale 값이 남지만, 상위에서 세션이
+           `started=False` 로 마크되므로 다음 영업일 첫 `start_session` 까지
+           사용되지 않는다.
 
         `closed_symbols ∩ open_positions.symbols` 는 무시(open 쪽 우선) — 정상
         경로에선 발생하지 않음. 발생 시 storage 데이터 이상이므로 warning.
@@ -476,9 +481,14 @@ class Executor:
             daily_realized_pnl_krw: 당일 실현손익 누계.
 
         Raises:
-            RuntimeError: RiskManager 가 입력 검증에서 거부한 경우 (자본·
-                entries·symbol 형식·중복). ORBStrategy 검증 실패도 전파.
+            RuntimeError: 사전 검증 실패 (PositionRecord 생성·RiskManager 입력).
+                이 시점엔 RM/Executor/Strategy 상태 불변.
+            ExecutorError: ORB 복원 루프 중간 실패를 래핑. `__cause__` 에 원본.
+                경고 critical 로그 방출 후 RM 은 `start_session` 으로 clean
+                리셋, Strategy 는 해당 심볼들만 `reset_session` 으로 제거.
         """
+        positions = tuple(open_positions)
+        closed = tuple(closed_symbols)
         position_records = [
             PositionRecord(
                 symbol=p.symbol,
@@ -486,8 +496,18 @@ class Executor:
                 qty=p.qty,
                 entry_ts=p.entry_ts,
             )
-            for p in open_positions
+            for p in positions
         ]
+        open_symbols = {p.symbol for p in positions}
+        overlap = open_symbols.intersection(closed)
+        if overlap:
+            logger.warning(
+                "executor.restore_session: closed_symbols 에 open_positions 심볼이 섞여 있음 — "
+                "open 을 우선 적용. overlap={overlap}",
+                overlap=sorted(overlap),
+            )
+        effective_closed = tuple(s for s in closed if s not in open_symbols)
+
         self._risk_manager.restore_session(
             session_date,
             starting_capital_krw,
@@ -495,33 +515,43 @@ class Executor:
             entries_today=entries_today,
             daily_realized_pnl_krw=daily_realized_pnl_krw,
         )
+
+        touched_symbols: list[str] = []
+        try:
+            for pos in positions:
+                self._strategy.restore_long_position(pos.symbol, pos.entry_price, pos.entry_ts)
+                touched_symbols.append(pos.symbol)
+            for sym in effective_closed:
+                self._strategy.mark_session_closed(sym, session_date)
+                touched_symbols.append(sym)
+        except Exception as e:  # noqa: BLE001 — 부분 복원 롤백 경로 (CRITICAL 재발 방지)
+            self._strategy.reset_session(touched_symbols)
+            self._risk_manager.start_session(session_date, starting_capital_krw)
+            logger.critical(
+                "executor.restore_session 부분 실패 — ORB/RiskManager clean 세션으로 롤백. "
+                "touched={touched} error={cls}: {err}",
+                touched=touched_symbols,
+                cls=e.__class__.__name__,
+                err=str(e),
+            )
+            raise ExecutorError(
+                "restore_session 중 ORBStrategy 복원 실패 — clean 세션으로 롤백: "
+                f"{e.__class__.__name__}: {e}"
+            ) from e
+
         self._last_processed_bar_time.clear()
         self._open_lots = {
-            p.symbol: _OpenLot(entry_price=p.entry_price, qty=p.qty) for p in open_positions
+            p.symbol: _OpenLot(entry_price=p.entry_price, qty=p.qty) for p in positions
         }
         self._halt = False
         self._last_reconcile = None
-        open_symbols = {p.symbol for p in open_positions}
-        for pos in open_positions:
-            self._strategy.restore_long_position(pos.symbol, pos.entry_price, pos.entry_ts)
-        overlap = open_symbols.intersection(closed_symbols)
-        if overlap:
-            logger.warning(
-                "executor.restore_session: closed_symbols 에 open_positions 심볼이 섞여 있음 — "
-                "open 을 우선 적용. overlap={overlap}",
-                overlap=sorted(overlap),
-            )
-        for sym in closed_symbols:
-            if sym in open_symbols:
-                continue
-            self._strategy.mark_session_closed(sym, session_date)
         logger.warning(
             "executor.restore_session date={d} capital={c} open={op} closed={cl} "
             "entries={e} pnl={pnl}",
             d=session_date,
             c=starting_capital_krw,
-            op=len(open_positions),
-            cl=len(closed_symbols),
+            op=len(positions),
+            cl=len(closed),
             e=entries_today,
             pnl=daily_realized_pnl_krw,
         )

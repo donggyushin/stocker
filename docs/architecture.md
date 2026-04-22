@@ -182,12 +182,12 @@ flowchart LR
 | `PositionRecord` | `risk.manager` | `symbol`, `entry_price`, `qty`, `entry_ts` | `frozen=True, slots=True` |
 | `TradeRecord` | `backtest.engine` | `entry/exit` 각각의 `ts`, `price`, `gross/commission/tax/net_pnl_krw` | `frozen=True, slots=True` |
 | `DailyEquity` | `backtest.engine` | `session_date`, `cash_krw` | `frozen=True, slots=True` |
-| `EntryEvent` | `execution.executor` | `symbol`, `qty: int`, `fill_price: Decimal`, `ref_price: Decimal`, `timestamp` | `frozen=True, slots=True` |
-| `ExitEvent` | `execution.executor` | `symbol`, `qty: int`, `fill_price: Decimal`, `reason: ExitReason`, `net_pnl_krw: int`, `timestamp` | `frozen=True, slots=True` |
+| `EntryEvent` | `execution.executor` | `symbol`, `qty: int`, `fill_price: Decimal`, `ref_price: Decimal`, `timestamp`, `order_number: str` | `frozen=True, slots=True` |
+| `ExitEvent` | `execution.executor` | `symbol`, `qty: int`, `fill_price: Decimal`, `reason: ExitReason`, `net_pnl_krw: int`, `timestamp`, `order_number: str` | `frozen=True, slots=True` |
 | `ErrorEvent` | `monitor.notifier` | `stage: str`, `error_class: str`, `message: str`, `timestamp`, `severity: Literal["error", "critical"]` | `frozen=True, slots=True` |
 | `DailySummary` | `monitor.notifier` | `session_date`, `starting_capital_krw`, `realized_pnl_krw`, `realized_pnl_pct`, `entries_today`, `halted`, `mismatch_symbols` | `frozen=True, slots=True` |
 | `OpenPositionRow` | `storage.db` | `symbol`, `qty: int`, `entry_price: Decimal`, `entry_ts: datetime`, `order_number: str` | `frozen=True, slots=True` |
-| `DailyPnlSnapshot` | `storage.db` | `realized: int`, `entries: int`, `has_state (property)` | `frozen=True, slots=True` |
+| `DailyPnlSnapshot` | `storage.db` | `session_date`, `realized_pnl_krw: int`, `entries_today: int`, `closed_symbols: tuple[str, ...]`, `has_state (property)` | `frozen=True, slots=True` |
 
 ### `BarLoader` Protocol 재호출 안전 계약
 

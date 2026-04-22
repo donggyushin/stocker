@@ -747,3 +747,104 @@ class TestMarkSessionClosed:
         # symbol_b 는 아직 상태 없음
         state_b = strategy.get_state(symbol_b)
         assert state_b is None
+
+
+# ---------------------------------------------------------------------------
+# reset_session (Issue #33 — 부분 복원 롤백용)
+# ---------------------------------------------------------------------------
+
+
+class TestResetSession:
+    """reset_session — Executor.restore_session 의 ORB 루프 부분 실패 시 롤백 경로."""
+
+    def test_빈_리스트로_모든_states_제거(self):
+        """reset_session([]) → _states 가 빈 dict, get_state 가 None 반환."""
+        strategy = ORBStrategy()
+        strategy.restore_long_position(_SYMBOL, Decimal("70000"), _now(9, 45))
+        strategy.mark_session_closed("000660", _DATE)
+        assert strategy.get_state(_SYMBOL) is not None
+        assert strategy.get_state("000660") is not None
+
+        strategy.reset_session([])
+
+        assert strategy.get_state(_SYMBOL) is None
+        assert strategy.get_state("000660") is None
+
+    def test_빈_튜플로_모든_states_제거(self):
+        """reset_session(()) — 빈 tuple 도 빈 sequence 이므로 clear 와 동일 동작."""
+        strategy = ORBStrategy()
+        strategy.restore_long_position(_SYMBOL, Decimal("70000"), _now(9, 45))
+        assert strategy.get_state(_SYMBOL) is not None
+
+        strategy.reset_session(())
+
+        assert strategy.get_state(_SYMBOL) is None
+
+    def test_지정_심볼만_제거_나머지_보존(self):
+        """reset_session(["005930"]) → 해당 심볼만 제거, 000660 상태는 유지."""
+        symbol_b = "000660"
+        strategy = ORBStrategy()
+        strategy.restore_long_position(_SYMBOL, Decimal("70000"), _now(9, 45))
+        strategy.mark_session_closed(symbol_b, _DATE)
+
+        strategy.reset_session([_SYMBOL])
+
+        assert strategy.get_state(_SYMBOL) is None
+        # 다른 심볼 상태는 그대로 남아있어야 한다
+        state_b = strategy.get_state(symbol_b)
+        assert state_b is not None
+        assert state_b.position_state == "closed"
+
+    def test_알_수_없는_심볼_조용히_무시(self):
+        """존재하지 않는 심볼 지정해도 raise 없이 통과."""
+        strategy = ORBStrategy()
+        # _states 에 없는 심볼을 지정 — RuntimeError 없이 완료되어야 한다
+        strategy.reset_session(["000000"])
+
+    def test_중복_심볼_인자도_raise_없음(self):
+        """같은 심볼이 여러 번 들어와도 raise 없이 통과."""
+        strategy = ORBStrategy()
+        strategy.restore_long_position(_SYMBOL, Decimal("70000"), _now(9, 45))
+
+        strategy.reset_session([_SYMBOL, _SYMBOL])  # 중복
+
+        # 심볼이 제거되고 예외가 없어야 한다
+        assert strategy.get_state(_SYMBOL) is None
+
+    def test_restore_후_reset_후_on_bar_fresh_상태(self):
+        """restore_long_position → reset_session → on_bar 로 OR 구간 수집 가능.
+
+        reset 후 해당 심볼은 _states 에 없으므로 on_bar 가 새 _SymbolState 를
+        생성(setdefault)해 정상 OR 누적이 시작되는지 검증한다.
+        """
+        strategy = ORBStrategy()
+        # 포지션 복원
+        strategy.restore_long_position(_SYMBOL, Decimal("70000"), _now(9, 45))
+        state_before = strategy.get_state(_SYMBOL)
+        assert state_before is not None
+        assert state_before.position_state == "long"
+
+        # 롤백
+        strategy.reset_session([_SYMBOL])
+        assert strategy.get_state(_SYMBOL) is None
+
+        # 새 날짜 OR 구간 분봉 주입 — fresh 상태로 처리되어야 한다
+        next_date = date(2026, 4, 21)
+        from stock_agent.data import MinuteBar as _MinuteBar
+
+        bar = _MinuteBar(
+            symbol=_SYMBOL,
+            bar_time=datetime(next_date.year, next_date.month, next_date.day, 9, 5, tzinfo=KST),
+            open=Decimal("71000"),
+            high=Decimal("71500"),
+            low=Decimal("70800"),
+            close=Decimal("71200"),
+            volume=0,
+        )
+        signals = strategy.on_bar(bar)
+        # OR 구간 bar 이므로 시그널 없고 or_high 가 갱신되어야 한다
+        assert signals == []
+        state_after = strategy.get_state(_SYMBOL)
+        assert state_after is not None
+        assert state_after.or_high == Decimal("71500")
+        assert state_after.position_state == "flat"

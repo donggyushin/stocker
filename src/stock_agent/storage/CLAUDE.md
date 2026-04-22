@@ -98,23 +98,39 @@ class DailyPnlSnapshot:
 **신규 Protocol 메서드**:
 
 ```python
+@dataclass(frozen=True, slots=True)
+class OpenPositionRow:
+    symbol: str              # 6자리 숫자
+    qty: int                 # > 0
+    entry_price: Decimal     # > 0
+    entry_ts: datetime       # KST aware
+    order_number: str        # 비어있지 않음
+
+@dataclass(frozen=True, slots=True)
+class DailyPnlSnapshot:
+    session_date: date
+    realized_pnl_krw: int
+    entries_today: int                    # >= 0
+    closed_symbols: tuple[str, ...]       # 정렬 tuple
+
+    @property
+    def has_state(self) -> bool: ...      # 재기동 감지용
+
 def load_open_positions(self, session_date: date) -> tuple[OpenPositionRow, ...]:
     """orders 테이블을 filled_at ASC, rowid ASC 순으로 재생해
     buy/sell 페어를 상쇄한 결과(미청산 포지션)를 반환한다."""
 
 def load_daily_pnl(self, session_date: date) -> DailyPnlSnapshot:
-    """daily_pnl 테이블에서 session_date 행을 읽어 반환한다.
-    행이 없으면 DailyPnlSnapshot(realized=0, entries=0) 반환."""
+    """orders 에서 session_date 의 buy/sell 을 집계해 DailyPnlSnapshot 반환.
+    buy 개수 → entries_today, sell.net_pnl_krw 합 → realized_pnl_krw,
+    sell.symbol 정렬 집합 → closed_symbols."""
 ```
 
-**실패 정책 (silent fail 확장)**: `load_*` 내부의 `sqlite3.Error` 는 `record_*` 와
-동일하게 `logger.warning` + 연속 실패 카운터를 사용한다. `_TRACKED_OPS` 에
-`load_open_positions` · `load_daily_pnl` 가 추가되어 메서드별 독립 실패 카운터
-를 유지한다. 읽기 실패 시 빈 결과(`tuple()` / `DailyPnlSnapshot(0, 0)`)를 반환해
-호출자가 신규 세션으로 폴백할 수 있도록 한다.
+**`has_state` 공식** — `entries_today > 0 or bool(closed_symbols) or realized_pnl_krw != 0` (3항 OR). `_on_session_start` 가 이 값으로 "신규 세션 / 재기동 복원" 을 분기.
 
-**NullTradingRecorder 대칭**: `load_open_positions` → `()`, `load_daily_pnl` →
-`DailyPnlSnapshot(realized=0, entries=0)` 반환 (no-op).
+**실패 정책 (silent fail 확장)**: `load_*` 내부의 `sqlite3.Error`·`DecimalException`·`ValueError`·`TypeError` 를 `logger.warning` + 연속 실패 카운터로 흡수한다. `_TRACKED_OPS` 에 `load_open_positions` · `load_daily_pnl` 가 추가되어 메서드별 독립 실패 카운터 를 유지한다. 읽기 실패 시 빈 결과(`tuple()` / `DailyPnlSnapshot(session_date, 0, 0, ())`)를 반환해 호출자가 신규 세션으로 폴백할 수 있도록 한다.
+
+**NullTradingRecorder 대칭**: `load_open_positions` → `()`, `load_daily_pnl` → `DailyPnlSnapshot(session_date=입력, realized_pnl_krw=0, entries_today=0, closed_symbols=())` 반환 (no-op).
 
 ## 공개 API
 
