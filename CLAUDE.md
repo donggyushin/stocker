@@ -185,13 +185,14 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
 4. `uv run pytest -x tests/<target>` 로 GREEN 확인.
 5. (선택) 리팩터 — `mode=refactor-invariant` 로 불변성 테스트 보강해 회귀 방지.
 
-훅 3 종 역할:
+훅 4 종 역할:
 
 | 훅 | 시점 | 차단 조건 |
 | --- | --- | --- |
 | [`tests-writer-guard.sh`](./.claude/hooks/tests-writer-guard.sh) | PreToolUse / `Write`·`Edit`·`NotebookEdit` | 메인 assistant 의 `tests/*.py` 직접 쓰기 |
 | [`src-first-requires-tests.sh`](./.claude/hooks/src-first-requires-tests.sh) | PreToolUse / `Write` | `src/stock_agent/` 신규 파일 + 대응 `tests/test_*.py` 부재 |
 | [`test-coverage-check.sh`](./.claude/hooks/test-coverage-check.sh) | Stop | `src/` 변경 O + `tests/` 변경 X (세션당 1회 리마인더) |
+| [`pyright-full-scope.sh`](./.claude/hooks/pyright-full-scope.sh) | PreToolUse / `Bash` | `git push` 직전 `uv run pyright src scripts tests` 실패. CI pyright job 과 로컬 검사 범위 일치 강제. 긴급 우회는 `STOCK_AGENT_PYRIGHT_BYPASS=1 git push ...` (24 시간 내 회귀 테스트 + 원인 제거 필수) |
 
 훅 없이도 통과하는 예외 (이 훅 스코프 밖):
 

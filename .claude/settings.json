@@ -26,6 +26,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/pyright-full-scope.sh",
+            "timeout": 30
+          }
+        ]
       }
     ],
     "Notification": [
