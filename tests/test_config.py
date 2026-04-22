@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -230,3 +231,149 @@ def test_live_키_SecretStr은_repr에_원본_노출_안됨(
     assert "**********" in repr(settings.kis_live_app_secret)
     assert live_key not in repr(settings.kis_live_app_key)
     assert live_secret not in repr(settings.kis_live_app_secret)
+
+
+# ---------------------------------------------------------------------------
+# env_file 다중 경로 (홈 공용 + repo-local) 로드 테스트
+# ---------------------------------------------------------------------------
+# 아래 두 테스트는 Settings.model_config["env_file"] 이 홈 경로를 포함하는
+# 튜플(시퀀스)임을 전제로 동작한다.
+#
+# 현재 src 는 env_file=".env" (단일 문자열) — 이 단언이 먼저 FAIL 해야
+# 올바른 RED 상태다.  src 가 _resolve_env_files() 를 도입해 튜플을 반환하면
+# GREEN 으로 전환된다.
+
+
+def _write_env_file(path: Path, overrides: dict[str, str] | None = None) -> None:
+    """테스트용 .env 파일 작성 헬퍼."""
+    base = {
+        "KIS_HTS_ID": "home-only-user",
+        "KIS_APP_KEY": "A" * 36,
+        "KIS_APP_SECRET": "B" * 180,
+        "KIS_ACCOUNT_NO": "12345678-01",
+        "TELEGRAM_BOT_TOKEN": "tg-token",
+        "TELEGRAM_CHAT_ID": "1",
+        "KIS_ENV": "paper",
+        "KIS_KEY_ORIGIN": "paper",
+    }
+    if overrides:
+        base.update(overrides)
+    path.write_text(
+        "\n".join(f"{k}={v}" for k, v in base.items()),
+        encoding="utf-8",
+    )
+
+
+def test_홈_공용_env_파일에서_값을_로드한다(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """홈 공용 .env 파일만 존재할 때 Settings 가 그 파일 값을 로드한다.
+
+    시나리오:
+    - XDG_CONFIG_HOME = tmp_path → 홈 .env = tmp_path/stocker/.env
+    - repo-local .env 부재
+    - src 에 _resolve_env_files() 헬퍼가 없으면 ImportError → FAIL (RED 보장).
+    - 헬퍼 구현 후: 반환값이 홈 경로를 포함하는 tuple 이고,
+      Settings() 생성 시 kis_hts_id == "home-only-user" 이어야 한다.
+    """
+    # [RED 단언] src 가 _resolve_env_files 를 export 하지 않으면 ImportError → FAIL.
+    # GREEN 조건: src 에 해당 헬퍼가 존재하고 tuple[Path, ...] 반환.
+    from stock_agent.config import _resolve_env_files  # type: ignore[attr-defined]
+
+    # XDG_CONFIG_HOME 주입 (실 홈 디렉터리 오염 방지)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    # 홈 공용 .env 파일 작성
+    home_env_dir = tmp_path / "stocker"
+    home_env_dir.mkdir(parents=True)
+    home_env_file = home_env_dir / ".env"
+    _write_env_file(home_env_file)
+
+    # repo-local .env 부재 상태 — chdir 로 tmp_path 를 cwd 로 설정
+    monkeypatch.chdir(tmp_path)
+
+    # 프로세스 환경변수에는 설정값 없음 — 파일에서만 읽어야 성공
+    for k in list(_VALID_BASE_ENV.keys()) + ["KIS_ENV", "KIS_KEY_ORIGIN"]:
+        monkeypatch.delenv(k, raising=False)
+
+    reset_settings_cache()
+
+    # _resolve_env_files() 가 홈 경로를 포함하는 튜플을 반환하는지 확인
+    resolved = _resolve_env_files()
+    assert isinstance(resolved, tuple), f"expected tuple, got {type(resolved)}"
+    home_env_str = str(home_env_file)
+    found = any(home_env_str in str(p) for p in resolved)
+    assert found, f"홈 경로 누락: resolved={resolved!r}, expected={home_env_str!r}"
+
+    # autouse fixture 가 env_file=None 으로 덮었으므로, 실제 시퀀스로 재주입
+    from stock_agent.config import Settings as _Settings
+
+    monkeypatch.setattr(
+        _Settings,
+        "model_config",
+        {**_Settings.model_config, "env_file": resolved},
+    )
+
+    # [로드 단언] 홈 파일에서 값을 읽어야 한다.
+    settings = Settings()  # type: ignore[call-arg]
+    assert settings.kis_hts_id == "home-only-user"
+
+
+def test_repo_로컬_env_가_홈_env_를_override_한다(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """repo-local .env 의 값이 홈 공용 .env 값을 덮어쓴다.
+
+    pydantic-settings 2.x 에서 env_file 튜플의 뒤 파일이 앞 파일을 override 한다.
+    시나리오:
+    - 홈 .env: KIS_HTS_ID=home-user
+    - repo-local .env: KIS_HTS_ID=local-user
+    기대 (src 구현 후): settings.kis_hts_id == "local-user"
+
+    [RED 단언] src 에 _resolve_env_files 없으면 ImportError → FAIL.
+    """
+    # [RED 단언] src 가 _resolve_env_files 를 export 하지 않으면 ImportError → FAIL.
+    # GREEN 조건: src 에 해당 헬퍼가 존재하고 tuple[Path, ...] 반환.
+    from stock_agent.config import _resolve_env_files  # type: ignore[attr-defined]
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    # 홈 공용 .env (KIS_HTS_ID=home-user)
+    home_env_dir = tmp_path / "stocker"
+    home_env_dir.mkdir(parents=True)
+    home_env_file = home_env_dir / ".env"
+    _write_env_file(home_env_file, {"KIS_HTS_ID": "home-user"})
+
+    # repo-local .env (KIS_HTS_ID=local-user) — cwd 기준
+    monkeypatch.chdir(tmp_path)
+    repo_local_env = tmp_path / ".env"
+    repo_local_env.write_text("KIS_HTS_ID=local-user\n", encoding="utf-8")
+
+    # 프로세스 환경변수 정리
+    for k in list(_VALID_BASE_ENV.keys()) + ["KIS_ENV", "KIS_KEY_ORIGIN"]:
+        monkeypatch.delenv(k, raising=False)
+
+    reset_settings_cache()
+
+    # _resolve_env_files() 가 홈 경로를 포함하는 튜플을 반환하는지 확인
+    resolved = _resolve_env_files()
+    assert isinstance(resolved, tuple), f"expected tuple, got {type(resolved)}"
+    home_env_str = str(home_env_file)
+    found = any(home_env_str in str(p) for p in resolved)
+    assert found, f"홈 경로 누락: resolved={resolved!r}, expected={home_env_str!r}"
+
+    # autouse fixture 가 env_file=None 으로 덮었으므로, 실제 시퀀스로 재주입.
+    # pydantic-settings 2.x: 튜플 뒤쪽 파일이 앞쪽을 override — 홈 경로 먼저, repo-local 나중.
+    from stock_agent.config import Settings as _Settings
+
+    monkeypatch.setattr(
+        _Settings,
+        "model_config",
+        {**_Settings.model_config, "env_file": resolved},
+    )
+
+    # [override 단언] repo-local 값이 홈 값을 덮어야 한다.
+    settings = Settings()  # type: ignore[call-arg]
+    assert settings.kis_hts_id == "local-user"

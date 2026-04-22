@@ -187,6 +187,32 @@ stock-agent/
    - MTS의 "상시 모의투자 참가신청"과 별개 절차임에 주의
 2. 텔레그램 @BotFather로 봇 생성 → 토큰 및 chat_id 확보
 
+### 최초 설정 — `.env` 준비
+
+`.env` 는 두 경로를 순서대로 로드하고 뒤 파일이 앞을 덮는다.
+
+| 경로 | 역할 |
+|---|---|
+| `~/.config/stocker/.env` | worktree 무관 공용 master (권장) |
+| repo 루트 `.env` | worktree-local override (선택) |
+
+운영자 1회 셋업:
+
+```bash
+mkdir -p ~/.config/stocker
+cp .env.example ~/.config/stocker/.env
+chmod 600 ~/.config/stocker/.env
+# 편집기로 ~/.config/stocker/.env 를 열어 필수 값 기입:
+#   KIS paper 3종(APP_KEY·APP_SECRET·ACCOUNT_NO) + 텔레그램 2종(BOT_TOKEN·CHAT_ID)
+#   KIS 실전 3종은 Phase 3 착수 시 필요 (지금은 선택)
+uv run python scripts/healthcheck.py   # 통과 확인
+```
+
+이후 `claude-squad` 로 새 worktree 를 만들 때 `.env` 를 다시 복사할 필요 없다.
+worktree 단위로 다른 값이 필요하면(예: paper/live 전환) repo 루트에 `.env` 를 따로 작성한다.
+
+민감정보 취급 원칙: `.env` 파일(두 경로 모두)은 절대 커밋하지 않는다. 커밋·PR 전 diff 에 키 문자열이 섞여들지 않았는지 확인한다.
+
 ### 환경 설정
 
 ```bash
@@ -196,7 +222,7 @@ uv sync
 # git 훅 설치 (최초 1회)
 uv run pre-commit install
 
-# 환경변수 파일 작성 (.env는 절대 커밋하지 않습니다)
+# worktree-local override 가 필요한 경우에만 (통상은 ~/.config/stocker/.env 로 충분)
 cp .env.example .env
 # .env 에서 아래 값을 채웁니다:
 #   KIS_ENV          = paper
