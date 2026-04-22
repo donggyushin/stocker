@@ -464,16 +464,24 @@ class KisMinuteBarLoader:
                     f"KIS fetch 호출 실패: symbol={symbol} date={date_str}"
                 ) from exc
 
-            if not isinstance(response, dict):
+            # python-kis 의 `KisDynamicDict` 는 `dict` 서브클래스가 아니라 `__data__`
+            # 속성에 raw dict 를 보관한다. raw dict · KisDynamicDict 둘 다 허용하되,
+            # `__data__` 경유 값은 각 행도 raw dict 이므로 downstream 파싱에 편하다.
+            response_data = getattr(response, "__data__", None)
+            if isinstance(response_data, dict):
+                response_dict: dict[str, Any] = response_data
+            elif isinstance(response, dict):
+                response_dict = response
+            else:
                 raise KisMinuteBarLoadError(
                     f"KIS 응답이 dict 가 아닙니다: type={type(response).__name__}"
                 )
 
-            rt_cd = response.get("rt_cd", "0")
-            msg_cd = response.get("msg_cd", "")
+            rt_cd = response_dict.get("rt_cd", "0")
+            msg_cd = response_dict.get("msg_cd", "")
 
             if rt_cd == "0":
-                return response
+                return response_dict
 
             if msg_cd == _RATE_LIMIT_MSG_CD:
                 if attempts >= max_attempts:
@@ -485,7 +493,7 @@ class KisMinuteBarLoader:
                 self._sleep(self._rate_limit_wait_s)
                 continue
 
-            msg = response.get("msg1", "")
+            msg = response_dict.get("msg1", "")
             raise KisMinuteBarLoadError(
                 f"KIS API 에러 rt_cd={rt_cd} msg_cd={msg_cd} msg={msg!r} "
                 f"(symbol={symbol} date={date_str})"
