@@ -66,7 +66,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **Phase 1 PASS (코드·테스트 레벨)** (2026-04-19 선언). Phase 0 환경 준비 완료. broker(KisClient + rate_limiter) + data(historical + universe + realtime) 모두 완료. pytest **131건 green**. **paper 주문 + live 시세 하이브리드 키 정책 도입**: KIS paper 도메인에 시세 API가 없어 `RealtimeDataStore`는 별도 실전 APP_KEY로 실전 도메인을 호출하며, 실전 키 PyKis 인스턴스에는 `install_order_block_guard`를 설치해 주문 경로를 구조적으로 차단한다.
 
-**Phase 2 진행 중 — ORB 전략 엔진 + 리스크 매니저 + 백테스트 엔진 코어 + CSV 분봉 어댑터 + 파라미터 민감도 그리드 + backtest.py CLI + KIS 과거 분봉 API 어댑터 완료** (2026-04-20~22). `strategy/` + `risk/` + `backtest/` + `data/kis_minute_bars.py` 완료. `scripts/backtest.py`·`scripts/sensitivity.py` 에 `--loader={csv,kis}` 옵션 추가. **PASS 선언은 1년치 KIS 분봉 백필 + 낙폭 절대값 15% 미만 확인 (MDD > -15%, 240 영업일 이상, 다중 종목) 이후.** KIS 서버 1년 보관 한도에 맞춰 Phase 2 PASS 기준 기간을 1년으로 완화했다. 임계값 -15% 유지. 상세는 ADR-0017. 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
+**Phase 2 진행 중 — ORB 전략 엔진 + 리스크 매니저 + 백테스트 엔진 코어 + CSV 분봉 어댑터 + 파라미터 민감도 그리드 + backtest.py CLI + KIS 과거 분봉 API 어댑터 + 백필 CLI 완료** (2026-04-20~22). `strategy/` + `risk/` + `backtest/` + `data/kis_minute_bars.py` 완료. `scripts/backtest.py`·`scripts/sensitivity.py` 에 `--loader={csv,kis}` 옵션 추가. **PASS 선언은 1년치 KIS 분봉 백필 + 낙폭 절대값 15% 미만 확인 (MDD > -15%, 240 영업일 이상, 다중 종목) 이후.** KIS 서버 1년 보관 한도에 맞춰 Phase 2 PASS 기준 기간을 1년으로 완화했다. 임계값 -15% 유지. 상세는 ADR-0017. 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
 
 **Phase 3 착수 전제 통과** (2026-04-21). 실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK) 완료.
 
@@ -92,7 +92,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 ## 디렉토리 구조
 
-현재 존재하는 파일 (Phase 2 일곱 번째 산출물 완료 기준):
+현재 존재하는 파일 (Phase 2 여덟 번째 산출물 완료 기준):
 
 ```text
 stock-agent/
@@ -171,9 +171,10 @@ stock-agent/
 │   ├── test_notifier.py       # 71 케이스
 │   └── test_storage_db.py     # 49 케이스 (+ 3 skip)
 └── scripts/
-    ├── healthcheck.py         # KIS 모의 잔고 조회 + 텔레그램 hello (실주문 없음)
-    ├── backtest.py            # 단일 런 백테스트 CLI
-    └── sensitivity.py         # 파라미터 민감도 32 조합 그리드
+    ├── healthcheck.py              # KIS 모의 잔고 조회 + 텔레그램 hello (실주문 없음)
+    ├── backtest.py                 # 단일 런 백테스트 CLI
+    ├── sensitivity.py              # 파라미터 민감도 32 조합 그리드
+    └── backfill_minute_bars.py     # KIS 과거 분봉 캐시 일괄 적재 CLI
 ```
 
 미착수 모듈의 청사진은 [`plan.md`](./plan.md)의 디렉토리 구조 섹션 참조.
@@ -213,6 +214,24 @@ cp .env.example .env
 #   KIS_LIVE_ACCOUNT_NO = 실전 계좌번호 (XXXXXXXX-XX) — paper 계좌번호와 다름
 #   # 실전 앱 발급 후 KIS Developers 포털 → 앱 관리 → 허용 IP 목록에 현재 공인 IP 등록 필수
 ```
+
+### 백테스트용 분봉 백필
+
+Phase 2 PASS 검증 전 `data/minute_bars.db` 에 1년치 KIS 분봉을 미리 적재한다.
+
+```bash
+# 유니버스 전체 심볼에 대해 최근 1년치 분봉 백필
+uv run python scripts/backfill_minute_bars.py \
+    --from 2024-04-22 --to 2025-04-22
+
+# 특정 심볼만 백필
+uv run python scripts/backfill_minute_bars.py \
+    --from 2024-04-22 --to 2025-04-22 --symbols 005930 000660
+
+# exit code: 0 정상 / 1 일부 심볼 KisMinuteBarLoadError / 2 입력·설정 오류 / 3 I/O 오류
+```
+
+백필 완료 후 `scripts/backtest.py --loader=kis --from ... --to ...` 로 MDD > -15% 확인 시 Phase 2 PASS 판정.
 
 ### 장중 실행 (Phase 3)
 
