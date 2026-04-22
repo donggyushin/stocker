@@ -219,6 +219,7 @@ else:
 
 | 콜백 | notifier 호출 | 조건 |
 |---|---|---|
+| `_on_session_start` | `notify_error(stage="session_start.recorder_null", severity="critical")` | `runtime.recorder` 가 `NullTradingRecorder` 인스턴스일 때 1회 (Issue #41, 2026-04-22) |
 | `_on_session_start` | `notify_error(stage="session_start", severity="error")` | 자본 ≤ 0 또는 예외 발생 시 |
 | `_on_step` | `notify_entry(event)` / `notify_exit(event)` | `StepReport.entry_events` / `exit_events` 순회 |
 | `_on_step` | `notify_error(stage="reconcile", severity="critical")` | mismatch 발견 시 1회 dedupe |

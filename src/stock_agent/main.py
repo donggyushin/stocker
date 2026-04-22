@@ -395,6 +395,32 @@ def _on_session_start(
     """
 
     def callback() -> None:
+        if isinstance(runtime.recorder, NullTradingRecorder):
+            # Issue #41 — `_default_recorder_factory` 가 SqliteTradingRecorder 조립
+            # 실패 시 남기는 `logger.warning` 은 프로세스 시작 시점에만 남아, 세션
+            # 시작 이후에는 recorder 가 폴백 상태인지 DB 가 비어 있는지 구분이
+            # 불가능하다. 재기동 복원 경로(Issue #33/ADR-0014) 는 폴백 상태에서
+            # `load_open_positions=()` + `has_state=False` → 신규 세션 분기로 빠지며,
+            # 실제 KIS 잔고에 포지션이 남아있으면 첫 reconcile mismatch 까지 이벤트
+            # 손실이 발생한다. 매일 09:00 callback 진입 시 운영자에게 1회 경보를
+            # 방출해 DB 파일·권한 점검을 유도한다. 이후 정상 세션 시작 경로는
+            # 그대로 진행 — Null 폴백이라도 신규 세션 시작 자체는 막지 않는다.
+            logger.critical(
+                "main.session_start.recorder_null — SqliteTradingRecorder 조립 실패 "
+                "폴백 상태. 재기동 복원 불가, 신규 세션으로 시작. DB 파일·권한 확인 필요."
+            )
+            runtime.notifier.notify_error(
+                ErrorEvent(
+                    stage="session_start.recorder_null",
+                    error_class="NullTradingRecorder",
+                    message=(
+                        "영속화 폴백 상태 — SqliteTradingRecorder 조립 실패. "
+                        "재기동 복원 불가, DB 파일·권한 확인 필요."
+                    ),
+                    timestamp=clock(),
+                    severity="critical",
+                )
+            )
         try:
             balance = runtime.kis_client.get_balance()
             starting_capital = min(int(args.starting_capital), int(balance.withdrawable))

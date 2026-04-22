@@ -101,7 +101,7 @@ def _make_runtime(
     risk_manager: MagicMock | None = None,
     session_status: SessionStatus | None = None,
     notifier: MagicMock | None = None,
-    recorder: MagicMock | None = None,
+    recorder: MagicMock | TradingRecorder | None = None,
 ) -> Runtime:
     """Runtime 더블 조립 헬퍼.
 
@@ -2629,3 +2629,224 @@ class TestOnSessionStartRestartDetection:
         fake_executor.restore_session.assert_not_called()
         assert ss.started is False
         mock_logger.exception.assert_called_once()
+
+
+# ===========================================================================
+# 그룹 I — _on_session_start recorder_null 경보
+# ===========================================================================
+
+
+class TestOnSessionStartRecorderNull:
+    """_on_session_start 가 NullTradingRecorder 폴백 상태를 critical 경보로 노출하는 계약.
+
+    Issue #41: _default_recorder_factory 가 SqliteTradingRecorder 조립 실패 시
+    NullTradingRecorder 를 주입하지만 세션 시작 시점엔 그 사실이 가려지는 문제 수정.
+    """
+
+    def _make_null_recorder_runtime(
+        self,
+        kis_client: MagicMock | None = None,
+        executor: MagicMock | None = None,
+        notifier: MagicMock | None = None,
+        session_status: SessionStatus | None = None,
+    ) -> Runtime:
+        """NullTradingRecorder 가 주입된 Runtime 더블."""
+        _kis = kis_client or MagicMock(spec=KisClient)
+        _kis.get_balance.return_value = _make_balance(total=2_000_000, withdrawable=1_800_000)
+        _ex = executor or MagicMock(spec=Executor)
+        _notifier = notifier or MagicMock(spec=Notifier)
+        null_recorder = NullTradingRecorder()
+        return _make_runtime(
+            kis_client=_kis,
+            executor=_ex,
+            notifier=_notifier,
+            recorder=null_recorder,
+            session_status=session_status,
+        )
+
+    def test_I1_null_recorder_logger_critical_session_start_recorder_null_포함(
+        self, mocker: Any
+    ) -> None:
+        """I1 — NullTradingRecorder 주입 시 logger.critical 최소 1회,
+        메시지에 "session_start.recorder_null" 포함.
+        """
+        mock_logger = mocker.patch("stock_agent.main.logger")
+        runtime = self._make_null_recorder_runtime()
+        args = _parse_args([])
+        clock = lambda: _kst(9, 0)  # noqa: E731
+
+        cb = _on_session_start(runtime, args, clock)
+        cb()
+
+        critical_calls = mock_logger.critical.call_args_list
+        assert_msg = f"logger.critical 이 호출되지 않았습니다. calls={critical_calls}"
+        assert len(critical_calls) >= 1, assert_msg
+        messages = [str(c) for c in critical_calls]
+        has_stage = any("session_start.recorder_null" in m for m in messages)
+        assert has_stage, f"recorder_null 미발견. messages={messages}"
+
+    def test_I2_null_recorder_notify_error_stage_session_start_recorder_null(
+        self, mocker: Any
+    ) -> None:
+        """I2 — NullTradingRecorder 주입 시 notify_error 최소 1회,
+        ErrorEvent.stage == "session_start.recorder_null",
+        error_class == "NullTradingRecorder",
+        severity == "critical",
+        timestamp == clock() 반환값,
+        message 비어있지 않음.
+        """
+        mocker.patch("stock_agent.main.logger")
+        fake_notifier = MagicMock(spec=Notifier)
+        fixed_ts = _kst(9, 0)
+        clock = lambda: fixed_ts  # noqa: E731
+
+        runtime = self._make_null_recorder_runtime(notifier=fake_notifier)
+        args = _parse_args([])
+
+        cb = _on_session_start(runtime, args, clock)
+        cb()
+
+        # stage="session_start.recorder_null" 인 호출을 추출
+        null_alarm_calls = [
+            c
+            for c in fake_notifier.notify_error.call_args_list
+            if c[0][0].stage == "session_start.recorder_null"
+        ]
+        assert len(null_alarm_calls) >= 1, (
+            f"stage='session_start.recorder_null' notify_error 호출 없음. "
+            f"all_calls={fake_notifier.notify_error.call_args_list}"
+        )
+        event: ErrorEvent = null_alarm_calls[0][0][0]
+        assert event.error_class == "NullTradingRecorder"
+        assert event.severity == "critical"
+        assert event.timestamp == fixed_ts
+        assert event.message != ""
+
+    def test_I3_null_recorder_이후_정상_세션_시작_경로_진행(self, mocker: Any) -> None:
+        """I3 — NullTradingRecorder 경보 발생 후에도 정상 세션 시작 경로가 그대로 진행된다.
+        get_balance 호출 O, withdrawable > 0 이면 executor.start_session 호출 O.
+        """
+        mocker.patch("stock_agent.main.logger")
+        fake_executor = MagicMock(spec=Executor)
+        fake_kis = MagicMock(spec=KisClient)
+        fake_kis.get_balance.return_value = _make_balance(total=2_000_000, withdrawable=1_800_000)
+        ss = SessionStatus(started=False)
+
+        runtime = self._make_null_recorder_runtime(
+            kis_client=fake_kis,
+            executor=fake_executor,
+            session_status=ss,
+        )
+        args = _parse_args(["--starting-capital", "1000000"])
+        clock = lambda: _kst(9, 0)  # noqa: E731
+
+        cb = _on_session_start(runtime, args, clock)
+        cb()
+
+        fake_kis.get_balance.assert_called_once()
+        fake_executor.start_session.assert_called_once()
+        assert ss.started is True
+
+    def test_I4_null_아닌_recorder_notify_error_recorder_null_미호출(self, mocker: Any) -> None:
+        """I4 — recorder 가 NullTradingRecorder 가 아닌 경우
+        (MagicMock(spec=TradingRecorder)) stage='session_start.recorder_null'
+        인 notify_error 호출이 0회여야 한다.
+        """
+        mocker.patch("stock_agent.main.logger")
+        fake_notifier = MagicMock(spec=Notifier)
+        fake_kis = MagicMock(spec=KisClient)
+        fake_kis.get_balance.return_value = _make_balance(total=2_000_000, withdrawable=1_800_000)
+
+        # _make_runtime 기본값은 MagicMock(spec=TradingRecorder) — NullTradingRecorder 아님
+        runtime = _make_runtime(kis_client=fake_kis, notifier=fake_notifier)
+        args = _parse_args([])
+        clock = lambda: _kst(9, 0)  # noqa: E731
+
+        cb = _on_session_start(runtime, args, clock)
+        cb()
+
+        null_alarm_calls = [
+            c
+            for c in fake_notifier.notify_error.call_args_list
+            if c[0][0].stage == "session_start.recorder_null"
+        ]
+        assert_msg = f"recorder_null 경보 불필요 발생. calls={null_alarm_calls}"
+        assert len(null_alarm_calls) == 0, assert_msg
+
+    def test_I5_null_recorder_plus_withdrawable_0_notify_error_2회(self, mocker: Any) -> None:
+        """I5 — NullTradingRecorder + withdrawable==0 조합.
+        notify_error 가 2회 호출돼야 한다:
+          1회째 stage="session_start.recorder_null" (critical)
+          2회째 stage="session_start" error_class="StartingCapitalError" (error).
+        null 경보가 이후 세션 시작 실패 경보를 삼키면 안 된다.
+        """
+        mocker.patch("stock_agent.main.logger")
+        fake_notifier = MagicMock(spec=Notifier)
+        fake_kis = MagicMock(spec=KisClient)
+        # withdrawable=0 → starting_capital=0 → 조기 return + StartingCapitalError 경보
+        fake_kis.get_balance.return_value = _make_balance(total=2_000_000, withdrawable=0)
+
+        null_recorder = NullTradingRecorder()
+        runtime = _make_runtime(
+            kis_client=fake_kis,
+            notifier=fake_notifier,
+            recorder=null_recorder,
+        )
+        args = _parse_args([])
+        clock = lambda: _kst(9, 0)  # noqa: E731
+
+        cb = _on_session_start(runtime, args, clock)
+        cb()
+
+        assert fake_notifier.notify_error.call_count == 2, (
+            f"notify_error 2회 기대, 실제={fake_notifier.notify_error.call_count}. "
+            f"calls={fake_notifier.notify_error.call_args_list}"
+        )
+        stages = [c[0][0].stage for c in fake_notifier.notify_error.call_args_list]
+        assert "session_start.recorder_null" in stages
+        assert "session_start" in stages
+
+        # severity 검증
+        calls = fake_notifier.notify_error.call_args_list
+        events_by_stage = {c[0][0].stage: c[0][0] for c in calls}
+        assert events_by_stage["session_start.recorder_null"].severity == "critical"
+        assert events_by_stage["session_start"].error_class == "StartingCapitalError"
+        assert events_by_stage["session_start"].severity == "error"
+
+    def test_I6_null_recorder_plus_get_balance_예외_notify_error_2회(self, mocker: Any) -> None:
+        """I6 — NullTradingRecorder + get_balance ConnectionError 조합.
+        notify_error 가 2회 호출돼야 한다:
+          1회째 stage="session_start.recorder_null" (critical)
+          2회째 stage="session_start" error_class="ConnectionError" (error).
+        null 경보가 예외 경보를 삼키면 안 된다.
+        """
+        mocker.patch("stock_agent.main.logger")
+        fake_notifier = MagicMock(spec=Notifier)
+        fake_kis = MagicMock(spec=KisClient)
+        fake_kis.get_balance.side_effect = ConnectionError("네트워크 오류")
+
+        null_recorder = NullTradingRecorder()
+        runtime = _make_runtime(
+            kis_client=fake_kis,
+            notifier=fake_notifier,
+            recorder=null_recorder,
+        )
+        args = _parse_args([])
+        clock = lambda: _kst(9, 0)  # noqa: E731
+
+        cb = _on_session_start(runtime, args, clock)
+        cb()
+
+        assert fake_notifier.notify_error.call_count == 2, (
+            f"notify_error 2회 기대, 실제={fake_notifier.notify_error.call_count}. "
+            f"calls={fake_notifier.notify_error.call_args_list}"
+        )
+        stages = [c[0][0].stage for c in fake_notifier.notify_error.call_args_list]
+        assert "session_start.recorder_null" in stages
+        assert "session_start" in stages
+
+        calls = fake_notifier.notify_error.call_args_list
+        events_by_stage = {c[0][0].stage: c[0][0] for c in calls}
+        assert events_by_stage["session_start.recorder_null"].severity == "critical"
+        assert events_by_stage["session_start"].error_class == "ConnectionError"
+        assert events_by_stage["session_start"].severity == "error"

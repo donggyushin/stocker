@@ -58,6 +58,16 @@ stock-agent 의 영속화 경계 모듈. `Executor` 가 방출한 `EntryEvent`·
    세션 전체 실패보다 덜 위험하다는 판단. loguru sink 는 유지되므로 사후
    재구성 경로가 완전히 닫히지 않는다.
 
+   **가시성 보강 (Issue #41, 2026-04-22)**: `_on_session_start` 가 매 세션 시작
+   시 `isinstance(runtime.recorder, NullTradingRecorder)` 검사를 수행해, 폴백
+   상태일 때 `logger.critical` + `runtime.notifier.notify_error(stage=
+   "session_start.recorder_null", error_class="NullTradingRecorder",
+   severity="critical")` 를 1회 방출한다. 이후 정상 세션 시작 경로
+   (`get_balance`/`start_session` 또는 `restore_session`) 는 그대로 진행한다.
+   `_default_recorder_factory` 의 `logger.warning` 만으로는 재기동 복원 경로
+   (ADR-0014) 가 Null 폴백에서 신규 세션 분기로 조용히 빠져버리는 silent-failure
+   경로를 충분히 알릴 수 없어 경보 수준을 올렸다.
+
 8. **order_number PK + DTO 확장** — `EntryEvent`·`ExitEvent` 에 `order_number: str`
    필드 추가. `__post_init__` 가드: 빈 문자열·naive timestamp·qty≤0·price≤0 →
    `RuntimeError` (ADR-0003 기조).

@@ -303,6 +303,7 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
   - pytest **963건 green** (`tests/test_kis_client.py` + `tests/test_executor.py` 확장, 기존 대비 +183). 회귀 0건. 의존성 추가 없음.
   - Phase 3 코드 산출물 전부 완료 (broker 체결조회까지). **Phase 3 PASS 선언은 모의투자 연속 10영업일 무중단 운영 후.**
   - (2026-04-22) 후속 — `storage/db.py` `load_*` 행 단위 예외 격리 (Issue #40) 완료: 쿼리 자체 실패 → 빈 결과 + 카운터 +1, 개별 행 파싱 실패 → 행 skip + `logger.error`, 1건 이상 파싱 실패 시 메서드 카운터 +1 경로 합류.
+  - (2026-04-22) Issue #41 — `_on_session_start` NullTradingRecorder 폴백 가시성 보강: 콜백 진입부에서 `isinstance(runtime.recorder, NullTradingRecorder)` 검사 → `logger.critical` + `notify_error(stage="session_start.recorder_null", severity="critical")` 1회 방출. ADR-0013 결정 7의 가시성 보강이며 결정 번복·스택 교체 아님 — 별도 ADR 없음. pytest **1068 passed, 4 skipped**.
 
 - **다음 작업**
   - **Phase 2 잔여 (후속 PR)**: KIS 과거 분봉 API 어댑터(별도 PR) · 2~3년 실데이터 수집(운영자 외부 작업, 리포지토리 미포함) · `uv run python scripts/backtest.py --csv-dir ... --from 2023-01-01 --to 2025-12-31` 실행 후 낙폭 절대값 15% 미만 확인 (MDD > -15%). PASS 라벨이 출력돼도 즉시 실전 전환 아님 — Phase 3 모의투자 2주 무사고 운영이 전제.
