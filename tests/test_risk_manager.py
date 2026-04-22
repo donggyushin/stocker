@@ -773,3 +773,217 @@ class TestMultiplePositions:
         # snapshot 은 변경 전 상태 유지
         assert len(snapshot) == 1
         assert len(rm.active_positions) == 2
+
+
+# ---------------------------------------------------------------------------
+# 9. restore_session (Issue #33)
+# ---------------------------------------------------------------------------
+
+
+def _make_position(
+    symbol: str = _SYMBOL_A,
+    entry_price: int | str | Decimal = 20_000,
+    qty: int = 10,
+    *,
+    h: int = 9,
+    m: int = 30,
+) -> PositionRecord:
+    """PositionRecord 생성 헬퍼."""
+    return PositionRecord(
+        symbol=symbol,
+        entry_price=Decimal(str(entry_price)),
+        qty=qty,
+        entry_ts=_now(h, m),
+    )
+
+
+class TestRestoreSession:
+    """restore_session — DB 기록에서 상태를 직접 주입하는 복원 경로."""
+
+    def test_빈_open_positions_entries0_pnl0_초기상태(self):
+        """open_positions=() / entries=0 / pnl=0 → 빈 세션과 동일한 상태."""
+        rm = RiskManager(RiskConfig())
+        rm.restore_session(
+            _DATE,
+            1_000_000,
+            open_positions=[],
+            entries_today=0,
+            daily_realized_pnl_krw=0,
+        )
+        assert rm.session_date == _DATE
+        assert rm.starting_capital_krw == 1_000_000
+        assert rm.entries_today == 0
+        assert rm.daily_realized_pnl_krw == 0
+        assert rm.active_positions == ()
+        assert rm.is_halted is False
+
+    def test_open_positions_1건_active_positions_1건(self):
+        """open_positions 1건 주입 → active_positions 1건, entries_today 유지."""
+        pos = _make_position(_SYMBOL_A)
+        rm = RiskManager(RiskConfig())
+        rm.restore_session(
+            _DATE,
+            1_000_000,
+            open_positions=[pos],
+            entries_today=1,
+            daily_realized_pnl_krw=0,
+        )
+        assert len(rm.active_positions) == 1
+        assert rm.active_positions[0].symbol == _SYMBOL_A
+        assert rm.entries_today == 1
+
+    def test_entries_today_5_open_2건_entries_유지(self):
+        """entries_today=5, open 2건 → entries_today=5 (이미 청산된 포지션 반영)."""
+        pos_a = _make_position(_SYMBOL_A)
+        pos_b = _make_position(_SYMBOL_B)
+        rm = RiskManager(RiskConfig())
+        rm.restore_session(
+            _DATE,
+            1_000_000,
+            open_positions=[pos_a, pos_b],
+            entries_today=5,
+            daily_realized_pnl_krw=0,
+        )
+        assert rm.entries_today == 5
+        assert len(rm.active_positions) == 2
+
+    def test_daily_realized_pnl_주입(self):
+        """daily_realized_pnl_krw 음수 주입 → 프로퍼티에서 그대로 반환."""
+        rm = RiskManager(RiskConfig())
+        rm.restore_session(
+            _DATE,
+            1_000_000,
+            open_positions=[],
+            entries_today=0,
+            daily_realized_pnl_krw=-50_000,
+        )
+        assert rm.daily_realized_pnl_krw == -50_000
+
+    def test_starting_capital_0이하_RuntimeError(self):
+        """starting_capital_krw ≤ 0 → RuntimeError."""
+        rm = RiskManager(RiskConfig())
+        with pytest.raises(RuntimeError, match="starting_capital_krw"):
+            rm.restore_session(
+                _DATE,
+                0,
+                open_positions=[],
+                entries_today=0,
+                daily_realized_pnl_krw=0,
+            )
+
+    def test_entries_today_음수_RuntimeError(self):
+        """entries_today < 0 → RuntimeError."""
+        rm = RiskManager(RiskConfig())
+        with pytest.raises(RuntimeError, match="entries_today"):
+            rm.restore_session(
+                _DATE,
+                1_000_000,
+                open_positions=[],
+                entries_today=-1,
+                daily_realized_pnl_krw=0,
+            )
+
+    def test_entries_today_open_개수_미만_RuntimeError(self):
+        """entries_today < len(open_positions) → RuntimeError."""
+        pos_a = _make_position(_SYMBOL_A)
+        pos_b = _make_position(_SYMBOL_B)
+        rm = RiskManager(RiskConfig())
+        with pytest.raises(RuntimeError, match="entries_today"):
+            rm.restore_session(
+                _DATE,
+                1_000_000,
+                open_positions=[pos_a, pos_b],
+                entries_today=1,  # open=2 이므로 위반
+                daily_realized_pnl_krw=0,
+            )
+
+    def test_중복_symbol_RuntimeError(self):
+        """open_positions 에 동일 symbol 이 두 번 → RuntimeError."""
+        pos_a1 = _make_position(_SYMBOL_A)
+        pos_a2 = _make_position(_SYMBOL_A, entry_price=21_000)
+        rm = RiskManager(RiskConfig())
+        with pytest.raises(RuntimeError, match="중복"):
+            rm.restore_session(
+                _DATE,
+                1_000_000,
+                open_positions=[pos_a1, pos_a2],
+                entries_today=2,
+                daily_realized_pnl_krw=0,
+            )
+
+    def test_symbol_5자리_RuntimeError(self):
+        """open_positions 에 6자리 아닌 symbol → RuntimeError."""
+        bad_pos = PositionRecord(
+            symbol="12345",  # 5자리
+            entry_price=Decimal("10000"),
+            qty=5,
+            entry_ts=_now(9, 30),
+        )
+        rm = RiskManager(RiskConfig())
+        with pytest.raises(RuntimeError, match="symbol"):
+            rm.restore_session(
+                _DATE,
+                1_000_000,
+                open_positions=[bad_pos],
+                entries_today=1,
+                daily_realized_pnl_krw=0,
+            )
+
+    def test_pnl_손실_임계치_이하_is_halted_True(self):
+        """pnl ≤ -starting_capital × daily_loss_limit_pct → is_halted=True."""
+        capital = 1_000_000
+        # daily_loss_limit_pct 기본값 2% → 임계치 -20,000
+        halt_pnl = -20_000  # 정확히 임계치 = 발동
+        rm = RiskManager(RiskConfig())
+        rm.restore_session(
+            _DATE,
+            capital,
+            open_positions=[],
+            entries_today=0,
+            daily_realized_pnl_krw=halt_pnl,
+        )
+        assert rm.is_halted is True
+
+    def test_pnl_임계치_위_is_halted_False(self):
+        """pnl > -starting_capital × daily_loss_limit_pct → is_halted=False."""
+        capital = 1_000_000
+        safe_pnl = -19_999  # 임계치 -20,000 보다 1원 위
+        rm = RiskManager(RiskConfig())
+        rm.restore_session(
+            _DATE,
+            capital,
+            open_positions=[],
+            entries_today=0,
+            daily_realized_pnl_krw=safe_pnl,
+        )
+        assert rm.is_halted is False
+
+    def test_복원_후_evaluate_entry_duplicate_symbol_거부(self):
+        """복원된 active_positions 심볼로 evaluate_entry → duplicate_symbol 거부."""
+        pos = _make_position(_SYMBOL_A)
+        rm = RiskManager(RiskConfig())
+        rm.restore_session(
+            _DATE,
+            1_000_000,
+            open_positions=[pos],
+            entries_today=1,
+            daily_realized_pnl_krw=0,
+        )
+        dec = rm.evaluate_entry(_signal(_SYMBOL_A), available_cash_krw=1_000_000)
+        assert dec.approved is False
+        assert dec.reason == "duplicate_symbol"
+
+    def test_복원_후_is_halted_True이면_evaluate_entry_halted_daily_loss(self):
+        """복원 시 is_halted=True → evaluate_entry → halted_daily_loss 거부."""
+        rm = RiskManager(RiskConfig())
+        rm.restore_session(
+            _DATE,
+            1_000_000,
+            open_positions=[],
+            entries_today=0,
+            daily_realized_pnl_krw=-20_000,  # 서킷브레이커 발동
+        )
+        assert rm.is_halted is True
+        dec = rm.evaluate_entry(_signal(_SYMBOL_A), available_cash_krw=1_000_000)
+        assert dec.approved is False
+        assert dec.reason == "halted_daily_loss"

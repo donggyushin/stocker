@@ -11,12 +11,14 @@ stock-agent 의 영속화 경계 모듈. `Executor` 가 방출한 `EntryEvent`·
 
 ## 공개 심볼 (`storage/__init__.py`)
 
-`TradingRecorder`, `SqliteTradingRecorder`, `NullTradingRecorder`, `StorageError`
-(총 4종)
+`TradingRecorder`, `SqliteTradingRecorder`, `NullTradingRecorder`, `StorageError`,
+`OpenPositionRow`, `DailyPnlSnapshot`
+(총 6종)
 
 ## 현재 상태
 
 **Phase 3 네 번째 산출물 — `storage/db.py` (코드·테스트 레벨) 완료** (2026-04-22).
+**Phase 3 다섯 번째 산출물 — 세션 재기동 복원 경로 (코드·테스트 레벨) 완료** (2026-04-22, Issue #33): `load_open_positions` · `load_daily_pnl` 2 메서드 + `OpenPositionRow` · `DailyPnlSnapshot` DTO 추가.
 
 의도적으로 미포함(defer):
 - 주간 회고 리포트 CLI (`scripts/weekly_report.py` 등) — MVP 는 SQL 직접 쿼리
@@ -66,6 +68,70 @@ stock-agent 의 영속화 경계 모듈. `Executor` 가 방출한 `EntryEvent`·
 10. **close 멱등** — `close()` 는 재호출 안전. `_graceful_shutdown` + `finally`
     블록 양쪽에서 호출해도 두 번째 호출은 no-op.
 
+### ADR-0014 확장 — 세션 재기동 복원 (Issue #33)
+
+`TradingRecorder` Protocol 에 읽기 전용 메서드 2종을 추가해 세션 중간 재기동 시
+DB 에서 상태를 복원하는 경로를 제공한다 (ADR-0014).
+
+**신규 DTO**:
+
+```python
+@dataclass(frozen=True, slots=True)
+class OpenPositionRow:
+    symbol: str
+    qty: int
+    entry_price: Decimal
+    entry_ts: datetime      # KST aware
+    order_number: str
+
+@dataclass(frozen=True, slots=True)
+class DailyPnlSnapshot:
+    realized: int           # KRW, 당일 실현 손익 누계
+    entries: int            # 당일 진입 횟수
+
+    @property
+    def has_state(self) -> bool:
+        """realized != 0 또는 entries > 0 이면 이미 세션이 진행된 것."""
+        ...
+```
+
+**신규 Protocol 메서드**:
+
+```python
+@dataclass(frozen=True, slots=True)
+class OpenPositionRow:
+    symbol: str              # 6자리 숫자
+    qty: int                 # > 0
+    entry_price: Decimal     # > 0
+    entry_ts: datetime       # KST aware
+    order_number: str        # 비어있지 않음
+
+@dataclass(frozen=True, slots=True)
+class DailyPnlSnapshot:
+    session_date: date
+    realized_pnl_krw: int
+    entries_today: int                    # >= 0
+    closed_symbols: tuple[str, ...]       # 정렬 tuple
+
+    @property
+    def has_state(self) -> bool: ...      # 재기동 감지용
+
+def load_open_positions(self, session_date: date) -> tuple[OpenPositionRow, ...]:
+    """orders 테이블을 filled_at ASC, rowid ASC 순으로 재생해
+    buy/sell 페어를 상쇄한 결과(미청산 포지션)를 반환한다."""
+
+def load_daily_pnl(self, session_date: date) -> DailyPnlSnapshot:
+    """orders 에서 session_date 의 buy/sell 을 집계해 DailyPnlSnapshot 반환.
+    buy 개수 → entries_today, sell.net_pnl_krw 합 → realized_pnl_krw,
+    sell.symbol 정렬 집합 → closed_symbols."""
+```
+
+**`has_state` 공식** — `entries_today > 0 or bool(closed_symbols) or realized_pnl_krw != 0` (3항 OR). `_on_session_start` 가 이 값으로 "신규 세션 / 재기동 복원" 을 분기.
+
+**실패 정책 (silent fail 확장)**: `load_*` 내부의 `sqlite3.Error`·`DecimalException`·`ValueError`·`TypeError` 를 `logger.warning` + 연속 실패 카운터로 흡수한다. `_TRACKED_OPS` 에 `load_open_positions` · `load_daily_pnl` 가 추가되어 메서드별 독립 실패 카운터 를 유지한다. 읽기 실패 시 빈 결과(`tuple()` / `DailyPnlSnapshot(session_date, 0, 0, ())`)를 반환해 호출자가 신규 세션으로 폴백할 수 있도록 한다.
+
+**NullTradingRecorder 대칭**: `load_open_positions` → `()`, `load_daily_pnl` → `DailyPnlSnapshot(session_date=입력, realized_pnl_krw=0, entries_today=0, closed_symbols=())` 반환 (no-op).
+
 ## 공개 API
 
 ### `TradingRecorder` Protocol
@@ -77,6 +143,8 @@ class TradingRecorder(Protocol):
     def record_exit(self, event: ExitEvent) -> None: ...
     def record_daily_summary(self, summary: DailySummary) -> None: ...
     def close(self) -> None: ...
+    def load_open_positions(self, session_date: date) -> tuple[OpenPositionRow, ...]: ...
+    def load_daily_pnl(self, session_date: date) -> DailyPnlSnapshot: ...
 ```
 
 `isinstance(obj, TradingRecorder)` 런타임 체크 가능.
@@ -215,3 +283,4 @@ CREATE TABLE IF NOT EXISTS daily_pnl (
 ## ADR
 
 - [ADR-0013](../../../docs/adr/0013-sqlite-trading-ledger.md) — storage/db.py 모듈 설계 (DB 분리·Protocol 분리·스키마 v1·가격 TEXT·PRAGMA·silent fail·NullTradingRecorder 폴백·order_number PK·드라이런 구분 없음·close 멱등)
+- [ADR-0014](../../../docs/adr/0014-runtime-state-recovery.md) — 세션 재기동 시 DB 기반 상태 복원 경로 설계 (load_open_positions·load_daily_pnl·OpenPositionInput Protocol·restore_session 흐름)

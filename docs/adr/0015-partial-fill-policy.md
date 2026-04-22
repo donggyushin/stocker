@@ -5,7 +5,7 @@ deciders: donggyu
 related: [0013-sqlite-trading-ledger.md, 0012-monitor-notifier-design.md, 0003-runtime-error-propagation.md, 0008-single-process-only.md]
 ---
 
-# ADR-0014: 체결조회 API 통합 + 부분체결 정책 — 잔량 취소 + 체결 수량만 원장 기록
+# ADR-0015: 체결조회 API 통합 + 부분체결 정책 — 잔량 취소 + 체결 수량만 원장 기록
 
 ## 상태
 

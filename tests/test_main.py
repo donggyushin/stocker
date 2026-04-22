@@ -63,6 +63,7 @@ from stock_agent.monitor import (
 )
 from stock_agent.risk import RiskManager
 from stock_agent.storage import (
+    DailyPnlSnapshot,
     NullTradingRecorder,
     StorageError,
     TradingRecorder,
@@ -117,7 +118,18 @@ def _make_runtime(
     _rm = risk_manager or MagicMock(spec=RiskManager)
     _ss = session_status or SessionStatus()
     _notifier = notifier or MagicMock(spec=Notifier)
-    _recorder = recorder or MagicMock(spec=TradingRecorder)
+    if recorder is None:
+        # 기본 경로를 "신규 세션"으로 유지 — load_* 가 빈 결과를 반환하도록 configure.
+        _recorder = MagicMock(spec=TradingRecorder)
+        _recorder.load_open_positions.return_value = ()
+        _recorder.load_daily_pnl.return_value = DailyPnlSnapshot(
+            session_date=date(2026, 4, 21),
+            realized_pnl_krw=0,
+            entries_today=0,
+            closed_symbols=(),
+        )
+    else:
+        _recorder = recorder
     return Runtime(
         scheduler=_sc,
         executor=_ex,
@@ -2327,3 +2339,293 @@ def test_on_force_close_예외경로_스냅샷_접근_실패시_silent_warning(m
     # critical + notify_error 는 여전히 호출됨
     mock_logger.critical.assert_called_once()
     fake_notifier.notify_error.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Issue #33 — _on_session_start 재기동 감지 테스트
+# ---------------------------------------------------------------------------
+
+
+class TestOnSessionStartRestartDetection:
+    """이미 구현된 재기동 감지·복원 경로를 잠그는 테스트.
+
+    recorder.load_open_positions / load_daily_pnl 반환값에 따라
+    executor.start_session / restore_session 분기가 올바르게 선택되는지 검증한다.
+    """
+
+    # --- 공통 헬퍼 ---
+
+    @staticmethod
+    def _empty_snapshot(d: date = date(2026, 4, 21)) -> DailyPnlSnapshot:
+        return DailyPnlSnapshot(
+            session_date=d,
+            realized_pnl_krw=0,
+            entries_today=0,
+            closed_symbols=(),
+        )
+
+    @staticmethod
+    def _make_balance(withdrawable: int = 1_000_000) -> MagicMock:
+        b = MagicMock()
+        b.withdrawable = withdrawable
+        b.total = withdrawable
+        b.holdings = []
+        return b
+
+    def test_빈_기록이면_start_session_호출_restore_미호출(self) -> None:
+        """recorder 가 빈 결과를 반환하면 신규 세션 경로 → start_session 호출."""
+        fake_kis = MagicMock(spec=KisClient)
+        fake_kis.get_balance.return_value = self._make_balance(1_000_000)
+        fake_executor = MagicMock(spec=Executor)
+
+        fake_recorder = MagicMock(spec=TradingRecorder)
+        fake_recorder.load_open_positions.return_value = ()
+        fake_recorder.load_daily_pnl.return_value = self._empty_snapshot()
+
+        runtime = _make_runtime(
+            kis_client=fake_kis,
+            executor=fake_executor,
+            recorder=fake_recorder,
+        )
+        cb = _on_session_start(runtime, _parse_args([]), lambda: _kst(9, 0))
+        cb()
+
+        fake_executor.start_session.assert_called_once()
+        fake_executor.restore_session.assert_not_called()
+
+    def test_open_positions_1건이면_restore_session_호출_start_미호출(self) -> None:
+        """open_positions 에 1건이 있으면 재기동 경로 → restore_session 호출."""
+        from decimal import Decimal
+
+        from stock_agent.storage import OpenPositionRow
+
+        fake_kis = MagicMock(spec=KisClient)
+        fake_kis.get_balance.return_value = self._make_balance(1_000_000)
+        fake_executor = MagicMock(spec=Executor)
+
+        open_row = OpenPositionRow(
+            symbol="005930",
+            qty=10,
+            entry_price=Decimal("70000"),
+            entry_ts=_kst(9, 31),
+            order_number="ORD-001",
+        )
+        fake_recorder = MagicMock(spec=TradingRecorder)
+        fake_recorder.load_open_positions.return_value = (open_row,)
+        fake_recorder.load_daily_pnl.return_value = DailyPnlSnapshot(
+            session_date=date(2026, 4, 21),
+            realized_pnl_krw=0,
+            entries_today=1,
+            closed_symbols=(),
+        )
+
+        runtime = _make_runtime(
+            kis_client=fake_kis,
+            executor=fake_executor,
+            recorder=fake_recorder,
+        )
+        cb = _on_session_start(runtime, _parse_args([]), lambda: _kst(10, 0))
+        cb()
+
+        fake_executor.restore_session.assert_called_once()
+        fake_executor.start_session.assert_not_called()
+
+    def test_has_state_True이면_restore_session_호출(self) -> None:
+        """open=() 이라도 daily_snapshot.has_state=True 이면 restore_session 호출."""
+        fake_kis = MagicMock(spec=KisClient)
+        fake_kis.get_balance.return_value = self._make_balance(1_000_000)
+        fake_executor = MagicMock(spec=Executor)
+
+        fake_recorder = MagicMock(spec=TradingRecorder)
+        fake_recorder.load_open_positions.return_value = ()
+        # entries_today=1 → has_state=True
+        fake_recorder.load_daily_pnl.return_value = DailyPnlSnapshot(
+            session_date=date(2026, 4, 21),
+            realized_pnl_krw=0,
+            entries_today=1,
+            closed_symbols=(),
+        )
+
+        runtime = _make_runtime(
+            kis_client=fake_kis,
+            executor=fake_executor,
+            recorder=fake_recorder,
+        )
+        cb = _on_session_start(runtime, _parse_args([]), lambda: _kst(10, 0))
+        cb()
+
+        fake_executor.restore_session.assert_called_once()
+        fake_executor.start_session.assert_not_called()
+
+    def test_restore_session_인자_검증(self) -> None:
+        """restore_session 에 올바른 인자가 전달되는지 검증."""
+        from decimal import Decimal
+
+        from stock_agent.storage import OpenPositionRow
+
+        fake_kis = MagicMock(spec=KisClient)
+        fake_kis.get_balance.return_value = self._make_balance(800_000)
+        fake_executor = MagicMock(spec=Executor)
+
+        open_row = OpenPositionRow(
+            symbol="005930",
+            qty=5,
+            entry_price=Decimal("70000"),
+            entry_ts=_kst(9, 31),
+            order_number="ORD-001",
+        )
+        snapshot = DailyPnlSnapshot(
+            session_date=date(2026, 4, 21),
+            realized_pnl_krw=-5_000,
+            entries_today=2,
+            closed_symbols=("000660",),
+        )
+        fake_recorder = MagicMock(spec=TradingRecorder)
+        fake_recorder.load_open_positions.return_value = (open_row,)
+        fake_recorder.load_daily_pnl.return_value = snapshot
+
+        args = _parse_args(["--starting-capital", "1000000"])
+        runtime = _make_runtime(
+            kis_client=fake_kis,
+            executor=fake_executor,
+            recorder=fake_recorder,
+        )
+        cb = _on_session_start(runtime, args, lambda: _kst(10, 0))
+        cb()
+
+        call_kwargs = fake_executor.restore_session.call_args
+        # 세션 날짜
+        assert call_kwargs.args[0] == date(2026, 4, 21)
+        # 시작 자본 — CLI 1M vs withdrawable 800K → min = 800K
+        assert call_kwargs.args[1] == 800_000
+        # open_positions
+        assert call_kwargs.kwargs["open_positions"] == (open_row,)
+        # closed_symbols
+        assert call_kwargs.kwargs["closed_symbols"] == ("000660",)
+        # entries_today
+        assert call_kwargs.kwargs["entries_today"] == 2
+        # daily_realized_pnl_krw
+        assert call_kwargs.kwargs["daily_realized_pnl_krw"] == -5_000
+
+    def test_restart_감지_시_logger_warning_호출(self, mocker: Any) -> None:
+        """is_restart=True 일 때 logger.warning 이 1회 호출된다."""
+        from decimal import Decimal
+
+        from stock_agent.storage import OpenPositionRow
+
+        fake_kis = MagicMock(spec=KisClient)
+        fake_kis.get_balance.return_value = self._make_balance(1_000_000)
+        fake_executor = MagicMock(spec=Executor)
+        mock_logger = mocker.patch("stock_agent.main.logger")
+
+        open_row = OpenPositionRow(
+            symbol="005930",
+            qty=10,
+            entry_price=Decimal("70000"),
+            entry_ts=_kst(9, 31),
+            order_number="ORD-001",
+        )
+        fake_recorder = MagicMock(spec=TradingRecorder)
+        fake_recorder.load_open_positions.return_value = (open_row,)
+        fake_recorder.load_daily_pnl.return_value = DailyPnlSnapshot(
+            session_date=date(2026, 4, 21),
+            realized_pnl_krw=0,
+            entries_today=1,
+            closed_symbols=(),
+        )
+
+        runtime = _make_runtime(
+            kis_client=fake_kis,
+            executor=fake_executor,
+            recorder=fake_recorder,
+        )
+        cb = _on_session_start(runtime, _parse_args([]), lambda: _kst(10, 0))
+        cb()
+
+        # restart 감지 warning 이 포함됐는지 확인
+        warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
+        msg = f"logger.warning 에 'restart' 포함 호출 없음. calls={warning_calls}"
+        assert any("restart" in w for w in warning_calls), msg
+
+    def test_신규_세션_시_logger_info에_restart_False_포함(self, mocker: Any) -> None:
+        """is_restart=False 경로에서 logger.info 에 'restart=False' 가 포함된다."""
+        fake_kis = MagicMock(spec=KisClient)
+        fake_kis.get_balance.return_value = self._make_balance(1_000_000)
+        fake_executor = MagicMock(spec=Executor)
+        mock_logger = mocker.patch("stock_agent.main.logger")
+
+        fake_recorder = MagicMock(spec=TradingRecorder)
+        fake_recorder.load_open_positions.return_value = ()
+        fake_recorder.load_daily_pnl.return_value = self._empty_snapshot()
+
+        runtime = _make_runtime(
+            kis_client=fake_kis,
+            executor=fake_executor,
+            recorder=fake_recorder,
+        )
+        cb = _on_session_start(runtime, _parse_args([]), lambda: _kst(9, 0))
+        cb()
+
+        # main.session_start info 로그에 restart=False 포함 여부 검증
+        info_calls = [str(c) for c in mock_logger.info.call_args_list]
+        msg = f"logger.info 에 'restart' 포함 호출 없음. calls={info_calls}"
+        assert any("restart" in s for s in info_calls), msg
+
+    def test_시작자본_0이면_recorder_load_호출_안함(self) -> None:
+        """starting_capital <= 0 이면 recorder.load_* 를 호출하지 않고 조기 반환."""
+        fake_kis = MagicMock(spec=KisClient)
+        # withdrawable=0, starting_capital CLI=1M → min=0 → 조기 return
+        fake_kis.get_balance.return_value = self._make_balance(withdrawable=0)
+        fake_executor = MagicMock(spec=Executor)
+
+        fake_recorder = MagicMock(spec=TradingRecorder)
+        fake_recorder.load_open_positions.return_value = ()
+        fake_recorder.load_daily_pnl.return_value = self._empty_snapshot()
+
+        runtime = _make_runtime(
+            kis_client=fake_kis,
+            executor=fake_executor,
+            recorder=fake_recorder,
+        )
+        args = _parse_args(["--starting-capital", "1000000"])
+        cb = _on_session_start(runtime, args, lambda: _kst(9, 0))
+        cb()
+
+        # 자본 0 → 조기 return → load_* 미호출
+        fake_recorder.load_open_positions.assert_not_called()
+        fake_recorder.load_daily_pnl.assert_not_called()
+        fake_executor.start_session.assert_not_called()
+        fake_executor.restore_session.assert_not_called()
+
+    def test_recorder_load_예외시_executor_호출_안함_session_status_미갱신(
+        self, mocker: Any
+    ) -> None:
+        """recorder.load_open_positions 가 예외를 던지면 silent fail 계약:
+        executor.start_session / restore_session 미호출, session_status.started=False.
+
+        SqliteTradingRecorder 는 silent fail 계약상 내부 예외를 흡수하므로
+        이 케이스는 recorder 가 NullTradingRecorder 이외 동작을 직접 구현할 때의
+        방어 경로이다. 여기서는 get_balance 가 예외를 던져 recorder.load_* 에
+        도달하기 전에 except 분기를 타는 경로를 검증한다.
+        """
+        fake_kis = MagicMock(spec=KisClient)
+        fake_kis.get_balance.side_effect = RuntimeError("잔고 조회 네트워크 오류")
+        fake_executor = MagicMock(spec=Executor)
+        mock_logger = mocker.patch("stock_agent.main.logger")
+
+        fake_recorder = MagicMock(spec=TradingRecorder)
+        ss = SessionStatus(started=False, fail_logged=False)
+
+        runtime = _make_runtime(
+            kis_client=fake_kis,
+            executor=fake_executor,
+            recorder=fake_recorder,
+            session_status=ss,
+        )
+        cb = _on_session_start(runtime, _parse_args([]), lambda: _kst(9, 0))
+        cb()  # raise 하면 안 됨
+
+        fake_executor.start_session.assert_not_called()
+        fake_executor.restore_session.assert_not_called()
+        assert ss.started is False
+        mock_logger.exception.assert_called_once()

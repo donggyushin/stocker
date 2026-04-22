@@ -12,8 +12,9 @@ stock-agent 의 오케스트레이션 경계 모듈. `ORBStrategy` (시그널) +
 
 `Executor`, `ExecutorConfig`, `OrderSubmitter`, `LiveOrderSubmitter`,
 `DryRunOrderSubmitter`, `BalanceProvider`, `LiveBalanceProvider`, `BarSource`,
-`ExecutorError`, `StepReport`, `ReconcileReport`, `EntryEvent`, `ExitEvent`
-(총 13종)
+`ExecutorError`, `StepReport`, `ReconcileReport`, `EntryEvent`, `ExitEvent`,
+`OpenPositionInput`
+(총 14종)
 
 ## 현재 상태 (2026-04-21 기준)
 
@@ -29,7 +30,7 @@ stock-agent 의 오케스트레이션 경계 모듈. `ORBStrategy` (시그널) +
 빈 문자열·naive timestamp·qty≤0·price≤0 → `RuntimeError`).
 `_handle_entry`/`_handle_exit` 가 `ticket.order_number` 를 주입.
 
-**Phase 3 다섯 번째 산출물(broker 체결조회 + 부분체결 정책, ADR-0014) 완료(2026-04-22)에 따른 확장**:
+**Phase 3 다섯 번째 산출물(broker 체결조회 + 부분체결 정책, ADR-0015) 완료(2026-04-22)에 따른 확장**:
 `OrderSubmitter` Protocol 에 `cancel_order(order_number: str) -> None` 추가.
 `LiveOrderSubmitter.cancel_order` (KisClient 위임) + `DryRunOrderSubmitter.cancel_order` (info 로그 + no-op).
 내부 `_FillOutcome` DTO 신설 (`filled_qty: int`, `status: Literal["full","partial","none"]`).
@@ -51,8 +52,8 @@ error + 모든 주문이 SQLite 기록 + 텔레그램 알림 100% 수신** 후. 
 | APScheduler 스케줄링 | `main.py` | `Executor.step(now)` 만 노출 — 호출 주기는 외부 책임 |
 | ~~텔레그램 알림~~ | ~~`monitor/notifier.py`~~ | **완료 2026-04-21** — [monitor/CLAUDE.md](../monitor/CLAUDE.md) 참조 |
 | ~~SQLite 영속화~~ | ~~`storage/db.py`~~ | **완료 2026-04-22** — [storage/CLAUDE.md](../storage/CLAUDE.md) 참조 |
-| ~~KIS 체결조회 API~~ | ~~`broker/` 확장~~ | **완료 2026-04-22** (ADR-0014) — [broker/CLAUDE.md](../broker/CLAUDE.md) 참조 |
-| ~~부분체결 잔량 처리~~ | ~~`broker/cancel_order` 등~~ | **완료 2026-04-22** (ADR-0014) — `_resolve_fill` + `cancel_order` 통합 |
+| ~~KIS 체결조회 API~~ | ~~`broker/` 확장~~ | **완료 2026-04-22** (ADR-0015) — [broker/CLAUDE.md](../broker/CLAUDE.md) 참조 |
+| ~~부분체결 잔량 처리~~ | ~~`broker/cancel_order` 등~~ | **완료 2026-04-22** (ADR-0015) — `_resolve_fill` + `cancel_order` 통합 |
 | `config/strategy.yaml` 로더 | `main.py` 진입 시 | 현재 코드 상수 + 생성자 주입 |
 
 ## 핵심 결정 — Protocol 의존성 역전
@@ -73,6 +74,29 @@ error + 모든 주문이 SQLite 기록 + 텔레그램 알림 100% 수신** 후. 
 이 분리는 plan.md 의 "신호 → 주문 → 체결 추적 → 상태 동기화 루프" 문구를 가장
 검증 가능한 형태로 구현한 결과다.
 
+### 재기동 복원용 구조적 타입 (Issue #33)
+
+`OpenPositionInput` Protocol 은 `restore_session` 이 받는 포지션 항목의 최소 계약이다.
+
+```python
+class OpenPositionInput(Protocol):
+    @property
+    def symbol(self) -> str: ...
+    @property
+    def qty(self) -> int: ...
+    @property
+    def entry_price(self) -> Decimal: ...
+    @property
+    def entry_ts(self) -> datetime: ...
+    @property
+    def order_number(self) -> str: ...
+```
+
+`storage.OpenPositionRow` 가 이 Protocol 을 구조적으로 만족한다. `execution` 이
+`storage` 를 직접 import 하면 단방향 의존 계층(`data → strategy → risk →
+execution`) 이 깨지므로, Protocol 을 `execution` 쪽에 선언해 역방향 import
+를 원천 차단한다. `main.py` 가 양쪽을 알고 있는 유일한 조립 지점이다.
+
 ## 공개 API
 
 ### `Executor`
@@ -92,6 +116,16 @@ Executor(
 )
 
 start_session(session_date: date, starting_capital_krw: int) -> None
+    # _last_reconcile = None 으로 초기화 (Issue #33 추가)
+restore_session(
+    session_date: date,
+    starting_capital_krw: int,
+    *,
+    open_positions: Sequence[OpenPositionInput],
+    closed_symbols: Sequence[str] = (),
+    entries_today: int,
+    daily_realized_pnl_krw: int,
+) -> None
 step(now: datetime) -> StepReport          # 1 sweep
 force_close_all(now: datetime) -> StepReport
 reconcile() -> ReconcileReport
@@ -160,7 +194,22 @@ last_reconcile: ReconcileReport | None   # property, read-only
 
 `reconcile()` 호출 시마다 내부 캐시 갱신. `_on_daily_report` 콜백이 추가 네트워크
 호출 없이 최신 mismatch 상태를 `DailySummary.mismatch_symbols` 에 담을 수 있도록.
-`start_session` 에서 `None` 으로 초기화.
+`start_session` 및 `restore_session` 에서 `None` 으로 초기화.
+
+### `restore_session` 흐름 (Issue #33)
+
+```text
+1. RiskManager.restore_session(session_date, starting_capital_krw,
+       open_positions=..., entries_today=..., daily_realized_pnl_krw=...) 위임.
+2. open_positions 순회 → _open_lots[symbol] = _OpenLot(entry_price, qty).
+3. open_positions 의 각 symbol 에 대해 strategy.restore_long_position(symbol, ...) 호출.
+4. closed_symbols \ open_symbols 에 대해 strategy.mark_session_closed(symbol, session_date) 호출.
+5. _halt = False, _last_reconcile = None 리셋.
+```
+
+`main.py` 의 `_on_session_start` 콜백이 `recorder.load_open_positions(today)` +
+`recorder.load_daily_pnl(today)` 를 먼저 호출해 재기동 여부를 판단하고,
+재기동이면 `restore_session`, 아니면 `start_session` 을 선택한다.
 
 ## `step(now)` 흐름
 
@@ -190,7 +239,7 @@ last_reconcile: ReconcileReport | None   # property, read-only
    (RiskManager 가 이미 사유 로그).
 4. 승인이면 `_with_backoff(submit_buy)` → `OrderTicket`.
 5. `outcome = _resolve_fill(ticket)` — 타임아웃 시 `cancel_order` 호출 + 부분/0 체결
-   수습 (ADR-0014). `status == "none"` → 즉시 skip, `return False` (RiskManager 미기록).
+   수습 (ADR-0015). `status == "none"` → 즉시 skip, `return False` (RiskManager 미기록).
 6. `entry_fill_price = buy_fill_price(signal.price, slippage_rate)` —
    `backtest.costs.buy_fill_price` 재사용.
 7. `risk_manager.record_entry(symbol, entry_fill_price, outcome.filled_qty, now)` +
@@ -204,7 +253,7 @@ last_reconcile: ReconcileReport | None   # property, read-only
    `ExecutorError` (전략-Executor 동기화 위반).
 2. `_with_backoff(submit_sell)` → `OrderTicket`.
 3. `outcome = _resolve_fill(ticket)` — `status != "full"` 이면 `self._halt = True`
-   선제 설정 + `ExecutorError` 승격 (ADR-0014 — 브로커 잔고가 일부만 감소한 상태로
+   선제 설정 + `ExecutorError` 승격 (ADR-0015 — 브로커 잔고가 일부만 감소한 상태로
    남아 다음 `reconcile()` 가 mismatch 감지까지 기다리지 않고 즉시 halt).
 4. `exit_fill_price = sell_fill_price(signal.price, slippage_rate)`.
 5. PnL 계산 — 백테스트 엔진과 동일 산식 (`buy_commission` + `sell_commission`
@@ -254,13 +303,13 @@ generic `except Exception` 금지. `assert` 대신 명시적 예외. broker/stra
 `get_balance` / `get_pending_orders` / `submit_buy` / `submit_sell` 모두
 이 래퍼를 통과한다 — 일시적 네트워크 장애가 단발 step 을 자동 죽이지 않게.
 
-## 시장가 체결가 추정 및 부분체결 정책 (ADR-0014)
+## 시장가 체결가 추정 및 부분체결 정책 (ADR-0015)
 
 체결가는 시그널 가격(분봉 close, 참고가) 에 슬리피지 ±0.1% 를 적용해 추정한다 —
 백테스트 비용 모델과 동일 가정으로, 백테스트 결과의 실전 괴리를 추적 가능한
 한 가지 변수로 유지하기 위해서.
 
-부분체결·미체결 정책 (ADR-0014 적용):
+부분체결·미체결 정책 (ADR-0015 적용):
 - `_resolve_fill(ticket) -> _FillOutcome` 이 `get_pending_orders()` 폴링으로 체결 상태를 확인.
 - 타임아웃 시 `cancel_order(order_number)` 호출 후 잔량 취소 + 부분/0 체결 수습.
 - 진입 부분체결: `filled_qty` 만 원장 기록 + warning 로그. 0 체결: skip + info 로그.
@@ -321,8 +370,8 @@ generic `except Exception` 금지. `assert` 대신 명시적 예외. broker/stra
 
 - **APScheduler 도입** — `step(now)` 만 노출. 외부 스케줄러 책임.
 - **텔레그램 알림** — `monitor/notifier.py` 완료 (2026-04-21).
-- **부분체결 잔량 취소·재발주** — `_resolve_fill` + `cancel_order` 통합으로 완료 (2026-04-22, ADR-0014).
-- **KIS 체결조회 API 통합** — `PendingOrder.qty_filled` + `cancel_order` 통합으로 완료 (2026-04-22, ADR-0014). 현재 슬리피지 0.1% 추정은 유지 — 모의투자 2주 운영 후 실측값으로 재검토.
+- **부분체결 잔량 취소·재발주** — `_resolve_fill` + `cancel_order` 통합으로 완료 (2026-04-22, ADR-0015).
+- **KIS 체결조회 API 통합** — `PendingOrder.qty_filled` + `cancel_order` 통합으로 완료 (2026-04-22, ADR-0015). 현재 슬리피지 0.1% 추정은 유지 — 모의투자 2주 운영 후 실측값으로 재검토.
 - **자동 포지션 복구** — reconcile 불일치 시 자동 보정 금지. 운영자 개입 +
   다음 세션 `start_session` 으로 리셋만 허용.
 - **`config/strategy.yaml` YAML 로더** — `main.py` 착수 시 도입. 현재는

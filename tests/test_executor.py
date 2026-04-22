@@ -981,7 +981,7 @@ class TestResolveFill:
         fake_balance_provider: FakeBalanceProvider,
         fake_bar_source: FakeBarSource,
     ) -> None:
-        """ADR-0014: 타임아웃 시 ExecutorError 를 raise 하지 않고
+        """ADR-0015: 타임아웃 시 ExecutorError 를 raise 하지 않고
         cancel_order(order_number) 를 호출한 뒤 step 을 정상 완료한다.
 
         이전 계약(ExecutorError raise) → 새 계약(cancel_order 위임) 회귀 방지.
@@ -1015,7 +1015,7 @@ class TestResolveFill:
         breakout = _bar(_SYMBOL_A, 9, 31, close=50_100, high=50_100, low=50_000)
         fake_bar_source.set_bars(_SYMBOL_A, [breakout])
 
-        # ADR-0014: ExecutorError 를 raise 하지 않고 step 이 정상 반환되어야 한다
+        # ADR-0015: ExecutorError 를 raise 하지 않고 step 이 정상 반환되어야 한다
         report = exc.step(_kst(9, 32))
         assert report is not None, "타임아웃 후에도 StepReport 를 반환해야 한다"
 
@@ -2891,9 +2891,9 @@ class TestExecutorLastSweepEventsSnapshot:
 
 
 # ===========================================================================
-# ADR-0014: 부분체결 정책 (RED — cancel_order Protocol + _resolve_fill 미구현)
+# ADR-0015: 부분체결 정책 (RED — cancel_order Protocol + _resolve_fill 미구현)
 # ===========================================================================
-# 아래 테스트들은 ADR-0014 결정 3~6 을 검증한다.
+# 아래 테스트들은 ADR-0015 결정 3~6 을 검증한다.
 # src 구현 전이라 모두 실패(RED) 상태여야 한다.
 #
 # 실패 예상:
@@ -2910,7 +2910,7 @@ class TestExecutorLastSweepEventsSnapshot:
 
 
 class FakeOrderSubmitterWithPartialFill:
-    """ADR-0014 부분체결 시뮬레이션 더블.
+    """ADR-0015 부분체결 시뮬레이션 더블.
 
     ``partial_fill_qty`` 설정 시 ``get_pending_orders()`` 가 타임아웃 전까지
     ``qty_filled=partial_fill_qty`` 인 PendingOrder 를 반환한다.
@@ -2997,7 +2997,7 @@ class FakeOrderSubmitterWithPartialFill:
         ]
 
     def cancel_order(self, order_number: str) -> None:
-        """ADR-0014 결정 3 — OrderSubmitter Protocol 필수 메서드.
+        """ADR-0015 결정 3 — OrderSubmitter Protocol 필수 메서드.
 
         cancel_calls 에 기록 + _cancelled_numbers 에 추가 (멱등).
         """
@@ -3030,7 +3030,7 @@ def _make_timeout_clock(initial: datetime, after_timeout: datetime) -> list[date
 
 
 class TestOrderSubmitterCancelOrderProtocol:
-    """ADR-0014 결정 3 — OrderSubmitter Protocol 에 cancel_order 메서드 추가.
+    """ADR-0015 결정 3 — OrderSubmitter Protocol 에 cancel_order 메서드 추가.
 
     현재 Protocol 에 cancel_order 가 없으므로 hasattr 단언이 FAIL 한다.
     """
@@ -3105,7 +3105,7 @@ class TestOrderSubmitterCancelOrderProtocol:
 
 
 class TestExecutorPartialFillEntry:
-    """ADR-0014 결정 4~5 — 진입 부분체결 시 취소 후 체결 수량만 기록.
+    """ADR-0015 결정 4~5 — 진입 부분체결 시 취소 후 체결 수량만 기록.
 
     현재 _wait_fill 이 타임아웃 시 ExecutorError 를 raise 하므로
     부분체결 시나리오에서 EntryEvent.qty == filled_qty 단언이 FAIL 한다.
@@ -3275,7 +3275,7 @@ class TestExecutorPartialFillEntry:
 
 
 class TestExecutorZeroFillEntry:
-    """ADR-0014 결정 5 — 진입 zero fill 시 기록 없이 return False.
+    """ADR-0015 결정 5 — 진입 zero fill 시 기록 없이 return False.
 
     ExecutorError 를 발생시키지 않아야 한다.
     현재 _wait_fill 이 타임아웃 시 ExecutorError 를 raise 하므로 전부 FAIL.
@@ -3405,7 +3405,7 @@ class TestExecutorZeroFillEntry:
 
 
 class TestExecutorPartialFillExit:
-    """ADR-0014 결정 6 — 청산 부분체결 시 ExecutorError 승격.
+    """ADR-0015 결정 6 — 청산 부분체결 시 ExecutorError 승격.
 
     취소는 raise 전에 시도되어야 한다.
     현재 _wait_fill 이 타임아웃 시에도 ExecutorError 를 raise 하므로
@@ -3591,7 +3591,7 @@ class TestExecutorPartialFillExit:
 
 
 class TestExecutorZeroFillExit:
-    """ADR-0014 결정 6 — 청산 zero fill 도 ExecutorError 승격."""
+    """ADR-0015 결정 6 — 청산 zero fill 도 ExecutorError 승격."""
 
     def test_청산_zero_fill_ExecutorError_raise(
         self,
@@ -3705,7 +3705,7 @@ class TestExecutorZeroFillExit:
 
 
 class TestExecutorFullFillStillWorks:
-    """ADR-0014 회귀 방지 — 전량 체결 경로가 부분체결 가드 도입 후에도 정상 동작."""
+    """ADR-0015 회귀 방지 — 전량 체결 경로가 부분체결 가드 도입 후에도 정상 동작."""
 
     def test_full_fill_EntryEvent_qty_결정qty와_일치(
         self,
@@ -4103,7 +4103,7 @@ class TestResolveFillCancelFailure:
         fake_bar_source: FakeBarSource,
     ) -> None:
         """cancel_order 백오프 한계 초과 시 ExecutorError 를 raise 하지 않고
-        StepReport 를 반환해야 한다 (ADR-0014 silent-failure-hunter I1).
+        StepReport 를 반환해야 한다 (ADR-0015 silent-failure-hunter I1).
         """
         exc, _ = self._cancel_fail_setup(
             strategy,
@@ -4345,3 +4345,770 @@ class TestForceCloseAllPartialFillInterop:
         """
         # 이 테스트는 skip 되므로 본문 구현 불필요.
         pass
+
+
+# ---------------------------------------------------------------------------
+# restore_session (Issue #33)
+# ---------------------------------------------------------------------------
+
+
+class _FakeOpenPosition:
+    """OpenPositionInput Protocol 을 만족하는 더블."""
+
+    def __init__(
+        self,
+        symbol: str,
+        qty: int,
+        entry_price: Decimal,
+        entry_ts: datetime,
+        order_number: str = "ORD-0001",
+    ) -> None:
+        self.symbol = symbol
+        self.qty = qty
+        self.entry_price = entry_price
+        self.entry_ts = entry_ts
+        self.order_number = order_number
+
+
+class TestExecutorRestoreSession:
+    """Executor.restore_session — DB 스냅샷을 받아 상태를 직접 복원."""
+
+    def test_open_position_1건_risk_manager_active_positions_복원(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """open_positions 1건 → RiskManager.active_positions 1건."""
+        exc = _make_executor(
+            strategy, risk_manager, fake_order_submitter, fake_balance_provider, fake_bar_source
+        )
+        pos = _FakeOpenPosition(
+            symbol=_SYMBOL_A,
+            qty=10,
+            entry_price=Decimal("50000"),
+            entry_ts=_kst(9, 45),
+        )
+        exc.restore_session(
+            _DATE,
+            _STARTING_CAPITAL,
+            open_positions=[pos],
+            entries_today=1,
+            daily_realized_pnl_krw=0,
+        )
+        assert len(risk_manager.active_positions) == 1
+        assert risk_manager.active_positions[0].symbol == _SYMBOL_A
+
+    def test_open_position_1건_strategy_long_상태_복원(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """open_positions 1건 → ORBStrategy 에서 해당 심볼 position_state == 'long'."""
+        exc = _make_executor(
+            strategy, risk_manager, fake_order_submitter, fake_balance_provider, fake_bar_source
+        )
+        pos = _FakeOpenPosition(
+            symbol=_SYMBOL_A,
+            qty=10,
+            entry_price=Decimal("50000"),
+            entry_ts=_kst(9, 45),
+        )
+        exc.restore_session(
+            _DATE,
+            _STARTING_CAPITAL,
+            open_positions=[pos],
+            entries_today=1,
+            daily_realized_pnl_krw=0,
+        )
+        state = strategy.get_state(_SYMBOL_A)
+        assert state is not None
+        assert state.position_state == "long"
+
+    def test_closed_symbol_strategy_closed_상태(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """closed_symbols 에 포함된 심볼 → strategy position_state == 'closed'."""
+        exc = _make_executor(
+            strategy,
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+            symbols=(_SYMBOL_A, _SYMBOL_B),
+        )
+        exc.restore_session(
+            _DATE,
+            _STARTING_CAPITAL,
+            open_positions=[],
+            closed_symbols=[_SYMBOL_B],
+            entries_today=1,
+            daily_realized_pnl_krw=0,
+        )
+        state_b = strategy.get_state(_SYMBOL_B)
+        assert state_b is not None
+        assert state_b.position_state == "closed"
+
+    def test_open_closed_overlap_open_우선(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """open_positions 와 closed_symbols 에 같은 심볼이 있으면 open 우선 (long 유지)."""
+        exc = _make_executor(
+            strategy, risk_manager, fake_order_submitter, fake_balance_provider, fake_bar_source
+        )
+        pos = _FakeOpenPosition(
+            symbol=_SYMBOL_A,
+            qty=10,
+            entry_price=Decimal("50000"),
+            entry_ts=_kst(9, 45),
+        )
+        exc.restore_session(
+            _DATE,
+            _STARTING_CAPITAL,
+            open_positions=[pos],
+            closed_symbols=[_SYMBOL_A],  # overlap
+            entries_today=1,
+            daily_realized_pnl_krw=0,
+        )
+        state = strategy.get_state(_SYMBOL_A)
+        assert state is not None
+        assert state.position_state == "long"
+
+    def test_last_reconcile_None으로_리셋(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """restore_session 후 last_reconcile == None (재기동 후 첫 step 에서 재검증)."""
+        exc = _make_executor(
+            strategy, risk_manager, fake_order_submitter, fake_balance_provider, fake_bar_source
+        )
+        exc.restore_session(
+            _DATE,
+            _STARTING_CAPITAL,
+            open_positions=[],
+            entries_today=0,
+            daily_realized_pnl_krw=0,
+        )
+        assert exc.last_reconcile is None
+
+    def test_entries_today_risk_manager에_반영(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """entries_today=5 → RiskManager.entries_today == 5."""
+        exc = _make_executor(
+            strategy, risk_manager, fake_order_submitter, fake_balance_provider, fake_bar_source
+        )
+        exc.restore_session(
+            _DATE,
+            _STARTING_CAPITAL,
+            open_positions=[],
+            entries_today=5,
+            daily_realized_pnl_krw=0,
+        )
+        assert risk_manager.entries_today == 5
+
+    def test_daily_realized_pnl_risk_manager에_반영(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """daily_realized_pnl_krw=-15000 → RiskManager.daily_realized_pnl_krw == -15000."""
+        exc = _make_executor(
+            strategy, risk_manager, fake_order_submitter, fake_balance_provider, fake_bar_source
+        )
+        exc.restore_session(
+            _DATE,
+            _STARTING_CAPITAL,
+            open_positions=[],
+            entries_today=0,
+            daily_realized_pnl_krw=-15_000,
+        )
+        assert risk_manager.daily_realized_pnl_krw == -15_000
+
+
+class TestExecutorStartSessionResetsLastReconcile:
+    """start_session 호출 시 last_reconcile 이 None 으로 리셋된다."""
+
+    def test_start_session_last_reconcile_None(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """start_session 후 last_reconcile == None."""
+        exc = _make_executor(
+            strategy, risk_manager, fake_order_submitter, fake_balance_provider, fake_bar_source
+        )
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+        assert exc.last_reconcile is None
+
+    def test_step_후_start_session_last_reconcile_리셋(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """step 으로 reconcile 이 한 번 실행된 뒤 start_session 재호출 시 None 리셋."""
+        exc = _make_executor(
+            strategy,
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+            clock=lambda: _kst(9, 32),
+        )
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+        fake_bar_source.set_bars(_SYMBOL_A, [])
+        exc.step(_kst(9, 32))
+        # step 이후 last_reconcile 은 채워져 있어야 함
+        assert exc.last_reconcile is not None
+
+        # 다음 세션 start_session 호출 → None 리셋
+        from datetime import date as _date
+
+        next_day = _date(2026, 4, 22)
+        exc.start_session(next_day, _STARTING_CAPITAL)
+        assert exc.last_reconcile is None
+
+
+# ===========================================================================
+# restore_session 원자성 (Issue #33 CRITICAL 수정)
+# ===========================================================================
+
+
+class TestExecutorRestoreSessionAtomicity:
+    """Executor.restore_session 원자성 보장 — ORB 루프 중간 실패 시 부분 상태 롤백.
+
+    Stage 구조:
+      1. 사전 계산 (상태 변경 0)
+      2. RiskManager.restore_session 위임
+      3. ORB 루프 (touched_symbols 추적) — 실패 시 reset_session + start_session 롤백
+      4. 커밋 (_open_lots 등) — Stage 3 성공 후에만 실행
+    """
+
+    # -----------------------------------------------------------------------
+    # Stage 2 실패 — RiskManager.restore_session 거부
+    # -----------------------------------------------------------------------
+
+    def test_stage2_실패시_strategy_상태_불변(
+        self,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """entries_today=-1 → RM.restore_session 이 RuntimeError.
+
+        이 시점은 Stage 2 진입 직후로, ORBStrategy 는 아직 건드리지 않았으므로
+        strategy._states 가 완전히 비어있어야 한다.
+        """
+        strategy = ORBStrategy(StrategyConfig())
+        risk_manager = RiskManager(RiskConfig())
+        exc = _make_executor(
+            strategy, risk_manager, fake_order_submitter, fake_balance_provider, fake_bar_source
+        )
+        pos = _FakeOpenPosition(
+            symbol=_SYMBOL_A,
+            qty=10,
+            entry_price=Decimal("50000"),
+            entry_ts=_kst(9, 45),
+        )
+        with pytest.raises(RuntimeError, match="entries_today"):
+            exc.restore_session(
+                _DATE,
+                _STARTING_CAPITAL,
+                open_positions=[pos],
+                entries_today=-1,  # RM 이 거부
+                daily_realized_pnl_krw=0,
+            )
+        # ORBStrategy 상태는 변경 전이어야 한다
+        assert strategy.get_state(_SYMBOL_A) is None
+
+    def test_stage2_실패시_open_lots_불변(
+        self,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """Stage 2 실패 시 Executor 내부 _open_lots 는 이전 세션 값 그대로 유지."""
+        strategy = ORBStrategy(StrategyConfig())
+        risk_manager = RiskManager(RiskConfig())
+        exc = _make_executor(
+            strategy, risk_manager, fake_order_submitter, fake_balance_provider, fake_bar_source
+        )
+        # 아직 _open_lots 에는 아무것도 없는 초기 상태 — restore_session 실패해도
+        # 변경되지 않았음(None 이 아닌 "변경 없음")을 확인한다.
+        pos = _FakeOpenPosition(
+            symbol=_SYMBOL_A,
+            qty=10,
+            entry_price=Decimal("50000"),
+            entry_ts=_kst(9, 45),
+        )
+        with pytest.raises(RuntimeError):
+            exc.restore_session(
+                _DATE,
+                _STARTING_CAPITAL,
+                open_positions=[pos],
+                entries_today=-1,
+                daily_realized_pnl_krw=0,
+            )
+        # step 이 세션 미시작 오류를 내면 _open_lots 가 커밋되지 않은 것이다.
+        with pytest.raises(RuntimeError, match="세션이 시작되지 않았습니다"):
+            exc.step(_kst(9, 32))
+
+    # -----------------------------------------------------------------------
+    # Stage 3 실패 — restore_long_position raise (두 번째 심볼에서 실패)
+    # -----------------------------------------------------------------------
+
+    def test_stage3_restore_long_position_실패_ExecutorError_래핑(
+        self,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """open 2개 중 두 번째 restore_long_position 이 RuntimeError → ExecutorError 래핑."""
+        risk_manager = RiskManager(RiskConfig())
+
+        # MagicMock(spec=ORBStrategy) 주입 — 첫 번째 호출 성공, 두 번째 RuntimeError
+        mock_strategy = MagicMock(spec=ORBStrategy)
+        inner_error = RuntimeError("mock 두 번째 복원 실패")
+        mock_strategy.restore_long_position.side_effect = [None, inner_error]
+
+        exc = Executor(
+            symbols=(_SYMBOL_A, _SYMBOL_B),
+            strategy=mock_strategy,
+            risk_manager=risk_manager,
+            bar_source=fake_bar_source,
+            order_submitter=fake_order_submitter,
+            balance_provider=fake_balance_provider,
+            clock=lambda: _kst(9, 30),
+            sleep=lambda _: None,
+        )
+        pos_a = _FakeOpenPosition(
+            symbol=_SYMBOL_A, qty=10, entry_price=Decimal("50000"), entry_ts=_kst(9, 45)
+        )
+        pos_b = _FakeOpenPosition(
+            symbol=_SYMBOL_B, qty=5, entry_price=Decimal("80000"), entry_ts=_kst(9, 45)
+        )
+        with pytest.raises(ExecutorError) as exc_info:
+            exc.restore_session(
+                _DATE,
+                _STARTING_CAPITAL,
+                open_positions=[pos_a, pos_b],
+                entries_today=2,
+                daily_realized_pnl_krw=0,
+            )
+        # __cause__ 가 원본 RuntimeError 여야 한다
+        assert exc_info.value.__cause__ is inner_error
+
+    def test_stage3_restore_long_position_실패_메시지_포함(
+        self,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """ExecutorError 메시지에 'restore_session 중 ORBStrategy 복원 실패' 문자열 포함."""
+        risk_manager = RiskManager(RiskConfig())
+        mock_strategy = MagicMock(spec=ORBStrategy)
+        mock_strategy.restore_long_position.side_effect = [None, RuntimeError("두 번째 실패")]
+
+        exc = Executor(
+            symbols=(_SYMBOL_A, _SYMBOL_B),
+            strategy=mock_strategy,
+            risk_manager=risk_manager,
+            bar_source=fake_bar_source,
+            order_submitter=fake_order_submitter,
+            balance_provider=fake_balance_provider,
+            clock=lambda: _kst(9, 30),
+            sleep=lambda _: None,
+        )
+        pos_a = _FakeOpenPosition(
+            symbol=_SYMBOL_A, qty=10, entry_price=Decimal("50000"), entry_ts=_kst(9, 45)
+        )
+        pos_b = _FakeOpenPosition(
+            symbol=_SYMBOL_B, qty=5, entry_price=Decimal("80000"), entry_ts=_kst(9, 45)
+        )
+        with pytest.raises(ExecutorError, match="restore_session 중 ORBStrategy 복원 실패"):
+            exc.restore_session(
+                _DATE,
+                _STARTING_CAPITAL,
+                open_positions=[pos_a, pos_b],
+                entries_today=2,
+                daily_realized_pnl_krw=0,
+            )
+
+    def test_stage3_restore_long_position_실패_reset_session_touched_심볼만_호출(
+        self,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """첫 번째 복원 성공(005930) → 두 번째 복원 실패 → reset_session(["005930"]) 호출."""
+        risk_manager = RiskManager(RiskConfig())
+        mock_strategy = MagicMock(spec=ORBStrategy)
+        mock_strategy.restore_long_position.side_effect = [None, RuntimeError("실패")]
+
+        exc = Executor(
+            symbols=(_SYMBOL_A, _SYMBOL_B),
+            strategy=mock_strategy,
+            risk_manager=risk_manager,
+            bar_source=fake_bar_source,
+            order_submitter=fake_order_submitter,
+            balance_provider=fake_balance_provider,
+            clock=lambda: _kst(9, 30),
+            sleep=lambda _: None,
+        )
+        pos_a = _FakeOpenPosition(
+            symbol=_SYMBOL_A, qty=10, entry_price=Decimal("50000"), entry_ts=_kst(9, 45)
+        )
+        pos_b = _FakeOpenPosition(
+            symbol=_SYMBOL_B, qty=5, entry_price=Decimal("80000"), entry_ts=_kst(9, 45)
+        )
+        with pytest.raises(ExecutorError):
+            exc.restore_session(
+                _DATE,
+                _STARTING_CAPITAL,
+                open_positions=[pos_a, pos_b],
+                entries_today=2,
+                daily_realized_pnl_krw=0,
+            )
+        # touched_symbols = ["005930"] (성공한 것만)
+        mock_strategy.reset_session.assert_called_once_with([_SYMBOL_A])
+
+    def test_stage3_restore_long_position_실패_risk_manager_start_session_호출(
+        self,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """Stage 3 실패 시 RM.start_session(session_date, starting_capital) 으로 clean 리셋."""
+        risk_manager = RiskManager(RiskConfig())
+        mock_strategy = MagicMock(spec=ORBStrategy)
+        mock_strategy.restore_long_position.side_effect = [None, RuntimeError("실패")]
+
+        exc = Executor(
+            symbols=(_SYMBOL_A, _SYMBOL_B),
+            strategy=mock_strategy,
+            risk_manager=risk_manager,
+            bar_source=fake_bar_source,
+            order_submitter=fake_order_submitter,
+            balance_provider=fake_balance_provider,
+            clock=lambda: _kst(9, 30),
+            sleep=lambda _: None,
+        )
+        pos_a = _FakeOpenPosition(
+            symbol=_SYMBOL_A, qty=10, entry_price=Decimal("50000"), entry_ts=_kst(9, 45)
+        )
+        pos_b = _FakeOpenPosition(
+            symbol=_SYMBOL_B, qty=5, entry_price=Decimal("80000"), entry_ts=_kst(9, 45)
+        )
+        with pytest.raises(ExecutorError):
+            exc.restore_session(
+                _DATE,
+                _STARTING_CAPITAL,
+                open_positions=[pos_a, pos_b],
+                entries_today=2,
+                daily_realized_pnl_krw=0,
+            )
+        # 롤백 후 RM 은 clean 세션 상태 (active_positions 비어있음)
+        assert len(risk_manager.active_positions) == 0
+        assert risk_manager.session_date == _DATE
+
+    def test_stage3_restore_long_position_실패_open_lots_커밋_안됨(
+        self,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """Stage 3 실패 시 _open_lots 는 이전 값 그대로 — 커밋 단계(Stage 4) 미도달."""
+        risk_manager = RiskManager(RiskConfig())
+        mock_strategy = MagicMock(spec=ORBStrategy)
+        mock_strategy.restore_long_position.side_effect = [None, RuntimeError("실패")]
+
+        exc = Executor(
+            symbols=(_SYMBOL_A, _SYMBOL_B),
+            strategy=mock_strategy,
+            risk_manager=risk_manager,
+            bar_source=fake_bar_source,
+            order_submitter=fake_order_submitter,
+            balance_provider=fake_balance_provider,
+            clock=lambda: _kst(9, 30),
+            sleep=lambda _: None,
+        )
+        pos_a = _FakeOpenPosition(
+            symbol=_SYMBOL_A, qty=10, entry_price=Decimal("50000"), entry_ts=_kst(9, 45)
+        )
+        pos_b = _FakeOpenPosition(
+            symbol=_SYMBOL_B, qty=5, entry_price=Decimal("80000"), entry_ts=_kst(9, 45)
+        )
+        with pytest.raises(ExecutorError):
+            exc.restore_session(
+                _DATE,
+                _STARTING_CAPITAL,
+                open_positions=[pos_a, pos_b],
+                entries_today=2,
+                daily_realized_pnl_krw=0,
+            )
+        # step 을 불러도 세션 미시작 오류 → _open_lots 가 커밋되지 않은 증거
+        # (rollback 후 clean start_session 되어 step 은 작동하지만 open_lots 가 비어있음)
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+        fake_bar_source.set_bars(_SYMBOL_A, [])
+        fake_bar_source.set_bars(_SYMBOL_B, [])
+        report = exc.step(_kst(9, 32))
+        # open_lots 가 커밋됐다면 매도 처리 등이 시도될 것이나, 비어있으므로 0건
+        assert report.orders_submitted == 0
+
+    # -----------------------------------------------------------------------
+    # Stage 3 실패 — mark_session_closed raise
+    # -----------------------------------------------------------------------
+
+    def test_stage3_mark_session_closed_실패_reset_session_touched_심볼_포함(
+        self,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """open 2개 성공 → mark_session_closed 실패 → reset_session([A, B]) 호출.
+
+        touched_symbols 에는 성공한 open 심볼 2개가 있고, closed 복원 전 실패이므로
+        closed 심볼은 포함되지 않는다.
+        """
+        risk_manager = RiskManager(RiskConfig())
+        mock_strategy = MagicMock(spec=ORBStrategy)
+        # restore_long_position 은 2번 모두 성공
+        mock_strategy.restore_long_position.return_value = None
+        # mark_session_closed 는 실패
+        closed_error = RuntimeError("심볼 포맷 오류 모의")
+        mock_strategy.mark_session_closed.side_effect = closed_error
+
+        exc = Executor(
+            symbols=(_SYMBOL_A, _SYMBOL_B),
+            strategy=mock_strategy,
+            risk_manager=risk_manager,
+            bar_source=fake_bar_source,
+            order_submitter=fake_order_submitter,
+            balance_provider=fake_balance_provider,
+            clock=lambda: _kst(9, 30),
+            sleep=lambda _: None,
+        )
+        pos_a = _FakeOpenPosition(
+            symbol=_SYMBOL_A, qty=10, entry_price=Decimal("50000"), entry_ts=_kst(9, 45)
+        )
+        pos_b = _FakeOpenPosition(
+            symbol=_SYMBOL_B, qty=5, entry_price=Decimal("80000"), entry_ts=_kst(9, 45)
+        )
+        closed_sym = "999999"
+        with pytest.raises(ExecutorError):
+            exc.restore_session(
+                _DATE,
+                _STARTING_CAPITAL,
+                open_positions=[pos_a, pos_b],
+                closed_symbols=[closed_sym],
+                entries_today=2,
+                daily_realized_pnl_krw=0,
+            )
+        # touched_symbols = [_SYMBOL_A, _SYMBOL_B] — open 2개만 (closed 복원 전 실패)
+        mock_strategy.reset_session.assert_called_once_with([_SYMBOL_A, _SYMBOL_B])
+
+    def test_stage3_mark_session_closed_실패_ExecutorError_cause_보존(
+        self,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """mark_session_closed 실패 시 ExecutorError.__cause__ 가 원본 예외."""
+        risk_manager = RiskManager(RiskConfig())
+        mock_strategy = MagicMock(spec=ORBStrategy)
+        mock_strategy.restore_long_position.return_value = None
+        original_error = RuntimeError("원본 에러")
+        mock_strategy.mark_session_closed.side_effect = original_error
+
+        exc = Executor(
+            symbols=(_SYMBOL_A,),
+            strategy=mock_strategy,
+            risk_manager=risk_manager,
+            bar_source=fake_bar_source,
+            order_submitter=fake_order_submitter,
+            balance_provider=fake_balance_provider,
+            clock=lambda: _kst(9, 30),
+            sleep=lambda _: None,
+        )
+        pos_a = _FakeOpenPosition(
+            symbol=_SYMBOL_A, qty=10, entry_price=Decimal("50000"), entry_ts=_kst(9, 45)
+        )
+        with pytest.raises(ExecutorError) as exc_info:
+            exc.restore_session(
+                _DATE,
+                _STARTING_CAPITAL,
+                open_positions=[pos_a],
+                closed_symbols=["000660"],
+                entries_today=1,
+                daily_realized_pnl_krw=0,
+            )
+        assert exc_info.value.__cause__ is original_error
+
+    # -----------------------------------------------------------------------
+    # 정상 경로 — 롤백 경로가 호출되지 않음
+    # -----------------------------------------------------------------------
+
+    def test_정상_경로_rollback_미호출(
+        self,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """정상 복원 시 reset_session·start_session(rollback) 이 호출되지 않는다."""
+        risk_manager = RiskManager(RiskConfig())
+        mock_strategy = MagicMock(spec=ORBStrategy)
+        mock_strategy.restore_long_position.return_value = None
+        mock_strategy.mark_session_closed.return_value = None
+
+        exc = Executor(
+            symbols=(_SYMBOL_A, _SYMBOL_B),
+            strategy=mock_strategy,
+            risk_manager=risk_manager,
+            bar_source=fake_bar_source,
+            order_submitter=fake_order_submitter,
+            balance_provider=fake_balance_provider,
+            clock=lambda: _kst(9, 30),
+            sleep=lambda _: None,
+        )
+        pos_a = _FakeOpenPosition(
+            symbol=_SYMBOL_A, qty=10, entry_price=Decimal("50000"), entry_ts=_kst(9, 45)
+        )
+        exc.restore_session(
+            _DATE,
+            _STARTING_CAPITAL,
+            open_positions=[pos_a],
+            closed_symbols=[_SYMBOL_B],
+            entries_today=1,
+            daily_realized_pnl_krw=0,
+        )
+        # 롤백 경로가 호출되지 않았어야 한다
+        mock_strategy.reset_session.assert_not_called()
+
+    def test_정상_경로_open_lots_커밋됨(
+        self,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """정상 복원 시 _open_lots 가 커밋되어 stage 4 가 실행됐음을 간접 검증.
+
+        검증 방법: restore_session 후 last_reconcile 이 None 이어야 하고 (커밋
+        단계에서 _last_reconcile = None 으로 설정됨), 세션이 활성이어서 step 을
+        RuntimeError 없이 호출 가능함을 확인한다. reconcile mismatch 로 halt 되는
+        것을 막기 위해 broker 잔고를 복원 포지션과 일치시킨다.
+        """
+        strategy = ORBStrategy(StrategyConfig())
+        risk_manager = RiskManager(RiskConfig())
+        # broker 잔고를 복원 포지션(005930 10주)과 일치시켜 reconcile 불일치 방지
+        matched_balance = FakeBalanceProvider(_balance_with_holding(_SYMBOL_A, 10))
+        exc = _make_executor(
+            strategy,
+            risk_manager,
+            fake_order_submitter,
+            matched_balance,
+            fake_bar_source,
+            symbols=(_SYMBOL_A,),
+        )
+        pos_a = _FakeOpenPosition(
+            symbol=_SYMBOL_A, qty=10, entry_price=Decimal("50000"), entry_ts=_kst(9, 45)
+        )
+        exc.restore_session(
+            _DATE,
+            _STARTING_CAPITAL,
+            open_positions=[pos_a],
+            entries_today=1,
+            daily_realized_pnl_krw=0,
+        )
+        # Stage 4 커밋 시 _last_reconcile = None 으로 설정됨
+        assert exc.last_reconcile is None
+        # 세션이 활성이므로 step 을 RuntimeError 없이 호출 가능
+        fake_bar_source.set_bars(_SYMBOL_A, [])
+        report = exc.step(_kst(9, 50))
+        assert report.halted is False
+        assert report.orders_submitted == 0
+
+    # -----------------------------------------------------------------------
+    # logger.critical 방출 검증
+    # -----------------------------------------------------------------------
+
+    def test_stage3_실패_logger_critical_방출(
+        self,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """Stage 3 실패 시 logger.critical 이 최소 1회 방출된다 (loguru sink 부착).
+
+        loguru 의 기본 싱크가 stderr 에 출력하므로 capfd 로 검증한다.
+        """
+        from loguru import logger
+
+        log_messages: list[str] = []
+
+        sink_id = logger.add(lambda msg: log_messages.append(msg), level="CRITICAL")
+        try:
+            risk_manager = RiskManager(RiskConfig())
+            mock_strategy = MagicMock(spec=ORBStrategy)
+            mock_strategy.restore_long_position.side_effect = [None, RuntimeError("로그 테스트")]
+
+            exc = Executor(
+                symbols=(_SYMBOL_A, _SYMBOL_B),
+                strategy=mock_strategy,
+                risk_manager=risk_manager,
+                bar_source=fake_bar_source,
+                order_submitter=fake_order_submitter,
+                balance_provider=fake_balance_provider,
+                clock=lambda: _kst(9, 30),
+                sleep=lambda _: None,
+            )
+            pos_a = _FakeOpenPosition(
+                symbol=_SYMBOL_A, qty=10, entry_price=Decimal("50000"), entry_ts=_kst(9, 45)
+            )
+            pos_b = _FakeOpenPosition(
+                symbol=_SYMBOL_B, qty=5, entry_price=Decimal("80000"), entry_ts=_kst(9, 45)
+            )
+            with pytest.raises(ExecutorError):
+                exc.restore_session(
+                    _DATE,
+                    _STARTING_CAPITAL,
+                    open_positions=[pos_a, pos_b],
+                    entries_today=2,
+                    daily_realized_pnl_krw=0,
+                )
+        finally:
+            logger.remove(sink_id)
+
+        assert len(log_messages) >= 1, "logger.critical 이 최소 1회 방출되어야 한다"

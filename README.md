@@ -78,7 +78,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **Phase 3 네 번째 산출물 — storage/db.py (SQLite 원장, 코드·테스트 레벨) 완료** (2026-04-22). `src/stock_agent/storage/` 패키지 신설 — `TradingRecorder` Protocol + `SqliteTradingRecorder` + `NullTradingRecorder` + `StorageError`. 주문·체결·일일 PnL을 `data/trading.db`에 append-only 기록. 기록 실패 silent fail + 연속 실패 경보. 의존성 추가 없음(stdlib `sqlite3` 전용).
 
-**Phase 3 다섯 번째 산출물 — broker 체결조회 + 부분체결 정책 (코드·테스트 레벨) 완료** (2026-04-22, ADR-0014). `KisClient.cancel_order` 신설 + `PendingOrder.qty_filled` 추가. `Executor._resolve_fill` 이 타임아웃 시 `cancel_order` 호출 + 부분/0 체결 수습. 진입 부분체결 → 실체결 수량만 원장 기록. 청산 부분/0 체결 → `ExecutorError` 승격. 의존성 추가 없음. **Phase 3 코드 산출물 전부 완료. Phase 3 PASS 선언은 모의투자 환경 연속 10영업일 무중단 운영 후.**
+**Phase 3 다섯 번째 산출물 — broker 체결조회 + 부분체결 정책 (코드·테스트 레벨) 완료** (2026-04-22, ADR-0015). `KisClient.cancel_order` 신설 + `PendingOrder.qty_filled` 추가. `Executor._resolve_fill` 이 타임아웃 시 `cancel_order` 호출 + 부분/0 체결 수습. 진입 부분체결 → 실체결 수량만 원장 기록. 청산 부분/0 체결 → `ExecutorError` 승격. 의존성 추가 없음. **Phase 3 코드 산출물 전부 완료. Phase 3 PASS 선언은 모의투자 환경 연속 10영업일 무중단 운영 후.**
 
 **운영 주의**: KOSPI 200 구성종목은 `config/universe.yaml`에 수동 관리합니다. KRX KOSPI 200 정기변경(연 2회 — 매년 6월·12월의 선물·옵션 동시만기일 익영업일 기준)에 맞춰 운영자가 직접 갱신해야 합니다. 현재 KRX 정보데이터시스템 [11006] 기준 199/200 반영(2026-04-17 조회, 임시 가상 코드 1건 제외). 정식 티커 발급 후 다음 갱신에 추가 예정.
 
@@ -247,6 +247,7 @@ uv run python scripts/healthcheck.py
 ## 참고 문서
 
 - [`plan.md`](./plan.md) — 전체 설계서(Context, 전략 상세, 리스크 한도, 로드맵, Verification 기준, 비용·위험 분석)
+- [`docs/operations-playbook.md`](./docs/operations-playbook.md) — 모의투자 운영 플레이북 (장 전 체크리스트·장중 이상 대응·Kill switch·일일 마감 체크)
 
 ## 책임 고지 (Disclaimer)
 

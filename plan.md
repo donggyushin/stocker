@@ -300,6 +300,6 @@ pytest **245 → 324 → 384 → 464 → 477 → 539 → 542건 green** (기존 
 
 ### Phase 3 다섯 번째 산출물 — broker 체결조회 + 부분체결 정책 (2026-04-22)
 
-[x] ADR-0014 적용. `KisClient.cancel_order(order_number) -> None` 신설 + `PendingOrder.qty_filled: int` 필드 추가. `_to_pending_order` 가 PyKis 정식 필드 우선 매핑 → `qty_remaining` fallback. `execution/executor.py`: `OrderSubmitter.cancel_order` Protocol 확장 + `_resolve_fill(ticket) -> _FillOutcome` 교체 (타임아웃 시 `cancel_order` + 부분/0 체결 수습) + `_handle_entry` 부분체결 → `filled_qty` 만 기록, 0 체결 → skip + `_handle_exit` 부분/0 체결 → `ExecutorError`. 의존성 추가 없음.
+[x] ADR-0015 적용. `KisClient.cancel_order(order_number) -> None` 신설 + `PendingOrder.qty_filled: int` 필드 추가. `_to_pending_order` 가 PyKis 정식 필드 우선 매핑 → `qty_remaining` fallback. `execution/executor.py`: `OrderSubmitter.cancel_order` Protocol 확장 + `_resolve_fill(ticket) -> _FillOutcome` 교체 (타임아웃 시 `cancel_order` + 부분/0 체결 수습) + `_handle_entry` 부분체결 → `filled_qty` 만 기록, 0 체결 → skip + `_handle_exit` 부분/0 체결 → `ExecutorError`. 의존성 추가 없음.
 
 **Phase 3 코드 산출물 전부 완료. PASS 선언은 모의투자 환경 연속 10영업일 무중단 + 0 unhandled error + 모든 주문이 SQLite 기록 + 텔레그램 알림 100% 수신 후.**

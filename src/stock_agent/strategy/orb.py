@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal, DecimalException
@@ -350,6 +351,111 @@ class ORBStrategy:
                 )
             )
         return signals
+
+    # ---- 재기동 복원 (Issue #33) ---------------------------------------
+
+    def restore_long_position(
+        self,
+        symbol: str,
+        entry_price: Decimal,
+        entry_ts: datetime,
+    ) -> None:
+        """재기동 시 open position 의 ORB 상태를 `long` 으로 복원.
+
+        `stop_price` / `take_price` 는 현재 `StrategyConfig` 로 재계산한다 —
+        재기동 전 실행이 다른 config 를 썼다면 드리프트가 있지만, 본 프로젝트
+        는 `config/strategy.yaml` 미도입으로 코드 상수 변경이 드물어 허용
+        범위. `or_high` / `or_low` 는 복원하지 않는다 — `position_state = 'long'`
+        이면 `_dispatch_bar` 의 flat 분기를 타지 않아 재진입 계산이 필요없다.
+
+        이 메서드는 `Executor.restore_session` 이 각 `OpenPositionRow` 에
+        대해 1회 호출한다. 직접 호출은 운영 경로 밖.
+
+        Raises:
+            RuntimeError: symbol 포맷 오류 / entry_ts naive / entry_price ≤ 0.
+        """
+        self._validate_symbol(symbol)
+        self._require_aware(entry_ts, "entry_ts")
+        if entry_price <= 0:
+            raise RuntimeError(f"entry_price 는 양수여야 합니다 (got={entry_price})")
+
+        state = self._states.setdefault(symbol, _SymbolState())
+        session = entry_ts.date()
+        if state.session_date is None or state.session_date != session:
+            state.reset(session)
+
+        cfg = self._config
+        stop = entry_price * (Decimal("1") - cfg.stop_loss_pct)
+        take = entry_price * (Decimal("1") + cfg.take_profit_pct)
+        state.position_state = "long"
+        state.entry_price = entry_price
+        state.stop_price = stop
+        state.take_price = take
+        # OR 구간은 이미 지났다는 가정 (재기동 시점이 OR 이후) —
+        # `or_confirmed=True` 로 표시해 이후 `_dispatch_bar` 가 OR 미확정
+        # 경로를 타지 않도록. `or_high` / `or_low` 는 None 유지 — long 상태
+        # 에서는 참조되지 않는다.
+        state.or_confirmed = True
+        # last_bar_time 은 복원하지 않는다 — 재기동 후 들어오는 첫 bar 가
+        # 정상 진행 경로 (`last_bar_time is None` 조건). last_close 도 None
+        # 유지 (on_time 강제청산은 entry_price 폴백으로 동작).
+        logger.warning(
+            "ORB restore_long_position: {s} entry={p} stop={sp} take={tp} session={d}",
+            s=symbol,
+            p=entry_price,
+            sp=stop,
+            tp=take,
+            d=session,
+        )
+
+    def reset_session(self, symbols: Sequence[str] = ()) -> None:
+        """재기동 복원 롤백용 — 지정된 심볼들의 `_SymbolState` 를 제거한다.
+
+        `Executor.restore_session` 이 ORB 복원 루프 중간에 실패했을 때 부분
+        상태를 제거해 재호출 시 fresh `_SymbolState` 가 재생성되도록 보장한다
+        (Issue #33 후속 보강 — 부분 복원 일관성 사고 방지).
+
+        Args:
+            symbols: 초기화할 심볼 목록. 빈 Sequence 이면 모든 `_states` 를
+                제거한다. 동일 심볼이 중복돼도 무방.
+
+        Raises:
+            이 메서드는 raise 하지 않는다 — 알 수 없는 심볼은 조용히 무시.
+            호출자(Executor.restore_session) 가 이미 예외 경로에 있으므로
+            추가 실패는 매매 루프 보호 계약에 역행한다.
+        """
+        if not symbols:
+            self._states.clear()
+            return
+        for sym in symbols:
+            self._states.pop(sym, None)
+
+    def mark_session_closed(
+        self,
+        symbol: str,
+        session_date: date,
+    ) -> None:
+        """재기동 시 당일 이미 청산된 심볼을 `closed` 로 표시 — 당일 재진입 차단.
+
+        `_dispatch_bar` 가 `position_state == 'closed'` 분기에서 재진입을
+        debug 로그만 남기고 스킵하므로, DB 에 당일 buy→sell 쌍이 기록된
+        심볼을 이 메서드로 표시해 재기동 후 재돌파에도 재진입이 되지 않도록
+        보장한다.
+
+        Raises:
+            RuntimeError: symbol 포맷 오류.
+        """
+        self._validate_symbol(symbol)
+        state = self._states.setdefault(symbol, _SymbolState())
+        if state.session_date is None or state.session_date != session_date:
+            state.reset(session_date)
+        state.position_state = "closed"
+        state.or_confirmed = True
+        logger.warning(
+            "ORB mark_session_closed: {s} session={d}",
+            s=symbol,
+            d=session_date,
+        )
 
     # ---- 공통 가드 -----------------------------------------------------
 

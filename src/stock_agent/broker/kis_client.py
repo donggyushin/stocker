@@ -85,7 +85,7 @@ class PendingOrder:
 
     `qty_filled` 는 체결된 수량, `qty_remaining` 은 남은 미체결 수량.
     PyKis 정식 필드(`executed_quantity`, `pending_quantity`) 를 우선 매핑하고,
-    없을 때만 `qty_remaining` attribute fallback 을 사용한다 (ADR-0014).
+    없을 때만 `qty_remaining` attribute fallback 을 사용한다 (ADR-0015).
 
     불변식 (`__post_init__` 검증):
     - `qty_ordered > 0`

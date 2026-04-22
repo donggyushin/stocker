@@ -382,6 +382,11 @@ def _on_session_start(
     서킷브레이커(`-starting_capital × 2%`) 가 실제 손실과 맞물린다. `total`
     (평가금액 포함) 이면 일일 손실 한도가 구조적으로 느슨해지므로 사용 금지.
 
+    **재기동 복원 경로 (Issue #33, ADR-0014)** — `runtime.recorder` 에 당일
+    기록이 있으면 "세션 중간 재기동" 으로 판정하고 `Executor.restore_session`
+    을 호출해 오픈 포지션·일일 실현 PnL·진입 횟수·청산 심볼을 복원한다.
+    당일 기록이 없으면 기존과 동일하게 `start_session` 신규 개시.
+
     실패 분기 (withdrawable ≤ 0 또는 예외) 에선 `session_status.started = False`
     로 리셋해 이후 `on_step` 이 silent failure 루프에 빠지지 않고 첫 진입에서
     warning 1회만 남기고 스킵한다 (C1 — `on_step` 의 dedupe 가드와 연결).
@@ -416,13 +421,42 @@ def _on_session_start(
                 )
                 return
             now = clock()
-            runtime.executor.start_session(now.date(), starting_capital)
+            today = now.date()
+
+            # Issue #33: 당일 이전 기록이 있으면 재기동 복원 분기.
+            # recorder.load_* 는 silent fail 계약(SqliteTradingRecorder 는
+            # DB 예외를 빈 결과로 흡수) 이므로 여기서 별도 except 는 불필요.
+            open_positions = runtime.recorder.load_open_positions(today)
+            daily_snapshot = runtime.recorder.load_daily_pnl(today)
+            is_restart = bool(open_positions) or daily_snapshot.has_state
+
+            if is_restart:
+                logger.warning(
+                    "main.session_start.restart 감지 — 당일 이전 세션 상태 복원. "
+                    "open={op} entries_today={et} realized_pnl={pnl} closed={cl}",
+                    op=len(open_positions),
+                    et=daily_snapshot.entries_today,
+                    pnl=daily_snapshot.realized_pnl_krw,
+                    cl=len(daily_snapshot.closed_symbols),
+                )
+                runtime.executor.restore_session(
+                    today,
+                    starting_capital,
+                    open_positions=open_positions,
+                    closed_symbols=daily_snapshot.closed_symbols,
+                    entries_today=daily_snapshot.entries_today,
+                    daily_realized_pnl_krw=daily_snapshot.realized_pnl_krw,
+                )
+            else:
+                runtime.executor.start_session(today, starting_capital)
+
             runtime.session_status.started = True
             runtime.session_status.fail_logged = False
             logger.info(
-                "main.session_start date={d} capital={c}",
-                d=now.date(),
+                "main.session_start date={d} capital={c} restart={r}",
+                d=today,
                 c=starting_capital,
+                r=is_restart,
             )
         except Exception as e:  # noqa: BLE001 — ADR-0011 결정 5 (스케줄러 연속성)
             logger.exception(f"main.session_start 실패: {e.__class__.__name__}: {e}")

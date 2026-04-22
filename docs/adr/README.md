@@ -43,7 +43,8 @@ ADR 가 **불필요** 한 변경:
 | [0011](./0011-apscheduler-adoption-single-process.md) | APScheduler 채택 및 BlockingScheduler + 공휴일 수동 판정 정책 | 승인됨 | 2026-04-21 |
 | [0012](./0012-monitor-notifier-design.md) | monitor/notifier 모듈 설계 — Protocol 분리·StepReport 이벤트 확장·silent fail 정책 | 승인됨 | 2026-04-21 |
 | [0013](./0013-sqlite-trading-ledger.md) | storage/db.py 모듈 설계 — SQLite 원장·Protocol 분리·silent fail 정책·DB 파일 분리 | 승인됨 | 2026-04-22 |
-| [0014](./0014-partial-fill-policy.md) | 체결조회 API 통합 + 부분체결 정책 — 잔량 취소 + 체결 수량만 원장 기록 | 승인됨 | 2026-04-22 |
+| [0014](./0014-runtime-state-recovery.md) | 세션 중간 재기동 시 오픈 포지션·RiskManager 상태 DB 복원 경로 | 승인됨 | 2026-04-22 |
+| [0015](./0015-partial-fill-policy.md) | 체결조회 API 통합 + 부분체결 정책 — 잔량 취소 + 체결 수량만 원장 기록 | 승인됨 | 2026-04-22 |
 
 ## 관련 문서
 

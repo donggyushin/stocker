@@ -720,12 +720,12 @@ def test_qty_0이하_가드가_rate_limiter보다_먼저_작동한다(
 
 
 # ---------------------------------------------------------------------------
-# 신규 테스트 18: PendingOrder.qty_filled 필드 매핑 — ADR-0014 결정 1
+# 신규 테스트 18: PendingOrder.qty_filled 필드 매핑 — ADR-0015 결정 1
 # ---------------------------------------------------------------------------
 
 
 class TestPendingOrderQtyFilledMapping:
-    """PendingOrder.qty_filled 필드 매핑 시나리오 검증 (ADR-0014 결정 1).
+    """PendingOrder.qty_filled 필드 매핑 시나리오 검증 (ADR-0015 결정 1).
 
     _to_pending_order 가 PyKis 정식 필드(executed_quantity/pending_quantity)를
     우선 사용하고, 없을 때만 기존 fallback(qty_remaining) 으로 qty_filled 를 추론함을 확인.
@@ -900,12 +900,12 @@ def _loguru_messages() -> Iterator[list[dict[str, Any]]]:
 
 
 # ---------------------------------------------------------------------------
-# 신규 테스트 19: KisClient.cancel_order — ADR-0014 결정 2
+# 신규 테스트 19: KisClient.cancel_order — ADR-0015 결정 2
 # ---------------------------------------------------------------------------
 
 
 class TestCancelOrder:
-    """KisClient.cancel_order(order_number) 계약 검증 (ADR-0014 결정 2).
+    """KisClient.cancel_order(order_number) 계약 검증 (ADR-0015 결정 2).
 
     계약:
     - _require_open 경유 (close 후 KisClientError)

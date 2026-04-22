@@ -4,7 +4,7 @@
 
 ## 프로젝트 한 줄 요약
 
-Python 기반 한국주식 **데이트레이딩** 자동매매 시스템. 한국투자증권 KIS Developers API + Opening Range Breakout(ORB) 전략 + 100~200만원 초기 자본. **paper 주문 + live 시세 하이브리드 키** 구조 (KIS paper 도메인에 시세 API 없음 — 시세는 별도 실전 APP_KEY 로 실전 도메인 호출). 현재 **Phase 1 PASS (코드·테스트 레벨). Phase 2 진행 중 (백테스트 엔진 코어·ORB 전략·리스크 매니저·CSV 어댑터·민감도 그리드·backtest.py CLI 완료). Phase 3 착수 전제 통과 (2026-04-21) + 첫 산출물 Executor 코드·테스트 레벨 완료 (2026-04-21) + 두 번째 산출물 main.py (APScheduler) 코드·테스트 레벨 완료 (2026-04-21) + 세 번째 산출물 monitor/notifier (텔레그램 알림) 코드·테스트 레벨 완료 (2026-04-21) + 네 번째 산출물 storage/db.py (SQLite 원장) 코드·테스트 레벨 완료 (2026-04-22) + 다섯 번째 산출물 broker 체결조회 + 부분체결 정책 (ADR-0014) 코드·테스트 레벨 완료 (2026-04-22)**.
+Python 기반 한국주식 **데이트레이딩** 자동매매 시스템. 한국투자증권 KIS Developers API + Opening Range Breakout(ORB) 전략 + 100~200만원 초기 자본. **paper 주문 + live 시세 하이브리드 키** 구조 (KIS paper 도메인에 시세 API 없음 — 시세는 별도 실전 APP_KEY 로 실전 도메인 호출). 현재 **Phase 1 PASS (코드·테스트 레벨). Phase 2 진행 중 (백테스트 엔진 코어·ORB 전략·리스크 매니저·CSV 어댑터·민감도 그리드·backtest.py CLI 완료). Phase 3 착수 전제 통과 (2026-04-21) + 첫 산출물 Executor 코드·테스트 레벨 완료 (2026-04-21) + 두 번째 산출물 main.py (APScheduler) 코드·테스트 레벨 완료 (2026-04-21) + 세 번째 산출물 monitor/notifier (텔레그램 알림) 코드·테스트 레벨 완료 (2026-04-21) + 네 번째 산출물 storage/db.py (SQLite 원장) 코드·테스트 레벨 완료 (2026-04-22) + 다섯 번째 산출물 세션 재기동 상태 복원 경로 코드·테스트 레벨 완료 (2026-04-22) + 여섯 번째 산출물 broker 체결조회 + 부분체결 정책 (ADR-0015) 코드·테스트 레벨 완료 (2026-04-22)**.
 
 상세 설계는 `plan.md`를 참조한다. 외부 독자용 개요는 `README.md`.
 
@@ -283,16 +283,26 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
   - pytest 카운트: `test_storage_db.py` 49건 green + 3건 skip, `test_executor.py` +10건, `test_main.py` +14건. 회귀 0건.
   - 미완료: 없음. **Phase 3 PASS 선언은 모의투자 연속 10영업일 무중단 운영 후.**
 
-- **Phase 3 다섯 번째 산출물 — broker 체결조회 + 부분체결 정책 (ADR-0014) 코드·테스트 레벨 완료 (2026-04-22)**
+- **Phase 3 다섯 번째 산출물 — 세션 재기동 상태 복원 경로 코드·테스트 레벨 완료 (2026-04-22)** (Issue #33)
+  - `storage/db.py` 확장 — `OpenPositionRow` DTO, `DailyPnlSnapshot` DTO (`has_state` 프로퍼티). `TradingRecorder` Protocol 에 `load_open_positions(session_date) -> tuple[OpenPositionRow, ...]` · `load_daily_pnl(session_date) -> DailyPnlSnapshot` 2 메서드 추가. `SqliteTradingRecorder` 는 `orders` 테이블을 `filled_at ASC, rowid ASC` 순으로 재생해 buy/sell 페어를 상쇄한 결과를 반환. `NullTradingRecorder` 는 빈 결과.
+  - `risk/manager.py` — `RiskManager.restore_session(session_date, starting_capital_krw, *, open_positions, entries_today, daily_realized_pnl_krw)` 신설. `start_session` 이 카운터를 0 으로 리셋하는 것과 달리 외부 값으로 직접 주입. `entries_today < len(open_positions)` 이면 `RuntimeError`. 복원 시 halt 임계치를 넘으면 `_halt_logged=True` 로 세팅해 중복 halt 로그 방출 방지.
+  - `strategy/orb.py` — `ORBStrategy.restore_long_position(symbol, entry_price, entry_ts)` + `mark_session_closed(symbol, session_date)` 2 메서드 신설. 전자는 `_SymbolState.position_state='long'` + stop/take 재계산, `or_confirmed=True`. 후자는 `position_state='closed'` + `or_confirmed=True`. `or_high`/`or_low`/`last_close` 는 복원 안 함.
+  - `execution/executor.py` — `OpenPositionInput` Protocol 신설 (storage 와 순환 import 회피용 구조적 타입). `Executor.restore_session(session_date, starting_capital_krw, *, open_positions, closed_symbols=(), entries_today, daily_realized_pnl_krw)` 신설. 기존 `start_session` 에 `self._last_reconcile = None` 리셋 추가. `execution/__init__` 에 `OpenPositionInput` 재노출.
+  - `main.py` — `_on_session_start` 가 `recorder.load_open_positions(today)` + `load_daily_pnl(today)` 를 호출해 재기동 여부 감지. `True` 이면 `executor.restore_session(...)`, `False` 이면 기존 `executor.start_session(...)`. `logger.info` 에 `restart={r}` 필드 추가.
+  - ADR-0014 신설 (`docs/adr/0014-runtime-state-recovery.md`) + 인덱스 갱신.
+  - pytest **989건 green** (신규 152건: `test_storage_db.py` TestLoadOpenPositions 등 5 그룹, `test_risk_manager.py` TestRestoreSession, `test_strategy_orb.py` TestRestoreLongPosition·TestMarkSessionClosed, `test_executor.py` TestExecutorRestoreSession·TestExecutorStartSessionResetsLastReconcile, `test_main.py` TestOnSessionStartRestartDetection). 회귀 0건. 의존성 추가 없음.
+  - **Phase 3 PASS 선언은 모의투자 연속 10영업일 무중단 운영 후.**
+
+- **Phase 3 여섯 번째 산출물 — broker 체결조회 + 부분체결 정책 (ADR-0015) 코드·테스트 레벨 완료 (2026-04-22)**
   - `src/stock_agent/broker/kis_client.py` 확장 — `PendingOrder.qty_filled: int` 필드 추가. `_to_pending_order` 가 PyKis 정식 필드(`executed_quantity`/`pending_quantity`) 우선 매핑 → `qty_remaining` fallback. `KisClient.cancel_order(order_number: str) -> None` 신설 (멱등, `OrderRateLimiter` 경유, `_call` 에러 래핑). 모듈 세부는 [src/stock_agent/broker/CLAUDE.md](./src/stock_agent/broker/CLAUDE.md) 참조.
   - `src/stock_agent/execution/executor.py` 확장 — `OrderSubmitter` Protocol 에 `cancel_order(order_number: str) -> None` 추가. `LiveOrderSubmitter.cancel_order` (KisClient 위임) + `DryRunOrderSubmitter.cancel_order` (info 로그 + no-op). 내부 `_FillOutcome` DTO 신설 (`filled_qty: int`, `status: Literal["full","partial","none"]`). `_wait_fill` → `_resolve_fill(ticket) -> _FillOutcome` 교체 — 타임아웃 시 `cancel_order` 호출 + 부분/0 체결 수습. `_handle_entry`: partial → `filled_qty` 만 기록·warning 로그, zero → skip·info 로그. `_handle_exit`: `status != "full"` → `ExecutorError` 승격 (운영자 개입 유도). 모듈 세부는 [src/stock_agent/execution/CLAUDE.md](./src/stock_agent/execution/CLAUDE.md) 참조.
-  - pytest **938건 green** (`tests/test_kis_client.py` + `tests/test_executor.py` 확장, 기존 대비 +158). 회귀 0건. 의존성 추가 없음.
+  - pytest **963건 green** (`tests/test_kis_client.py` + `tests/test_executor.py` 확장, 기존 대비 +183). 회귀 0건. 의존성 추가 없음.
   - Phase 3 코드 산출물 전부 완료 (broker 체결조회까지). **Phase 3 PASS 선언은 모의투자 연속 10영업일 무중단 운영 후.**
 
 - **다음 작업**
   - **Phase 2 잔여 (후속 PR)**: KIS 과거 분봉 API 어댑터(별도 PR) · 2~3년 실데이터 수집(운영자 외부 작업, 리포지토리 미포함) · `uv run python scripts/backtest.py --csv-dir ... --from 2023-01-01 --to 2025-12-31` 실행 후 낙폭 절대값 15% 미만 확인 (MDD > -15%). PASS 라벨이 출력돼도 즉시 실전 전환 아님 — Phase 3 모의투자 2주 무사고 운영이 전제.
   - **Phase 3 착수 전 필수 — 통과 완료 (2026-04-21)**: 운영자 `.env` 실전 키 3종(`KIS_LIVE_APP_KEY`, `KIS_LIVE_APP_SECRET`, `KIS_LIVE_ACCOUNT_NO`) 기입 + KIS Developers 포털 IP 화이트리스트 등록 + `uv run python scripts/healthcheck.py` 4종(삼성전자 현재가 포함) 통과 확인 (**평일 장중 09:00~15:30 KST 실행 필수** — 4번 `check_realtime_price`는 장외 실행 시 2초 타임아웃 후 실패 가능; 나머지 3종은 시간대 무관). **2026-04-21 평일 장중 4종 그린, WebSocket 체결 수신 OK.**
-  - **Phase 3 후속 PR**: `execution/executor.py` 완료 (2026-04-21) · `main.py` 완료 (2026-04-21) · `monitor/notifier.py` 완료 (2026-04-21) · I1/I2 후속 정리 완료 (2026-04-22) · `storage/db.py` 완료 (2026-04-22) · broker 체결조회 + 부분체결 정책 완료 (2026-04-22, ADR-0014). Phase 3 코드 산출물 전부 완료 — 이후 **모의투자 연속 10영업일 무중단 운영** 대기.
+  - **Phase 3 후속 PR**: `execution/executor.py` 완료 (2026-04-21) · `main.py` 완료 (2026-04-21) · `monitor/notifier.py` 완료 (2026-04-21) · I1/I2 후속 정리 완료 (2026-04-22) · `storage/db.py` 완료 (2026-04-22) · 세션 재기동 복원 경로 완료 (2026-04-22, Issue #33) · broker 체결조회 + 부분체결 정책 완료 (2026-04-22, ADR-0015). Phase 3 코드 산출물 전부 완료 — 이후 **모의투자 연속 10영업일 무중단 운영** 대기.
 
 ## 참고
 

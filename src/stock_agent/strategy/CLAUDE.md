@@ -71,6 +71,44 @@ stock-agent 의 전략 경계 모듈. `Strategy` Protocol + `ORBStrategy` 구현
     - 가격 선택: `state.last_close` 우선, 없으면 `state.entry_price` 로 폴백 + `logger.warning` (데이터 파이프라인 이상 신호 — 분봉이 한 번도 업데이트되지 않은 채 force_close 시각을 맞았다는 뜻). 둘 다 `None` 이면 `StrategyError` (long 상태에서 도달 불가능한 상태 머신 무결성 오류 — `_enter_long` 호출 누락 가능성).
   - **1일 1심볼 재진입 금지**: `closed` 상태에서 돌파가 반복돼도 `logger.debug` 기록 후 빈 리스트 반환.
 
+#### 재기동 복원 (Issue #33)
+
+```python
+def restore_long_position(
+    self,
+    symbol: str,
+    entry_price: Decimal,
+    entry_ts: datetime,   # KST aware
+) -> None
+
+def mark_session_closed(
+    self,
+    symbol: str,
+    session_date: date,
+) -> None
+```
+
+`restore_long_position` — 세션 중간 재기동 시 DB 에서 읽어 온 포지션을 전략 상태에 반영한다. 부작용:
+
+- `_SymbolState.position_state = "long"` + `entry_price` 기록.
+- 현재 `StrategyConfig` 기준으로 `stop_price` / `take_price` 재계산.
+- `or_confirmed = True` 로 설정해 OR 구간이 확정된 것으로 표시.
+- `or_high` / `or_low` / `last_close` 는 복원하지 않는다 — DB 에 저장되지 않으며 재기동 후 첫 분봉 수신 시 자연스럽게 채워진다.
+
+`mark_session_closed` — 이미 청산 완료된 심볼(당일 매도 체결 기록이 있는 심볼)의 상태를 `"closed"` 로 전이한다. 부작용:
+
+- `_SymbolState.position_state = "closed"` + `or_confirmed = True`.
+- 이 상태에서 추가 돌파가 발생해도 `"1일 1심볼 재진입 금지"` 규칙에 따라 스킵된다.
+
+두 메서드 모두 `symbol` 6자리 숫자 정규식 가드를 통과한다. naive `entry_ts` 는 `RuntimeError`.
+
+운영 가시성 로그:
+
+| 경로 | 레벨 |
+|---|---|
+| `restore_long_position` 호출 | `warning` |
+| `mark_session_closed` 호출 | `warning` |
+
 - **입력 검증 (사전 가드, `RuntimeError` 전파)**
   - `symbol` 6자리 숫자 정규식 (`^\d{6}$`).
   - `bar.bar_time.tzinfo is None` → 거부 (aware datetime 강제).
