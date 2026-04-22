@@ -1020,9 +1020,8 @@ class TestResolveFill:
         assert report is not None, "타임아웃 후에도 StepReport 를 반환해야 한다"
 
         # cancel_order 가 제출된 order_number 로 정확히 1회 호출되어야 한다
-        assert (
-            len(submitter.cancel_calls) == 1
-        ), f"타임아웃 시 cancel_order 가 1회 호출되어야 한다 (got {submitter.cancel_calls})"
+        msg = f"타임아웃 시 cancel_order 가 1회 호출되어야 한다 (got {submitter.cancel_calls})"
+        assert len(submitter.cancel_calls) == 1, msg
         assert submitter.cancel_calls[0] == submitter._last_order_number
 
 
@@ -3219,9 +3218,8 @@ class TestExecutorPartialFillEntry:
         )
         exc.step(_kst(9, 32))
 
-        assert (
-            len(submitter.cancel_calls) == 1
-        ), f"cancel_order 가 정확히 1회 호출되어야 한다 (got {submitter.cancel_calls})"
+        msg = f"cancel_order 가 정확히 1회 호출되어야 한다 (got {submitter.cancel_calls})"
+        assert len(submitter.cancel_calls) == 1, msg
         # 취소된 번호가 실제 제출한 주문번호와 일치해야 한다
         assert submitter.cancel_calls[0] == submitter._last_order_number
 
@@ -3534,9 +3532,8 @@ class TestExecutorPartialFillExit:
             exc.step(_kst(9, 36))
 
         # ExecutorError raise 전에 cancel_order 가 호출되어야 한다
-        assert (
-            len(submitter.cancel_calls) >= 1
-        ), "청산 부분체결 시 cancel_order 가 raise 전에 호출되어야 한다"
+        msg = "청산 부분체결 시 cancel_order 가 raise 전에 호출되어야 한다"
+        assert len(submitter.cancel_calls) >= 1, msg
 
     def test_청산_부분체결_record_exit_미호출(
         self,
@@ -3964,9 +3961,8 @@ class TestHandleExitHaltOnPartialFill:
         with contextlib.suppress(ExecutorError, RuntimeError):
             exc.step(_kst(9, 37))
 
-        assert (
-            len(submitter.buy_calls) == buy_calls_before
-        ), "halt 상태에서는 submit_buy 가 호출되면 안 된다"
+        msg = "halt 상태에서는 submit_buy 가 호출되면 안 된다"
+        assert len(submitter.buy_calls) == buy_calls_before, msg
 
 
 # ---------------------------------------------------------------------------
@@ -4167,9 +4163,8 @@ class TestResolveFillCancelFailure:
         finally:
             logger.remove(sink_id)
 
-        assert any(
-            "cancel_failed" in m for m in critical_messages
-        ), f"CRITICAL 'cancel_failed' 로그가 없음. got={critical_messages}"
+        msg = f"CRITICAL 'cancel_failed' 로그가 없음. got={critical_messages}"
+        assert any("cancel_failed" in m for m in critical_messages), msg
 
     def test_cancel_백오프_한계_초과시_filled_qty_가_EntryEvent에_기록됨(
         self,
@@ -4191,9 +4186,8 @@ class TestResolveFillCancelFailure:
 
         # cancel 실패 후 filled_qty=15 이 EntryEvent 에 기록되어야 한다
         assert len(report.entry_events) == 1, "부분체결 + cancel 실패에도 EntryEvent 가 있어야 한다"
-        assert (
-            report.entry_events[0].qty == 15
-        ), f"EntryEvent.qty 는 filled_qty=15 이어야 한다 (got {report.entry_events[0].qty})"
+        msg = f"EntryEvent.qty 는 filled_qty=15 이어야 한다 (got {report.entry_events[0].qty})"
+        assert report.entry_events[0].qty == 15, msg
 
     def test_cancel_백오프_한계_초과시_RiskManager_active_positions에_filled_qty_반영(
         self,
@@ -4297,9 +4291,8 @@ class TestPartialFillReconcileIntegration:
 
         report = exc.reconcile()
 
-        assert (
-            report.mismatch_symbols == ()
-        ), f"broker=risk=15 이면 mismatch 없어야 한다 (got {report.mismatch_symbols})"
+        msg = f"broker=risk=15 이면 mismatch 없어야 한다 (got {report.mismatch_symbols})"
+        assert report.mismatch_symbols == (), msg
 
     def test_부분체결_후_halt_유지되지_않음(
         self,
