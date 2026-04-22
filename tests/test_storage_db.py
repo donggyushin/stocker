@@ -1793,7 +1793,7 @@ class TestLoadDailyPnlRowIsolation:
         *,
         real_rows: list[tuple[str, str, int | None]],
         injected_rows: list[tuple[str, str, object]],
-    ) -> "SqliteTradingRecorder":
+    ) -> SqliteTradingRecorder:
         """실제 DB 대신 fetchall() 이 지정된 rows 를 반환하도록 conn 을 wrapping.
 
         real_rows: 정상 행 (side, symbol, net_pnl_krw)
