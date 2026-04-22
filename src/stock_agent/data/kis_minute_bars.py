@@ -358,13 +358,23 @@ class KisMinuteBarLoader:
             )
             for b in bars
         ]
+        # H4: 명시적 트랜잭션으로 감싸 "부분 실패 + _date_cached 오인" 방지.
+        # autocommit 모드라도 executemany 중간에 실패하면 먼저 삽입된 row 가
+        # 커밋되어 `_date_cached` 가 True 를 반환 → 불완전 날짜 재사용 위험.
+        # `_init_db` 의 스키마 초기화와 동일 기조 (`BEGIN IMMEDIATE`).
         try:
+            self._conn.execute("BEGIN IMMEDIATE")
             self._conn.executemany(
                 "INSERT OR REPLACE INTO minute_bars "
                 "(symbol, bar_time, open, high, low, close, volume) VALUES (?,?,?,?,?,?,?)",
                 rows,
             )
+            self._conn.execute("COMMIT")
         except sqlite3.Error as exc:
+            try:
+                self._conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass  # ROLLBACK 실패는 원 예외를 가리지 않도록 무시.
             raise KisMinuteBarLoadError(
                 f"SQLite 저장 실패: symbol={bars[0].symbol} rows={len(rows)}"
             ) from exc
@@ -411,10 +421,18 @@ class KisMinuteBarLoader:
             if len(rows) < _PAGE_SIZE:
                 break
 
-            times_hhmmss = [_bar_time_to_hhmmss(b.bar_time) for b in page_bars]
-            if not times_hhmmss:
+            # H2: 커서 갱신은 **raw rows** 의 `stck_cntg_hour` 기준. page_bars
+            # (seen dedupe 통과분) 의 min 을 쓰면 KIS 가 커서 경계에서 중복 bar 를
+            # 되돌려줄 때 page_bars 는 비어있지만 rows 에는 신규 앞쪽 bar 가 섞여
+            # 진행해야 할 상황에서 break 로 빠져 누락이 발생한다.
+            raw_times = [
+                str(row.get("stck_cntg_hour", ""))
+                for row in rows
+                if len(str(row.get("stck_cntg_hour", ""))) == 6
+            ]
+            if not raw_times:
                 break
-            min_time = min(times_hhmmss)
+            min_time = min(raw_times)
             if min_time <= _SESSION_OPEN_HHMMSS:
                 break
             cursor = _decrement_hhmmss_by_one_minute(min_time)

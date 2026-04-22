@@ -1536,3 +1536,187 @@ class TestInvalidRowSkipped:
         assert len(bars) == 1
         assert bars[0].bar_time.minute == 32
         loader.close()
+
+
+# ===========================================================================
+# TestResponseNormalization — KisDynamicDict __data__ 경로 정규화 (갭 C2)
+# ===========================================================================
+
+
+class _FakeKisDynamicDict:
+    """python-kis KisDynamicDict 를 흉내내는 stub — `__data__` 에 raw dict 보관."""
+
+    def __init__(self, data: dict) -> None:
+        self.__data__ = data
+
+
+class TestResponseNormalization:
+    def test___data___속성_가진_응답_정규화_OK(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+    ) -> None:
+        """`__data__` 속성에 raw dict 를 담은 stub → 정상 파싱, MinuteBar yield."""
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        row = _make_output2_row(_YESTERDAY, 9, 31)
+        raw_dict = _make_api_response([row])
+        # KisDynamicDict 스타일: __data__ 에 raw dict 보관, dict 서브클래스 아님
+        fake_kis.fetch.return_value = _FakeKisDynamicDict(raw_dict)
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+        )
+        bars = list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+
+        assert len(bars) == 1
+        assert bars[0].bar_time.minute == 31
+        loader.close()
+
+    def test_dict_아니고___data___도_없으면_KisMinuteBarLoadError(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+    ) -> None:
+        """`fetch` 가 dict 도 `__data__` 도 없는 완전히 관련 없는 객체 반환 → `KisMinuteBarLoadError`."""
+        KisMinuteBarLoader, KisMinuteBarLoadError = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        # dict 도 아니고 __data__ 도 없는 객체
+        fake_kis.fetch.return_value = object()
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+        )
+        with pytest.raises(KisMinuteBarLoadError):
+            list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+
+# ===========================================================================
+# TestMultiSymbolPartialCache — 일부 심볼만 캐시 hit (갭 2)
+# ===========================================================================
+
+
+class TestMultiSymbolPartialCache:
+    def test_일부_심볼_캐시_hit_나머지_API_호출_정렬_안정성(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+    ) -> None:
+        """005930 은 DB 캐시 hit, 000660 은 miss → fetch 1회(000660만), 결과 (bar_time, symbol) 정렬."""
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        db_path = tmp_path / "test.db"
+
+        # 005930 의 _YESTERDAY bar 를 DB 에 미리 삽입
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS minute_bars (
+                symbol TEXT,
+                bar_time TEXT,
+                open TEXT,
+                high TEXT,
+                low TEXT,
+                close TEXT,
+                volume INTEGER,
+                PRIMARY KEY (symbol, bar_time)
+            );
+            CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
+            INSERT OR IGNORE INTO schema_version VALUES (1);
+        """)
+        bar_time_str = f"{_YESTERDAY.isoformat()}T09:31:00+09:00"
+        conn.execute(
+            "INSERT OR REPLACE INTO minute_bars VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (_SYMBOL, bar_time_str, "71000", "71500", "70800", "71200", 1234),
+        )
+        conn.commit()
+        conn.close()
+
+        # 000660 은 fetch 로 얻는 응답
+        row_000660 = _make_output2_row(_YESTERDAY, 9, 31)
+
+        def _side_effect(*args, **kwargs):
+            params = kwargs.get("params", {})
+            sym = params.get("FID_INPUT_ISCD", "")
+            if sym == _SYMBOL2:
+                return _make_api_response([row_000660])
+            return _make_api_response([])
+
+        fake_kis.fetch.side_effect = _side_effect
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=db_path,
+            sleep=mock_sleep,
+        )
+        bars = list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL, _SYMBOL2)))
+
+        # 005930 은 캐시 hit → 000660 만 API 호출 (1회)
+        assert fake_kis.fetch.call_count == 1
+        called_sym = fake_kis.fetch.call_args.kwargs.get("params", {}).get("FID_INPUT_ISCD")
+        assert called_sym == _SYMBOL2
+
+        # 결과: 2건 (각 심볼 1건씩), (bar_time, symbol) 정렬
+        assert len(bars) == 2
+        keys = [(b.bar_time, b.symbol) for b in bars]
+        assert keys == sorted(keys), "결과가 (bar_time, symbol) 단조증가여야 한다"
+        # 같은 bar_time 이면 lexical 순: "000660" < "005930"
+        assert bars[0].symbol == _SYMBOL2
+        assert bars[1].symbol == _SYMBOL
+        loader.close()
+
+
+# ===========================================================================
+# TestStreamAfterClose — close 후 stream 호출 RuntimeError (갭 3)
+# ===========================================================================
+
+
+class TestStreamAfterClose:
+    def test_close_후_stream_RuntimeError(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+    ) -> None:
+        """`close()` 호출 후 `stream()` → `RuntimeError` (공개 API Raises 계약)."""
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+        )
+        loader.close()
+
+        with pytest.raises(RuntimeError, match="close"):
+            list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
