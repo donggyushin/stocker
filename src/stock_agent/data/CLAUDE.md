@@ -64,7 +64,10 @@ YAML 로더, 실시간 분봉 소스를 한 자리에 모아 상위 레이어
   - **SQLite 캐시**: 별도 파일 `data/minute_bars.db` (기본 경로). `data/stock_agent.db` 일봉 캐시·`data/trading.db` 원장과 독립된 생명주기. 스키마 v1: `minute_bars(symbol, bar_time, open, high, low, close, volume, PRIMARY KEY(symbol, bar_time))` + `schema_version`. 가격은 `TEXT`로 저장해 `Decimal` 정밀도 보존.
   - **bar_time 계약**: **KST aware ISO8601**, `second=0, microsecond=0` 강제 (분 경계). `_parse_row` 가 KST 부여 + 초·마이크로초 절삭 수행. `_date_cached` 의 `BETWEEN '...T00:00:00+09:00' AND '...T23:59:59+09:00'` 쿼리가 이 계약에 의존 — 외부 도구가 같은 테이블에 다른 tz 로 쓰면 캐시 판정이 어긋남 (M1 명문화, Issue #48).
   - **오늘 자 읽기·쓰기 모두 skip**: `_collect_symbol_bars` 가 `is_today` 분기를 **독립 분기**로 분리. 이전 실행에서 어떤 경로로든 오늘 자 행이 DB 에 있어도 장중 미확정 데이터가 사용되지 않도록 쓰기뿐 아니라 읽기도 스킵 (H1, Issue #48).
-  - **운영 경보**: `_fetch_day` 가 `rows` 비어있지 않은데 `page_bars` 가 빈 페이지를 만나면 `(symbol, day)` 당 최초 1 회 `logger.error` 방출. KIS 응답 스키마 변경·수신 오염 징후 포착 용 (M2, Issue #48). (2026-04-23 Issue #52) M2 경보 메시지에 첫 행 `sorted(keys)` CSV 동봉 (`keys=` 필드). 행 단위 파싱 실패는 원인 카테고리(`missing_date_or_time` / `date_mismatch` / `invalid_price` / `invalid_volume` / `malformed_bar_time`) 별로 `(symbol, day, kind)` 단위 dedupe → `logger.warning` 1회 방출. 전체 `row={!r}` repr 은 제거 (로그 용량·가격 유출 방지).
+  - **운영 경보**: `_fetch_day` 가 `rows` 비어있지 않은데 `page_bars` 가 빈 페이지를 만나면 `(symbol, day)` 당 최초 1 회 `logger.error` 방출. KIS 응답 스키마 변경·수신 오염 징후 포착 용 (M2, Issue #48). 2026-04-23 Issue #52 로 아래 3 가지로 세분화:
+    - M2 `logger.error` 메시지에 첫 행 `sorted(keys)` CSV 동봉 (`keys=` 필드) — 스키마 변경 진단 직결.
+    - 행 단위 파싱 실패는 원인 카테고리(`missing_date_or_time` / `date_mismatch` / `invalid_price` / `invalid_volume` / `malformed_bar_time`) 별로 `(symbol, day, kind)` 단위 dedupe → `logger.warning` 1회 방출. 로그 포맷 `kind=<value>` 는 운영 grep 계약.
+    - 전체 `row={!r}` repr 은 제거 (로그 용량·가격 유출 방지) — 진단이 필요하면 `scripts/debug_kis_minute.py` 로 분리된 덤프 경로 사용.
   - **단일 스레드 전용 (ADR-0008)**: `sqlite3.Connection` 기본값 `check_same_thread=True` 유지. `_lock` 은 `_ensure_kis` 지연 초기화만 보호 — 다른 스레드에서 DB 호출 경로 진입 시 `sqlite3.ProgrammingError` 폭파. 백테스트 엔진 병렬화 요구 발생 시 별도 ADR 로 재평가 (H3 명문화, Issue #48).
   - **KIS 서버 보관 한도**: **최대 1년 분봉**. 2~3년 백테스트 요구는 본 어댑터로 해결 불가. Issue #5 후속으로 별도 데이터 소스(외부 유료 데이터, 직접 수집 등) 분리 평가 필요. Phase 2 PASS 검증은 CSV 어댑터(`minute_csv.py`)로 수행한다.
   - **`BarLoader` Protocol 준수**: `backtest/loader.py`의 `BarLoader` Protocol — `stream(start, end, symbols)` 계약 충족. 동일 인자 재호출 시 매번 새 Iterable 반환.
