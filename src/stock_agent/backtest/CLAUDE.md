@@ -11,7 +11,9 @@ stock-agent 의 시뮬레이션 경계 모듈. `ORBStrategy` + `RiskManager` 를
 `BacktestEngine`, `BacktestConfig`, `BacktestResult`, `BacktestMetrics`,
 `TradeRecord`, `DailyEquity`, `BarLoader`, `InMemoryBarLoader`, `RejectReason`,
 `ParameterAxis`, `SensitivityGrid`, `SensitivityRow`, `run_sensitivity`,
-`render_markdown_table`, `write_csv`, `default_grid`
+`render_markdown_table`, `write_csv`, `default_grid`,
+`WalkForwardWindow`, `WalkForwardResult`, `WalkForwardMetrics`,
+`generate_windows`, `run_walk_forward`
 
 `RejectReason` 은 `stock_agent.risk` 의 Literal 을 재노출. `BacktestResult.rejected_counts` 의 키 타입이라 같은 패키지에서 접근 가능해야 소비자가 `risk` 패키지를 직접 import 하지 않는다.
 
@@ -198,11 +200,29 @@ exit code 규약: `0` 정상 / `2` 입력·설정 오류 (`MinuteCsvLoadError`, 
 
   plan.md PASS 기준 충족은 2~3년 실데이터 CSV 확보 이후 운영자가 수동 확인한다. 관련 테스트: `tests/test_backtest_cli.py` 65건.
 
+### `walk_forward.py` — walk-forward validation 스켈레톤 (Issue #67)
+
+Phase 5 본 구현 대비 **스켈레톤만** 선행 도입 (2026-04-23). DTO + Protocol 사전 고정으로 후속 PR 이 API 변경 0 으로 구현을 채워넣는다.
+
+공개 심볼 5종 (전부 `backtest/__init__.py` 재노출):
+
+| 심볼 | 역할 |
+|---|---|
+| `WalkForwardWindow(train_from, train_to, test_from, test_to)` | frozen dataclass. `__post_init__` 가드 3종: `train_from <= train_to`·`test_from <= test_to`·`train_to < test_from` (중첩 금지). 위반 시 `RuntimeError`. |
+| `WalkForwardMetrics(train_avg_return_pct, test_avg_return_pct, degradation_pct, pass_threshold, is_pass)` | frozen dataclass. `pass_threshold < 0` → `RuntimeError`. |
+| `WalkForwardResult(windows, per_window_metrics, aggregate_metrics)` | frozen dataclass. 빈 windows / 길이 불일치 → `RuntimeError`. `per_window_metrics` 는 test 구간 `BacktestMetrics` 튜플. |
+| `generate_windows(total_from, total_to, *, train_months=6, test_months=2, step_months=1)` | **스텁** — `NotImplementedError("Phase 5 구현 대기")`. |
+| `run_walk_forward(loader, config, windows)` | **스텁** — `NotImplementedError("Phase 5 구현 대기")`. |
+
+`pass_threshold` 기본값은 호출자 주입 (현재 스텁은 값 하드코딩 없음). Phase 5 본 구현 PR 에서 `docs/adr/NNNN-walk-forward-pass-threshold.md` 로 결정 기록 예정 — Issue #67 제안: `degradation_pct <= 0.3` (train→test 악화 30% 이하 PASS).
+
+관련 테스트: `tests/test_walk_forward.py` 18건 (DTO 가드 계약 + 스텁 `NotImplementedError` 계약).
+
 ## 범위 제외 (의도적 defer — 후속 PR)
 
 - **실데이터 어댑터**: KIS 과거 분봉 API 통합. `BarLoader` Protocol + `MinuteCsvBarLoader` + `scripts/backtest.py` CLI 는 완료, KIS API 는 30일 롤링 제약으로 별도 PR.
 - **HTML/노트북 리포트**: `BacktestResult` → 시각화 (Streamlit/Jupyter — Phase 5 후보).
-- **Walk-forward 검증**: 과적합 방어 (Phase 5). 민감도 그리드는 sanity check 이지 walk-forward 를 대체하지 않는다.
+- **Walk-forward 검증 본 구현**: 과적합 방어 (Phase 5). 스켈레톤(`walk_forward.py`) 만 선행 도입 (Issue #67) — `generate_windows`·`run_walk_forward` 는 `NotImplementedError`. 민감도 그리드는 sanity check 이지 walk-forward 를 대체하지 않는다.
 - **호가 단위 라운딩**: 현재 `Decimal` 원시 그대로 — KRX 호가 단위 반영은 Phase 3 executor 책임 영역과 합쳐 재설계.
 - **부분 체결 시뮬레이션**: 현재 시그널 1건 = 전량 체결. 부분 체결은 Phase 5.
 - **공매도(short) 포지션**: 한국 공매도 제한으로 long-only — Phase 5 까지 보류.
