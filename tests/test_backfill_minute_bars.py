@@ -487,6 +487,30 @@ class TestRunPipeline:
         assert "throttle_s" in kwargs
         assert kwargs["throttle_s"] == pytest.approx(1.5)
 
+    def test_기본값_경로_throttle_s_0_2_생성자_전달(self, monkeypatch) -> None:
+        """--from/--to 만 지정한 기본값 경로에서 KisMinuteBarLoader 생성자에 throttle_s=0.2 가 전달된다.
+
+        _make_args 는 throttle_s default=0.0 으로 CLI default(0.2) 와 달라 직접 사용 불가.
+        backfill_cli._parse_args 로 argparse default 를 통과한 Namespace 를 만들어 검증.
+        """
+        _require_module()
+        fake_loader = _make_fake_loader(bars_per_symbol=[])
+        loader_cls = MagicMock(return_value=fake_loader)
+        monkeypatch.setattr(backfill_cli, "KisMinuteBarLoader", loader_cls)
+        monkeypatch.setattr(
+            backfill_cli,
+            "get_settings",
+            lambda: _make_fake_settings(has_live_keys=True),
+        )
+
+        # argparse default 를 통과한 Namespace — throttle_s 는 CLI default(0.2) 가 채워짐
+        args = _parse_args(["--from=2025-04-01", "--to=2026-04-01", "--symbols=005930"])
+        _run_pipeline(args)
+
+        loader_cls.assert_called_once()
+        assert "throttle_s" in loader_cls.call_args.kwargs
+        assert loader_cls.call_args.kwargs["throttle_s"] == pytest.approx(0.2)
+
     def test_cache_db_path_None이면_생성자에_None_또는_미전달(self, monkeypatch):
         """cache_db_path=None 이면 KisMinuteBarLoader 생성자에 None 이거나 인자 자체 누락."""
         fake_loader = _make_fake_loader(bars_per_symbol=[])

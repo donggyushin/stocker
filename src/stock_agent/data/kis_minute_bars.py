@@ -54,6 +54,12 @@
 안전 가드
 - 실전 키 PyKis 인스턴스 생성 직후 `install_order_block_guard` 설치 —
   `/trading/order*` 경로 도메인 무관 차단 (`realtime.py` 와 동일).
+
+로그 포맷 계약
+- 행·페이지 단위 파싱 경보 메시지의 `kind=<value>` 토큰은 **운영 grep 계약**.
+  카테고리 이름(`_ParseFailureKind` Literal 5종) 은 고정이며, 변경 시 운영
+  grep·대시보드·알림 규칙이 함께 깨진다 — `_ParseSkipError.kind` ↔
+  warning 메시지 ↔ `parse_skip_counts` 요약 warning 이 동일 문자열을 공유.
 """
 
 from __future__ import annotations
@@ -115,8 +121,8 @@ class _ParseSkipError(Exception):
     """`_parse_row` 가 한 행을 skip 할 때 내부 신호로 사용하는 예외.
 
     Issue #52 회귀 — 원인 카테고리(`kind`) 와 row key 목록(`keys`) 을 담아
-    `_fetch_day` 가 `(symbol, day, kind)` 단위 dedupe 후 1회만 warning 을 방출
-    하도록 한다. 전체 row repr 은 포함하지 않아 로그 용량·가격 유출을 방지한다.
+    날짜 단위 페치 루프가 `(symbol, day, kind)` 단위 dedupe 후 1회만 warning 을
+    방출하도록 한다. 전체 row repr 은 포함하지 않아 로그 용량·가격 유출을 방지한다.
     """
 
     __slots__ = ("kind", "keys")
@@ -435,7 +441,7 @@ class KisMinuteBarLoader:
         동봉해 스키마 변경 진단에 직결 (Issue #52).
 
         행 단위 parse skip 경보는 `(kind)` 단위 로컬 dedupe — 같은 날짜·같은 원인
-        은 로그 1회만. `_PAGE_SIZE` rows × N 일 × M 종목 로그 폭주 방지 (Issue #52).
+        은 로그 1회만. 최대 `_PAGE_SIZE` rows × N 일 × M 종목 로그 폭주 방지 (Issue #52).
 
         날짜 단위 요약 (Issue #52 C1): return 직전에 `parse_skip_counts` 를
         `logger.warning` 1줄로 방출해 "1건 실패 vs 119건 실패" 구별 불가 문제를

@@ -1523,6 +1523,21 @@ class TestMalformedPageWarning:
 # ===========================================================================
 
 
+def _build_page(start_hhmm: tuple[int, int], count: int) -> list[dict]:
+    """(start_h, start_m) 부터 1분씩 역방향으로 count 개 행을 만든다.
+
+    모든 시각이 유니크함을 보장 (seen dedupe 로 page_bars 가 비어버리는 문제 방지).
+    """
+    sh, sm = start_hhmm
+    total = sh * 60 + sm
+    rows = []
+    for i in range(count):
+        t = total - i
+        h, m = divmod(t, 60)
+        rows.append(_make_output2_row(_YESTERDAY, h, m))
+    return rows
+
+
 class TestThrottleBetweenPages:
     def test_throttle_0_5_페이지_3개_sleep_2회(
         self,
@@ -1533,28 +1548,21 @@ class TestThrottleBetweenPages:
         mock_sleep,
         tmp_path: Path,
     ) -> None:
-        """throttle_s=0.5, 페이지 3개 → sleep(0.5) 2회 호출 (마지막 페이지 뒤는 제외)."""
+        """throttle_s=0.5, 페이지 3개 → sleep(0.5) 2회 호출 (마지막 페이지 뒤는 제외).
+
+        픽스처 견고화 (Issue #58):
+        - page1 = 15:29 → 13:30 (120분, 120건) — 시각 전부 유니크
+        - page2 = 13:29 → 11:30 (120분, 120건) — 시각 전부 유니크
+        - page3 = 11:29 → 10:40 (50분, 50건)
+        seen dedupe 에 걸리는 행이 0건이어야 page_bars 가 항상 페이지 크기 그대로 유지됨.
+        """
         KisMinuteBarLoader, _ = _import_loader()
         settings = _make_settings_with_live_keys(monkeypatch)
 
-        # 페이지 1, 2: 각 120건 (페이지네이션 지속)
-        # 페이지 3: 50건 (페이지네이션 종료)
-        page1 = [_make_output2_row(_YESTERDAY, 15, 30 - (i % 30)) for i in range(120)]
-        page2 = [_make_output2_row(_YESTERDAY, 13, 30 - (i % 30)) for i in range(120)]
-        page3 = [_make_output2_row(_YESTERDAY, 9, i + 1) for i in range(50)]
-
-        # 정확한 행 수를 보장하기 위해 단순한 시각으로 재생성
-        page1 = []
-        for i in range(120):
-            h = 15 - i // 60
-            m = 59 - (i % 60)
-            page1.append(_make_output2_row(_YESTERDAY, h, m))
-
-        page2 = []
-        for i in range(120):
-            h = 13 - i // 60
-            m = 59 - (i % 60)
-            page2.append(_make_output2_row(_YESTERDAY, max(9, h), m % 60))
+        # 각 페이지의 모든 시각이 유니크 — seen dedupe 충돌 없음
+        page1 = _build_page((15, 29), 120)  # 15:29 → 13:30
+        page2 = _build_page((13, 29), 120)  # 13:29 → 11:30
+        page3 = _build_page((11, 29), 50)  # 11:29 → 10:40
 
         fake_kis.fetch.side_effect = [
             _make_api_response(page1),
@@ -2190,7 +2198,67 @@ class TestParseRowSkipCategories:
         assert len(warn_msgs) == 1, f"dedupe 실패: {len(warn_msgs)}회 방출됨"
 
     # -----------------------------------------------------------------------
-    # 6. 서로 다른 kind 혼재 — 각각 1회씩
+    # 6. keys= CSV 전체 정밀 매칭 회귀 (Issue #58)
+    # -----------------------------------------------------------------------
+
+    def test_keys_csv_전체_정밀_매칭_7개_키_알파벳_순서(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_warnings,
+    ) -> None:
+        """invalid_price 트리거 → warning 메시지의 keys= CSV 가 정확히 7개 키 알파벳 순서인지 검증.
+
+        회귀 목적: `_fetch_day` 의 `ks=",".join(skip.keys)` 포맷이 바뀌거나
+        `_ParseSkipError.keys` 수집 로직이 빠진 키를 놓칠 때 즉시 실패하도록 고정.
+
+        기대 CSV (알파벳 오름차순, 쉼표·공백 없음):
+            cntg_vol,stck_bsop_date,stck_cntg_hour,stck_hgpr,stck_lwpr,stck_oprc,stck_prpr
+        """
+        import re
+
+        # stck_oprc='' 1행 → invalid_price 트리거
+        bad_rows = [_make_output2_row(_YESTERDAY, 9, 31, oprc="")]
+        fake_kis.fetch.return_value = _make_api_response(bad_rows)
+
+        loader = self._make_loader(monkeypatch, pykis_factory, mock_sleep, tmp_path)
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        warn_msgs = [
+            m["message"]
+            for m in _loguru_warnings
+            if m["level"] == "WARNING" and "kind=invalid_price" in m["message"]
+        ]
+        assert len(warn_msgs) == 1, f"warning 1건 기대: {len(warn_msgs)}건"
+        msg = warn_msgs[0]
+
+        # "keys=" 뒤의 CSV 문자열 추출
+        m = re.search(r"keys=([^\s]+)", msg)
+        assert m is not None, f"keys= 토큰을 메시지에서 추출하지 못함: {msg!r}"
+        keys_csv = m.group(1)
+
+        # 쉼표로 분리해 정확히 7개 키 확인
+        actual_keys = keys_csv.split(",")
+        expected_keys = [
+            "cntg_vol",
+            "stck_bsop_date",
+            "stck_cntg_hour",
+            "stck_hgpr",
+            "stck_lwpr",
+            "stck_oprc",
+            "stck_prpr",
+        ]
+        assert (
+            actual_keys == expected_keys
+        ), f"keys= CSV 불일치.\n기대: {expected_keys}\n실제: {actual_keys}"
+
+    # -----------------------------------------------------------------------
+    # 7. 서로 다른 kind 혼재 — 각각 1회씩
     # -----------------------------------------------------------------------
 
     def test_서로_다른_kind_혼재_각각_1회씩(

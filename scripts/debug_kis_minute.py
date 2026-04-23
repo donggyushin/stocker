@@ -21,8 +21,9 @@ uv run python scripts/debug_kis_minute.py --symbol 005930 --date 2026-04-17
 - **기본은 key 목록만** (가격·거래량 값 유출 차단). `--include-values` opt-in
   플래그를 지정하면 첫 3행 raw dict 값까지 포함 — 민감 가격 정보가 디스크·stdout
   에 남을 수 있으므로 진단 긴급 시에만 사용.
-- 민감 정보(계좌번호·토큰 등) 가 섞여 오더라도 `output1` 는 설계상 수집하지
-  않는다 — `response.root_keys` 로 존재 여부만 확인 가능.
+- `output1` 은 설계상 항상 미수집 — 민감 정보(계좌번호·토큰 등) 가 섞여 올
+  가능성이 있어 조건부 분기 없이 고정 배제한다. 존재 여부는
+  `response.root_keys` 로만 확인 가능.
 
 exit code (`scripts/backfill_minute_bars.py` 기조)
 - 0: 정상 완료.
