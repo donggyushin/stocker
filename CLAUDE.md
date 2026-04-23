@@ -186,17 +186,21 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
 4. `uv run pytest -x tests/<target>` 로 GREEN 확인.
 5. (선택) 리팩터 — `mode=refactor-invariant` 로 불변성 테스트 보강해 회귀 방지.
 
-훅 5 종 역할:
+훅 7 종 역할:
 
-| 훅 | 시점 | 차단 조건 |
-| --- | --- | --- |
-| [`tests-writer-guard.sh`](./.claude/hooks/tests-writer-guard.sh) | PreToolUse / `Write`·`Edit`·`NotebookEdit` | 메인 assistant 의 `tests/*.py` 직접 쓰기 |
-| [`src-first-requires-tests.sh`](./.claude/hooks/src-first-requires-tests.sh) | PreToolUse / `Write` | `src/stock_agent/` 신규 파일 + 대응 `tests/test_*.py` 부재 |
-| [`test-coverage-check.sh`](./.claude/hooks/test-coverage-check.sh) | Stop | `src/` 변경 O + `tests/` 변경 X (세션당 1회 리마인더) |
-| [`pyright-full-scope.sh`](./.claude/hooks/pyright-full-scope.sh) | PreToolUse / `Bash` | `git push` 직전 `uv run pyright src scripts tests` 실패. CI pyright job 과 로컬 검사 범위 일치 강제. 긴급 우회는 `STOCK_AGENT_PYRIGHT_BYPASS=1 git push ...` (24 시간 내 회귀 테스트 + 원인 제거 필수) |
-| [`ci-lint-full-scope.sh`](./.claude/hooks/ci-lint-full-scope.sh) | PreToolUse / `Bash` | `git push` 직전 CI 3 종 lint (`uv run ruff check` + `uv run ruff format --check` + `uv run black --check`, 모두 `src scripts tests` 범위) 중 하나라도 실패. CI "Lint, format, test" job 과 동일 범위 강제로 좁은 경로만 로컬 체크하거나 black 재포맷 후 ruff 재실행 누락으로 CI 에서 터지는 사고(PR #43 UP037 재발) 방지. 긴급 우회는 `STOCK_AGENT_LINT_BYPASS=1 git push ...` (24 시간 내 원인 제거 필수) |
+| 훅 | 시점 | 차단 조건 | 우회 환경변수 |
+| --- | --- | --- | --- |
+| [`tests-writer-guard.sh`](./.claude/hooks/tests-writer-guard.sh) | PreToolUse / `Write`·`Edit`·`NotebookEdit` | 메인 assistant(`agent_id` 부재) 의 `tests/*.py` 직접 쓰기 | 없음 (예외는 사용자 명시 확인) |
+| [`src-first-requires-tests.sh`](./.claude/hooks/src-first-requires-tests.sh) | PreToolUse / `Write`·`Edit`·`NotebookEdit` (실동작은 `Write` 만) | `src/stock_agent/` 신규 `.py` 생성 + 대응 `tests/test_*.py` 3 후보 전부 부재. `__init__.py`·기존 파일 overwrite 는 통과 | `STOCK_AGENT_TDD_BYPASS=1` (24시간 내 회귀 테스트 필수) |
+| [`test-coverage-check.sh`](./.claude/hooks/test-coverage-check.sh) | Stop | `src/stock_agent/**/*.py`(`__init__.py` 제외) 변경 O + `tests/**/*.py` 변경 X (세션당 1회, `/tmp/stock-agent-testcov-${SESSION_ID}` marker) | 없음 |
+| [`pyright-full-scope.sh`](./.claude/hooks/pyright-full-scope.sh) | PreToolUse / `Bash` | `git push`(—dry-run 제외) 직전 `uv run pyright src scripts tests` 실패. CI pyright job 과 로컬 검사 범위 일치 강제 | `STOCK_AGENT_PYRIGHT_BYPASS=1 git push ...` (24시간 내 회귀 테스트 + 원인 제거 필수) |
+| [`ci-lint-full-scope.sh`](./.claude/hooks/ci-lint-full-scope.sh) | PreToolUse / `Bash` | `git push`(—dry-run 제외) 직전 CI 3 종 lint (`uv run ruff check` + `uv run ruff format --check` + `uv run black --check`, 모두 `src scripts tests`) 중 하나라도 실패. CI "Lint, format, test" job 과 동일 범위 강제 (PR #43 UP037 재발 방지) | `STOCK_AGENT_LINT_BYPASS=1 git push ...` (24시간 내 원인 제거 필수) |
+| [`doc-sync-check.sh`](./.claude/hooks/doc-sync-check.sh) | Stop | 워킹 트리에 비독스 파일 변경 O + `CLAUDE.md`/`README.md`/`plan.md` 미갱신 (`.claude/*` 무시, 세션당 1회, `/tmp/stock-agent-docsync-${SESSION_ID}` marker). exit 2 로 리마인더, `*/stock-agent` suffix 한정 | 없음 |
+| [`notify-waiting.sh`](./.claude/hooks/notify-waiting.sh) | PreToolUse / `AskUserQuestion`·`ExitPlanMode` + Notification | **차단 안 함** (항상 exit 0, stdin passthrough). macOS `osascript display notification` + Glass 사운드로 운영자에게 응답 대기 알림 발송 | 없음 (off 필요 시 `.claude/settings.json` 에서 제거) |
 
 `pyright-full-scope.sh` · `ci-lint-full-scope.sh` 두 훅은 저장소 시그니처 (`.github/workflows/ci.yml` 의 대응 명령 + `pyproject.toml` 의 `[tool.ruff]` / `[tool.pyright]`) 로 프로젝트를 판정하므로 claude-squad worktree (`*/.claude-squad/worktrees/**`) 에서도 동일하게 작동한다.
+
+`doc-sync-check.sh` · `test-coverage-check.sh` 는 Stop 이벤트에서 함께 발화하며 둘 다 세션당 1회 리마인더를 출력한다 — 각각 `markdown-writer` 에이전트와 `unit-test-writer` 에이전트 호출을 유도한다. `notify-waiting.sh` 는 차단 없이 macOS 알림만 발송한다 (항상 exit 0).
 
 훅 없이도 통과하는 예외 (이 훅 스코프 밖):
 
@@ -210,7 +214,7 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
 - **긴급 핫픽스**: `STOCK_AGENT_TDD_BYPASS=1` 환경변수로 해당 세션 한정 우회. 24 시간 내 회귀 테스트 작성 필수.
 - **순수 리팩터·명명 변경**: 사용자에게 명시적으로 확인받고 우회.
 
-관련 자산: [.claude/hooks/src-first-requires-tests.sh](.claude/hooks/src-first-requires-tests.sh), [.claude/agents/unit-test-writer.md](.claude/agents/unit-test-writer.md) 의 "TDD 모드 계약" 섹션, [docs/adr/0010-tdd-order-enforcement.md](./docs/adr/0010-tdd-order-enforcement.md).
+관련 자산: [.claude/hooks/src-first-requires-tests.sh](.claude/hooks/src-first-requires-tests.sh), [.claude/hooks/doc-sync-check.sh](.claude/hooks/doc-sync-check.sh), [.claude/agents/unit-test-writer.md](.claude/agents/unit-test-writer.md) 의 "TDD 모드 계약" 섹션, [docs/adr/0010-tdd-order-enforcement.md](./docs/adr/0010-tdd-order-enforcement.md).
 
 ## 현재 상태 (2026-04-23 기준)
 
