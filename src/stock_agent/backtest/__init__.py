@@ -27,6 +27,13 @@ from stock_agent.backtest.sensitivity import (
     run_sensitivity,
     write_csv,
 )
+from stock_agent.backtest.walk_forward import (
+    WalkForwardMetrics,
+    WalkForwardResult,
+    WalkForwardWindow,
+    generate_windows,
+    run_walk_forward,
+)
 from stock_agent.risk import RejectReason
 
 __all__ = [
@@ -42,8 +49,13 @@ __all__ = [
     "SensitivityGrid",
     "SensitivityRow",
     "TradeRecord",
+    "WalkForwardMetrics",
+    "WalkForwardResult",
+    "WalkForwardWindow",
     "default_grid",
+    "generate_windows",
     "render_markdown_table",
     "run_sensitivity",
+    "run_walk_forward",
     "write_csv",
 ]

@@ -331,6 +331,7 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
   - **Phase 3 후속 PR**: `execution/executor.py` 완료 (2026-04-21) · `main.py` 완료 (2026-04-21) · `monitor/notifier.py` 완료 (2026-04-21) · I1/I2 후속 정리 완료 (2026-04-22) · `storage/db.py` 완료 (2026-04-22) · 세션 재기동 복원 경로 완료 (2026-04-22, Issue #33) · broker 체결조회 + 부분체결 정책 완료 (2026-04-22, ADR-0015). Phase 3 코드 산출물 전부 완료 — 이후 **모의투자 연속 10영업일 무중단 운영** 대기.
   - **Issue #52 close 대기**: `KisMinuteBarLoader` 파싱 실패 대응 코드·테스트 레벨 완료 (2026-04-23). 잔여: 운영자 장중 `scripts/debug_kis_minute.py` 실행 → 실 응답 키 확정 → Issue #52 댓글 첨부 후 close.
   - **Issue #63 close 대기**: `KisMinuteBarLoader` 공휴일 캘린더 가드 코드·테스트 레벨 완료 (2026-04-23, ADR-0018). `BusinessDayCalendar` Protocol + `YamlBusinessDayCalendar` 도입. `config/holidays.yaml` 신설 (KRX 2025·2026 휴장일 32일). 잔여: 운영자 백필 재실행으로 `date_mismatch` warning 0건 확인 → Issue #63 댓글 첨부 후 close.
+  - **Issue #67 완료 (2026-04-23)**: `src/stock_agent/backtest/walk_forward.py` 신설 — Phase 5 본 구현 대비 walk-forward validation 스켈레톤 선행 도입. `WalkForwardWindow`·`WalkForwardMetrics`·`WalkForwardResult` DTO + `generate_windows`·`run_walk_forward` 스텁(`NotImplementedError`). `backtest/__init__.py` 5 심볼 재노출. `tests/test_walk_forward.py` 18건. pytest **1277 passed, 4 skipped**. `pass_threshold` 기본값 결정은 Phase 5 본 구현 PR 에서 ADR 로 기록 예정.
 
 ## 참고
 
