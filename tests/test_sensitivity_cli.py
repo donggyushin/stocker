@@ -10,8 +10,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-import pytest
-
 # ---------------------------------------------------------------------------
 # scripts/sensitivity.py 로드 (scripts/ 에 __init__.py 없음 — spec_from_file_location 사용)
 # ---------------------------------------------------------------------------
@@ -45,7 +43,6 @@ from stock_agent.data import (  # noqa: E402  (로드 순서상 sensitivity_cli 
     MinuteCsvLoadError,
     UniverseLoadError,
 )
-
 
 # ---------------------------------------------------------------------------
 # main(argv) exit code
