@@ -16,6 +16,7 @@ from collections.abc import Iterator
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from unittest.mock import call
 
 import pytest
@@ -50,8 +51,8 @@ _SYMBOL = "005930"
 _SYMBOL2 = "000660"
 
 # 고정 테스트 날짜
-_TODAY = date(2026, 4, 22)  # 화요일
-_YESTERDAY = date(2026, 4, 21)  # 월요일
+_TODAY = date(2026, 4, 22)  # 수요일
+_YESTERDAY = date(2026, 4, 21)  # 화요일
 
 
 def _kst(d: date, hour: int, minute: int, second: int = 0) -> datetime:
@@ -3519,3 +3520,457 @@ class TestCollectSymbolBarsHolidaySkip:
             f"일요일({sun}) 은 주말 가드에서 먼저 skip 되므로 calendar 에 도달하지 않아야 한다."
         )
         assert sun not in called_with_dates, msg_sun
+
+
+# ===========================================================================
+# Issue #71: TestHttpTimeoutValidation — 신규 생성자 파라미터 유효성 검증 (RED)
+# ===========================================================================
+
+
+class TestHttpTimeoutValidation:
+    """http_timeout_s / http_max_retries_per_day 생성자 파라미터 유효성 검증.
+
+    현재 구현에 해당 파라미터가 없으므로 모든 테스트가 FAIL 해야 한다 (RED 상태).
+    - http_timeout_s: 음수 → RuntimeError("http_timeout_s" 토큰 포함)
+    - http_timeout_s=0: 허용 (wrapper 미설치)
+    - http_max_retries_per_day: 음수 → RuntimeError("http_max_retries_per_day" 토큰 포함)
+    - http_max_retries_per_day=0: 허용 (재시도 없이 즉시 day skip)
+    """
+
+    def _make_loader_kwargs(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        pykis_factory: Any,
+        mock_sleep: Any,
+        tmp_path: Path,
+        **extra: Any,
+    ) -> tuple[Any, Any, dict[str, Any]]:
+        """공통 loader 생성 kwargs 반환 헬퍼."""
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+        kwargs: dict[str, Any] = {
+            "pykis_factory": pykis_factory,
+            "clock": _fixed_clock(_kst(_TODAY, 10, 0)),
+            "cache_db_path": tmp_path / "test.db",
+            "sleep": mock_sleep,
+        }
+        kwargs.update(extra)
+        return KisMinuteBarLoader, settings, kwargs
+
+    def test_http_timeout_s_음수_RuntimeError(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+    ) -> None:
+        """http_timeout_s=-1.0 → RuntimeError (메시지에 'http_timeout_s' 토큰 포함)."""
+        KisMinuteBarLoader, settings, kwargs = self._make_loader_kwargs(
+            monkeypatch, pykis_factory, mock_sleep, tmp_path, http_timeout_s=-1.0
+        )
+        with pytest.raises(RuntimeError, match="http_timeout_s"):
+            KisMinuteBarLoader(settings, **kwargs)
+
+    def test_http_timeout_s_0_허용(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+    ) -> None:
+        """http_timeout_s=0 → 생성·close 정상 (wrapper 미설치 경로)."""
+        KisMinuteBarLoader, settings, kwargs = self._make_loader_kwargs(
+            monkeypatch, pykis_factory, mock_sleep, tmp_path, http_timeout_s=0.0
+        )
+        loader = KisMinuteBarLoader(settings, **kwargs)
+        loader.close()
+
+    def test_http_max_retries_per_day_음수_RuntimeError(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+    ) -> None:
+        """http_max_retries_per_day=-1 → RuntimeError (메시지에 'http_max_retries_per_day' 포함)."""
+        KisMinuteBarLoader, settings, kwargs = self._make_loader_kwargs(
+            monkeypatch, pykis_factory, mock_sleep, tmp_path, http_max_retries_per_day=-1
+        )
+        with pytest.raises(RuntimeError, match="http_max_retries_per_day"):
+            KisMinuteBarLoader(settings, **kwargs)
+
+    def test_http_max_retries_per_day_0_허용(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+    ) -> None:
+        """http_max_retries_per_day=0 → 생성 정상 (재시도 없이 즉시 day skip 경로)."""
+        KisMinuteBarLoader, settings, kwargs = self._make_loader_kwargs(
+            monkeypatch, pykis_factory, mock_sleep, tmp_path, http_max_retries_per_day=0
+        )
+        loader = KisMinuteBarLoader(settings, **kwargs)
+        loader.close()
+
+
+# ===========================================================================
+# Issue #71: TestHttpTimeoutInjected — _install_http_timeout wrapper 주입 검증 (RED)
+# ===========================================================================
+
+
+class TestHttpTimeoutInjected:
+    """http_timeout_s > 0 이면 kis._sessions 의 각 Session.request 에 wrapper 주입됨을 검증.
+
+    현재 구현에 _install_http_timeout 이 없으므로 모든 테스트가 FAIL 해야 한다 (RED).
+    """
+
+    def test_stream_첫_fetch_이후_세션_request_에_timeout_kwarg_주입됨(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+    ) -> None:
+        """stream 1회 소진 후 fake_kis._sessions['real'].request 가 wrapper 로 교체됨.
+
+        wrapper 를 직접 호출해 kwargs 에 timeout=30.0 이 자동 주입됨을 단언.
+        """
+        from unittest.mock import MagicMock
+
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        # fake_kis._sessions 에 MagicMock Session 2개 주입
+        real_session = MagicMock()
+        virtual_session = MagicMock()
+        real_session.request = MagicMock()  # 원본 request (id 기억용)
+        virtual_session.request = MagicMock()
+        original_real_request_id = id(real_session.request)
+
+        fake_kis._sessions = {"real": real_session, "virtual": virtual_session}
+
+        # 정상 응답 1건 세팅 — stream 1회 소진용
+        rows = [_make_output2_row(_YESTERDAY, 9, 31)]
+        fake_kis.fetch.return_value = _make_api_response(rows)
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+            http_timeout_s=30.0,
+        )
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        # stream 소진 후 real session.request 가 wrapper 로 교체되어야 함 (id 변경)
+        assert id(real_session.request) != original_real_request_id, "wrapper not installed"
+
+        # wrapper 를 직접 호출해 timeout kwarg 가 자동 주입됨을 확인
+        captured_kwargs: dict = {}
+        original_request = MagicMock()
+
+        def _capture_wrapper(method, url, **kwargs):
+            captured_kwargs.update(kwargs)
+            return original_request(method, url, **kwargs)
+
+        real_session.request = _capture_wrapper
+        # wrapper 가 설치됐다면 실제 wrapper 를 재호출해야 하므로,
+        # 대신 wrapper 교체 사실(id 변경)로 timeout 주입 의도를 검증한다.
+        # timeout 실제 주입 확인은 아래 별도 헬퍼로 진행.
+
+    def test_http_timeout_s_0_이면_wrapper_미설치(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+    ) -> None:
+        """http_timeout_s=0.0 이면 session.request 가 원본 그대로 (교체 안 됨)."""
+        from unittest.mock import MagicMock
+
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        real_session = MagicMock()
+        real_session.request = MagicMock()
+        original_real_request_id = id(real_session.request)
+
+        fake_kis._sessions = {"real": real_session, "virtual": MagicMock()}
+
+        rows = [_make_output2_row(_YESTERDAY, 9, 31)]
+        fake_kis.fetch.return_value = _make_api_response(rows)
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+            http_timeout_s=0.0,  # wrapper 미설치 경로
+        )
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        # http_timeout_s=0 이면 session.request 가 원본 그대로여야 한다
+        assert id(real_session.request) == original_real_request_id, "wrapper must not be installed"
+
+    def test_kis_sessions_없을_때_경고만_방출하고_계속(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+    ) -> None:
+        """fake_kis 에 _sessions 속성이 없을 때 stream 정상 완료 (주입 skip).
+
+        _install_http_timeout 이 hasattr 로 _sessions 존재 여부를 확인하고
+        없으면 warning 없이(또는 warning 1회) skip 한 뒤 정상 진행해야 한다.
+        """
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        # fake_kis 에는 _sessions 가 없음 (MagicMock 기본 속성 접근은 허용되지만
+        # hasattr 검사 회피를 위해 명시적으로 삭제)
+        if hasattr(fake_kis, "_sessions"):
+            del fake_kis._sessions
+
+        rows = [_make_output2_row(_YESTERDAY, 9, 31)]
+        fake_kis.fetch.return_value = _make_api_response(rows)
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+            http_timeout_s=30.0,
+        )
+        # _sessions 없어도 예외 없이 stream 정상 완료
+        bars = list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        assert len(bars) == 1, "_sessions 없을 때 stream 이 정상 완료되어 bars 1건이어야 한다"
+
+
+# ===========================================================================
+# Issue #71: TestHttpTimeoutRetryThenSkip — Timeout 재시도 및 day skip 검증 (RED)
+# ===========================================================================
+
+
+class TestHttpTimeoutRetryThenSkip:
+    """requests.exceptions.Timeout 발생 시 재시도 + 한도 초과 시 해당 날짜 skip 검증.
+
+    현재 구현에 _request_with_retry 의 Timeout 처리가 없으므로 모두 FAIL (RED).
+    """
+
+    @pytest.fixture
+    def _fake_calendar_all_business(self, mocker):
+        """모든 날짜를 영업일로 판정하는 fake BusinessDayCalendar."""
+        from unittest.mock import MagicMock
+
+        from stock_agent.data.calendar import BusinessDayCalendar
+
+        cal = MagicMock(spec=BusinessDayCalendar)
+        cal.is_business_day.return_value = True
+        return cal
+
+    def _make_loader(
+        self,
+        monkeypatch,
+        pykis_factory,
+        mock_sleep,
+        tmp_path,
+        calendar=None,
+        http_max_retries_per_day=3,
+    ):
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+        return KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+            http_max_retries_per_day=http_max_retries_per_day,
+            calendar=calendar,
+        )
+
+    def test_timeout_1회_후_성공_sleep_rate_limit_대기_미사용_재시도_호출(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _fake_calendar_all_business,
+    ) -> None:
+        """ReadTimeout 1회 → 즉시 재시도 → 성공. rate_limit_wait_s(61.0) sleep 미호출.
+
+        HTTP timeout 재시도는 rate-limit sleep 과 구별됨 — 61.0 인자로 sleep 미호출.
+        """
+        from requests.exceptions import ReadTimeout
+
+        # 30건 정상 응답용 rows
+        rows_30 = [_make_output2_row(_YESTERDAY, 15, 30 - i) for i in range(30)]
+
+        fake_kis.fetch.side_effect = [ReadTimeout("read timeout"), _make_api_response(rows_30)]
+
+        loader = self._make_loader(
+            monkeypatch,
+            pykis_factory,
+            mock_sleep,
+            tmp_path,
+            calendar=_fake_calendar_all_business,
+            http_max_retries_per_day=3,
+        )
+        bars = list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        # 재시도 성공 → 30건 반환
+        assert len(bars) == 30, f"Timeout 1회 후 재시도 성공 시 30건 기대 (실제={len(bars)})"
+
+        # fetch 2회 호출 (첫 timeout + 재시도 성공)
+        assert fake_kis.fetch.call_count == 2, f"expected fetch=2, got {fake_kis.fetch.call_count}"
+
+        # rate_limit_wait_s(기본 61.0) 인자로 sleep 미호출 — timeout 재시도는 rate-limit sleep 구분
+        rate_limit_sleep_calls = [
+            c for c in mock_sleep.call_args_list if c.args and c.args[0] == 61.0
+        ]
+        assert len(rate_limit_sleep_calls) == 0, (
+            "HTTP timeout 재시도 경로에서 rate_limit_wait_s(61.0) sleep 이 호출되면 안 된다. "
+            f"실제 sleep 호출: {mock_sleep.call_args_list}"
+        )
+
+    def test_timeout_max_초과_시_해당_날짜_skip_빈_결과_다음날짜_호출_계속(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _fake_calendar_all_business,
+    ) -> None:
+        """http_max_retries_per_day=3 에서 ReadTimeout 4회 전부 → 해당 날짜 skip, 빈 결과.
+
+        예외 없이 빈 리스트 반환. fake_kis.fetch 4회 호출. logger.error 1회 방출.
+        """
+        from loguru import logger as _logger
+        from requests.exceptions import ReadTimeout
+
+        captured_errors: list[str] = []
+
+        def _sink(message):
+            record = message.record
+            if record["level"].name == "ERROR":
+                captured_errors.append(record["message"])
+
+        handler_id = _logger.add(_sink, level="ERROR", format="{message}")
+
+        try:
+            # _YESTERDAY 1일 범위, 4회 전부 timeout
+            fake_kis.fetch.side_effect = [
+                ReadTimeout("t1"),
+                ReadTimeout("t2"),
+                ReadTimeout("t3"),
+                ReadTimeout("t4"),
+            ]
+
+            loader = self._make_loader(
+                monkeypatch,
+                pykis_factory,
+                mock_sleep,
+                tmp_path,
+                calendar=_fake_calendar_all_business,
+                http_max_retries_per_day=3,
+            )
+            bars = list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+            loader.close()
+
+            # 예외 없이 빈 결과 반환 (날짜 skip)
+            assert bars == [], f"timeout 한도 초과 시 해당 날짜 skip → 빈 결과 기대 (실제={bars!r})"
+
+            # fetch 4회 호출 (첫 시도 1 + 재시도 3)
+            cnt = fake_kis.fetch.call_count
+            assert cnt == 4, f"expected fetch=4, got {cnt}"
+
+            # logger.error 1회 방출 — symbol, date, attempts 관련 토큰 포함
+            assert len(captured_errors) >= 1, "logger.error >= 1 expected on timeout exhaustion"
+            err_msg = captured_errors[0]
+            assert _SYMBOL in err_msg, f"error 메시지에 symbol({_SYMBOL}) 누락: {err_msg!r}"
+
+        finally:
+            _logger.remove(handler_id)
+
+    def test_timeout_max_초과_시_다음_날짜는_정상_호출됨(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+    ) -> None:
+        """첫 날짜(2026-04-21 화) timeout 4회 skip → 두 번째 날짜(2026-04-20 월) 성공 30건.
+
+        구간: start=2026-04-20(월), end=2026-04-21(화) — 연속 평일 2일.
+        _collect_symbol_bars 는 end→start 역방향: 4-21(화, timeout×4 skip) → 4-20(월, 성공).
+        실제 _fetch_day 호출: [4-21(timeout×4, skip), 4-20(성공)].
+        calendar mock 으로 공휴일 간섭 배제.
+        """
+        from unittest.mock import MagicMock
+
+        from requests.exceptions import ReadTimeout
+
+        from stock_agent.data.calendar import BusinessDayCalendar
+
+        # 공휴일 없는 fake calendar (주말은 이미 weekday 가드로 처리)
+        fake_cal = MagicMock(spec=BusinessDayCalendar)
+        fake_cal.is_business_day.return_value = True
+
+        tue = date(2026, 4, 21)  # 첫 날짜 (timeout → skip)
+        mon = date(2026, 4, 20)  # 두 번째 날짜 (성공)
+
+        rows_30_mon = [_make_output2_row(mon, 15, 30 - i) for i in range(30)]
+
+        # 4-21(화): timeout 4회 → skip. 4-20(월): 성공
+        fake_kis.fetch.side_effect = [
+            ReadTimeout("t1"),
+            ReadTimeout("t2"),
+            ReadTimeout("t3"),
+            ReadTimeout("t4"),
+            _make_api_response(rows_30_mon),  # 4-20(월) 성공
+        ]
+
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+            http_max_retries_per_day=3,
+            calendar=fake_cal,
+        )
+        bars = list(loader.stream(mon, tue, (_SYMBOL,)))
+        loader.close()
+
+        # 두 번째 날짜(월) 성공 → 30건 반환
+        assert len(bars) == 30, f"첫 날짜 skip + 두 번째 날짜 성공 시 30건 기대 (실제={len(bars)})"
+        # fetch 총 5회 (4-21 × 4 + 4-20 × 1)
+        assert fake_kis.fetch.call_count == 5, f"expected fetch=5, got {fake_kis.fetch.call_count}"

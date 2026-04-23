@@ -108,6 +108,26 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="캐시 DB 경로 (미지정 시 KisMinuteBarLoader 기본값 data/minute_bars.db).",
     )
+    parser.add_argument(
+        "--per-page-timeout-s",
+        type=float,
+        default=30.0,
+        help=(
+            "KIS HTTP 페이지 호출 당 timeout 초 (connect+read). python-kis 기본은 "
+            "무한 대기라 간헐 서버 지연 시 프로세스가 40분 이상 hang 하는 현상 방지 "
+            "(Issue #71). 음수 불가. 0 은 주입 skip (기존 동작 — 비권장)."
+        ),
+    )
+    parser.add_argument(
+        "--max-retries-per-day",
+        type=int,
+        default=3,
+        help=(
+            "같은 날짜에서 HTTP timeout 이 반복될 때 최대 재시도 횟수. 한도 초과 시 "
+            "해당 날짜만 skip 하고 다음 날짜로 진행 (Issue #71). 음수 불가. 0 허용 "
+            "(재시도 없이 즉시 skip)."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -145,7 +165,11 @@ def _run_pipeline(args: argparse.Namespace) -> tuple[int, int, int]:
     symbols = _resolve_symbols(args.symbols)
     settings = get_settings()
 
-    loader_kwargs: dict[str, Any] = {"throttle_s": args.throttle_s}
+    loader_kwargs: dict[str, Any] = {
+        "throttle_s": args.throttle_s,
+        "http_timeout_s": args.per_page_timeout_s,
+        "http_max_retries_per_day": args.max_retries_per_day,
+    }
     if args.cache_db_path is not None:
         loader_kwargs["cache_db_path"] = args.cache_db_path
     loader = KisMinuteBarLoader(settings, **loader_kwargs)
@@ -232,6 +256,18 @@ def main(argv: list[str] | None = None) -> int:
         logger.error(
             f"--throttle-s 는 0.1 이상이어야 합니다 (got={args.throttle_s}). "
             f"KIS 실전 시세 API rate limit(EGW00201) 방지 하한 (Issue #61)."
+        )
+        return _EXIT_INPUT_ERROR
+    if args.per_page_timeout_s < 0:
+        logger.error(
+            f"--per-page-timeout-s 는 0 이상이어야 합니다 (got={args.per_page_timeout_s}). "
+            f"음수는 의미 없음 — HTTP timeout 주입 skip 이 필요하면 0 (Issue #71)."
+        )
+        return _EXIT_INPUT_ERROR
+    if args.max_retries_per_day < 0:
+        logger.error(
+            f"--max-retries-per-day 는 0 이상이어야 합니다 (got={args.max_retries_per_day}). "
+            f"0 은 재시도 없이 즉시 날짜 skip (Issue #71)."
         )
         return _EXIT_INPUT_ERROR
 

@@ -310,6 +310,8 @@ class TestRunPipeline:
         cache_db_path=None,
         start: date = _DATE_START,
         end: date = _DATE_END,
+        per_page_timeout_s: float = 30.0,
+        max_retries_per_day: int = 3,
     ):
         """_parse_args 없이 직접 args Namespace 생성 헬퍼."""
         import argparse
@@ -320,6 +322,8 @@ class TestRunPipeline:
         ns.symbols = symbols
         ns.throttle_s = throttle_s
         ns.cache_db_path = cache_db_path
+        ns.per_page_timeout_s = per_page_timeout_s
+        ns.max_retries_per_day = max_retries_per_day
         return ns
 
     def test_모든_심볼_성공_카운터(self, monkeypatch):
@@ -745,3 +749,99 @@ class TestThrottleLowerBoundGuard:
 
         msg = f"throttle_s=0.1 은 정상 처리돼야 한다. 실제 exit code={result!r}"
         assert result != _EXIT_INPUT_ERROR, msg
+
+
+# ===========================================================================
+# 6. Issue #71: TestCliHttpTimeoutOptions — --per-page-timeout-s / --max-retries-per-day (RED)
+# ===========================================================================
+
+
+class TestCliHttpTimeoutOptions:
+    """Issue #71 신규 CLI 옵션 --per-page-timeout-s / --max-retries-per-day 검증.
+
+    현재 scripts/backfill_minute_bars.py 에 해당 옵션이 없으므로
+    모든 테스트가 FAIL 해야 한다 (RED 상태).
+
+    검증 계약:
+    - 미지정 시 KisMinuteBarLoader 가 http_timeout_s=30.0, http_max_retries_per_day=3 으로 생성됨.
+    - 명시 지정 시 해당 값으로 생성됨.
+    - 음수 → main() 반환값 2 (_EXIT_INPUT_ERROR).
+    """
+
+    _BASE_DATE_ARGV = ["--from=2025-04-22", "--to=2025-04-22", "--symbols=005930"]
+
+    def _make_loader_cls(self, monkeypatch):
+        """KisMinuteBarLoader 를 교체하는 MagicMock 팩토리 반환."""
+        _require_module()
+        fake_loader = _make_fake_loader(bars_per_symbol=[])
+        loader_cls = MagicMock(return_value=fake_loader)
+        monkeypatch.setattr(backfill_cli, "KisMinuteBarLoader", loader_cls)
+        monkeypatch.setattr(
+            backfill_cli,
+            "get_settings",
+            lambda: _make_fake_settings(has_live_keys=True),
+        )
+        return loader_cls
+
+    def test_per_page_timeout_s_기본값_30_loader_kwarg_전달됨(self, monkeypatch):
+        """--per-page-timeout-s 미지정 → KisMinuteBarLoader 생성 시 http_timeout_s=30.0."""
+        loader_cls = self._make_loader_cls(monkeypatch)
+
+        main(self._BASE_DATE_ARGV)
+
+        loader_cls.assert_called_once()
+        kwargs = loader_cls.call_args.kwargs
+        assert "http_timeout_s" in kwargs, f"missing http_timeout_s: {kwargs}"
+        assert kwargs["http_timeout_s"] == pytest.approx(30.0), kwargs.get("http_timeout_s")
+
+    def test_per_page_timeout_s_명시_loader_kwarg_전달됨(self, monkeypatch):
+        """--per-page-timeout-s 15.5 → KisMinuteBarLoader(http_timeout_s=15.5)."""
+        loader_cls = self._make_loader_cls(monkeypatch)
+
+        main([*self._BASE_DATE_ARGV, "--per-page-timeout-s=15.5"])
+
+        loader_cls.assert_called_once()
+        kwargs = loader_cls.call_args.kwargs
+        assert "http_timeout_s" in kwargs, f"missing http_timeout_s: {kwargs}"
+        assert kwargs["http_timeout_s"] == pytest.approx(15.5), kwargs.get("http_timeout_s")
+
+    def test_per_page_timeout_s_음수_exit_2(self, monkeypatch):
+        """--per-page-timeout-s -1.0 → main() 반환 2 (_EXIT_INPUT_ERROR)."""
+        loader_cls = self._make_loader_cls(monkeypatch)
+
+        result = main([*self._BASE_DATE_ARGV, "--per-page-timeout-s=-1.0"])
+
+        assert result == _EXIT_INPUT_ERROR, f"expected exit 2, got {result!r}"
+        # 입력 오류이므로 KisMinuteBarLoader 가 호출되지 않아야 함
+        loader_cls.assert_not_called(), ("입력 오류 시 KisMinuteBarLoader 가 호출되지 않아야 한다.")
+
+    def test_max_retries_per_day_기본값_3_loader_kwarg_전달됨(self, monkeypatch):
+        """--max-retries-per-day 미지정 → KisMinuteBarLoader(http_max_retries_per_day=3)."""
+        loader_cls = self._make_loader_cls(monkeypatch)
+
+        main(self._BASE_DATE_ARGV)
+
+        loader_cls.assert_called_once()
+        kwargs = loader_cls.call_args.kwargs
+        assert "http_max_retries_per_day" in kwargs, f"missing http_max_retries_per_day: {kwargs}"
+        actual = kwargs["http_max_retries_per_day"]
+        assert actual == 3, f"http_max_retries_per_day 기본값은 3 이어야 한다. 실제={actual!r}"
+
+    def test_max_retries_per_day_명시_loader_kwarg_전달됨(self, monkeypatch):
+        """--max-retries-per-day 5 → KisMinuteBarLoader(http_max_retries_per_day=5)."""
+        loader_cls = self._make_loader_cls(monkeypatch)
+
+        main([*self._BASE_DATE_ARGV, "--max-retries-per-day=5"])
+
+        loader_cls.assert_called_once()
+        kwargs = loader_cls.call_args.kwargs
+        assert "http_max_retries_per_day" in kwargs, f"missing http_max_retries_per_day: {kwargs}"
+        assert kwargs["http_max_retries_per_day"] == 5, kwargs.get("http_max_retries_per_day")
+
+    def test_max_retries_per_day_음수_exit_2(self, monkeypatch):
+        """--max-retries-per-day -1 → main() 반환 2 (_EXIT_INPUT_ERROR)."""
+        _loader_cls = self._make_loader_cls(monkeypatch)
+
+        result = main([*self._BASE_DATE_ARGV, "--max-retries-per-day=-1"])
+
+        assert result == _EXIT_INPUT_ERROR, f"expected exit 2, got {result!r}"
