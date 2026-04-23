@@ -2296,3 +2296,279 @@ class TestMalformedPageWarningKeysToken:
         # _make_output2_row 가 생성하는 실제 key 이름들이 CSV 에 포함돼야 함
         assert "stck_bsop_date" in msg, f"stck_bsop_date 가 keys 에 없음: {msg!r}"
         assert "stck_cntg_hour" in msg, f"stck_cntg_hour 가 keys 에 없음: {msg!r}"
+
+
+# ===========================================================================
+# TestFetchDaySkipSummary — Issue #52 C1: 날짜 단위 skip 요약 warning 포맷 검증
+# ===========================================================================
+
+
+class TestFetchDaySkipSummary:
+    """C1: `_fetch_day` return 직전 `parse_skip_counts` 요약 warning 계약 고정.
+
+    요약 warning 은 `"skip 요약"` 부분 문자열을 포함하고,
+    symbol / date / counts(정렬 dict repr) / kept=N 필드를 동봉한다.
+    """
+
+    @pytest.fixture
+    def _loguru_warnings(self):
+        """loguru WARNING 레벨 메시지 캡처 픽스처."""
+        from loguru import logger as _logger
+
+        captured: list[dict] = []
+
+        def _sink(message) -> None:  # type: ignore[no-untyped-def]
+            record = message.record
+            captured.append({"level": record["level"].name, "message": record["message"]})
+
+        handler_id = _logger.add(_sink, level="WARNING", format="{message}")
+        try:
+            yield captured
+        finally:
+            _logger.remove(handler_id)
+
+    def test_skip_counts_요약_warning_방출_및_포맷(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_warnings,
+    ) -> None:
+        """invalid_price 2행 + invalid_volume 2행 → 날짜 단위 요약 warning 1개 방출.
+
+        C1 계약 고정: 요약 warning 메시지에 symbol / date / kept=0 / counts 정렬 dict repr
+        이 포함되어야 한다. PR #56 리뷰 — `parse_skip_counts` 정렬된 dict 를 요약에 포함해
+        '1건 실패 vs 119건 실패' 구별 불가 문제 해소.
+        """
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        # invalid_price 2행 (stck_oprc="") + invalid_volume 2행 (cntg_vol="") — 전원 skip
+        rows_invalid_price = [_make_output2_row(_YESTERDAY, 9, 31 + i, oprc="") for i in range(2)]
+        rows_invalid_volume = [_make_output2_row(_YESTERDAY, 9, 35 + i, vol="") for i in range(2)]
+        fake_kis.fetch.return_value = _make_api_response(rows_invalid_price + rows_invalid_volume)
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+        )
+        bars = list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        # 전원 skip → 정상 bar 0건
+        assert len(bars) == 0
+
+        # 요약 warning: "skip 요약" 부분 문자열
+        summary_warns = [
+            m["message"]
+            for m in _loguru_warnings
+            if m["level"] == "WARNING" and "skip 요약" in m["message"]
+        ]
+        n_summary = len(summary_warns)
+        assert n_summary == 1, f"날짜 단위 요약 warning 이 정확히 1개여야 한다 (실제={n_summary})"
+        msg = summary_warns[0]
+
+        # symbol / date / kept 필드
+        assert f"symbol={_SYMBOL}" in msg, f"symbol 필드 누락: {msg!r}"
+        assert "date=20260421" in msg, f"date 필드 누락: {msg!r}"
+        assert "kept=0" in msg, f"kept=0 필드 누락: {msg!r}"
+
+        # counts 에 kind 별 횟수 포함 (정렬 dict repr)
+        assert "'invalid_price': 2" in msg, f"invalid_price count 누락: {msg!r}"
+        assert "'invalid_volume': 2" in msg, f"invalid_volume count 누락: {msg!r}"
+
+        # 카테고리별 kind warning (invalid_price 1 + invalid_volume 1) + 요약 1 = 총 3개
+        all_warns = [m for m in _loguru_warnings if m["level"] == "WARNING"]
+        assert len(all_warns) == 3, (
+            f"총 warning 3개 기대 (kind×2 + 요약×1), 실제={len(all_warns)}: "
+            f"{[m['message'] for m in all_warns]}"
+        )
+
+
+# ===========================================================================
+# PR #56 리뷰 C2: date_mismatch 일부 행만 불일치 — kept 건수 정확성
+# ===========================================================================
+
+
+class TestDateMismatchPartialRows:
+    """C2: `_parse_row` 의 `expected_day` 주입이 실제 동작함을 공개 API 경유로 증명.
+
+    동일 stream 요청에서 날짜가 맞는 행은 yield 하고, 날짜가 맞지 않는 행은
+    date_mismatch warning 1회 + skip 처리됨을 검증한다.
+    """
+
+    @pytest.fixture
+    def _loguru_warnings(self):
+        """loguru WARNING 레벨 메시지 캡처 픽스처."""
+        from loguru import logger as _logger
+
+        captured: list[dict] = []
+
+        def _sink(message) -> None:  # type: ignore[no-untyped-def]
+            record = message.record
+            captured.append({"level": record["level"].name, "message": record["message"]})
+
+        handler_id = _logger.add(_sink, level="WARNING", format="{message}")
+        try:
+            yield captured
+        finally:
+            _logger.remove(handler_id)
+
+    def test_date_mismatch_일부_행만_불일치(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_warnings,
+    ) -> None:
+        """정상 2행 + date_mismatch 1행 혼재 → bars 2건만 yield, date_mismatch warning 1회.
+
+        PR #56 리뷰 C2: `_parse_row(row, expected_day)` 의 expected_day 주입이
+        실제 동작하는지 검증. 구현이 expected_day 를 무시하면 3건이 모두 yield 되어 실패.
+        """
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        wrong_date = _YESTERDAY - timedelta(days=1)  # 2026-04-20 (stream 요청 범위 밖)
+        rows = [
+            _make_output2_row(_YESTERDAY, 9, 31),  # 정상
+            _make_output2_row(wrong_date, 9, 32),  # date_mismatch
+            _make_output2_row(_YESTERDAY, 9, 33),  # 정상
+        ]
+        fake_kis.fetch.return_value = _make_api_response(rows)
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+        )
+        bars = list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        # 정상 2건만 yield
+        assert len(bars) == 2, f"정상 행 2건만 yield 돼야 한다 (실제={len(bars)})"
+        # date_mismatch warning 정확히 1회 (dedupe)
+        mismatch_warns = [
+            m["message"]
+            for m in _loguru_warnings
+            if m["level"] == "WARNING" and "kind=date_mismatch" in m["message"]
+        ]
+        n_mismatch = len(mismatch_warns)
+        assert n_mismatch == 1, f"date_mismatch warning 1회 기대 (실제={n_mismatch})"
+        warn_msg = mismatch_warns[0]
+        assert "date=20260421" in warn_msg, f"date 필드 누락: {warn_msg!r}"
+
+
+# ===========================================================================
+# PR #56 리뷰 C3: parse_skip_emitted 가 _fetch_day 로컬 — 날짜 변경 시 리셋
+# ===========================================================================
+
+
+class TestParseSkipEmittedResetsPerFetchDay:
+    """C3: `parse_skip_emitted` 는 `_fetch_day` 진입마다 새로 초기화됨을 증명.
+
+    두 날짜 모두 동일한 kind(invalid_price) 실패 행이 있을 때,
+    날짜별로 각 1회씩 — 총 2회 — warning 이 방출되어야 한다.
+    parse_skip_emitted 가 인스턴스 속성으로 승격되면 두 번째 날짜에서
+    dedupe 에 걸려 warning 이 1회만 방출되므로 이 테스트가 실패한다
+    (Issue #52 C3 회귀 방지).
+    """
+
+    @pytest.fixture
+    def _loguru_warnings(self):
+        """loguru WARNING 레벨 메시지 캡처 픽스처."""
+        from loguru import logger as _logger
+
+        captured: list[dict] = []
+
+        def _sink(message) -> None:  # type: ignore[no-untyped-def]
+            record = message.record
+            captured.append({"level": record["level"].name, "message": record["message"]})
+
+        handler_id = _logger.add(_sink, level="WARNING", format="{message}")
+        try:
+            yield captured
+        finally:
+            _logger.remove(handler_id)
+
+    def test_다중_날짜_같은_kind_날짜당_warning_1회씩(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_warnings,
+    ) -> None:
+        """두 날짜 모두 invalid_price 실패 행 2건씩 → 날짜당 kind warning 1회씩 = 총 2회.
+
+        parse_skip_emitted 는 `_fetch_day` 로컬 — 날짜 변경 시 리셋.
+        리팩터로 인스턴스 속성 승격 시 이 테스트가 실패하도록 설계됨 (Issue #52 C3).
+        """
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        d1 = date(2026, 4, 21)  # _YESTERDAY (월)
+        d2 = date(2026, 4, 20)  # 그 전 금요일
+
+        # 두 날짜 모두 invalid_price 행 2건씩
+        # _collect_symbol_bars 는 end → start 역방향 순회:
+        # day_to=d1 먼저 → day_from=d2 순으로 _fetch_day 호출
+        rows_d1 = [_make_output2_row(d1, 9, 31 + i, oprc="") for i in range(2)]
+        rows_d2 = [_make_output2_row(d2, 9, 31 + i, oprc="") for i in range(2)]
+
+        fake_kis.fetch.side_effect = [
+            _make_api_response(rows_d1),  # d1 (end 먼저)
+            _make_api_response(rows_d2),  # d2
+        ]
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+        )
+        bars = list(loader.stream(d2, d1, (_SYMBOL,)))
+        loader.close()
+
+        # 전원 skip → bar 0건
+        assert len(bars) == 0
+
+        # kind=invalid_price warning 이 정확히 2회 (날짜당 1회씩)
+        price_warns = [
+            m["message"]
+            for m in _loguru_warnings
+            if m["level"] == "WARNING" and "kind=invalid_price" in m["message"]
+        ]
+        assert len(price_warns) == 2, (
+            f"날짜당 1회씩 총 2회 기대 (실제={len(price_warns)}). "
+            f"parse_skip_emitted 가 인스턴스 속성으로 승격되면 1회만 방출돼 실패함."
+        )
+
+        # 날짜 정보 구분 가능: 20260421 포함 1개, 20260420 포함 1개
+        d1_warns = [w for w in price_warns if "date=20260421" in w]
+        d2_warns = [w for w in price_warns if "date=20260420" in w]
+        assert len(d1_warns) == 1, f"d1(20260421) warning 1개 기대: {price_warns}"
+        assert len(d2_warns) == 1, f"d2(20260420) warning 1개 기대: {price_warns}"
+
+        # 날짜 단위 요약 warning 도 2회 (각 날짜 1회씩)
+        summary_warns = [
+            m["message"]
+            for m in _loguru_warnings
+            if m["level"] == "WARNING" and "skip 요약" in m["message"]
+        ]
+        n_summary2 = len(summary_warns)
+        assert n_summary2 == 2, f"날짜 단위 요약 warning 2회 기대 (실제={n_summary2})"

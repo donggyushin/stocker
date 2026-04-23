@@ -435,7 +435,12 @@ class KisMinuteBarLoader:
         동봉해 스키마 변경 진단에 직결 (Issue #52).
 
         행 단위 parse skip 경보는 `(kind)` 단위 로컬 dedupe — 같은 날짜·같은 원인
-        은 로그 1회만. 120 rows × N 일 × M 종목 로그 폭주 방지 (Issue #52).
+        은 로그 1회만. `_PAGE_SIZE` rows × N 일 × M 종목 로그 폭주 방지 (Issue #52).
+
+        날짜 단위 요약 (Issue #52 C1): return 직전에 `parse_skip_counts` 를
+        `logger.warning` 1줄로 방출해 "1건 실패 vs 119건 실패" 구별 불가 문제를
+        해소한다. 같은 페이지에서 warning·error 가 동시 방출될 수 있다 — 운영자가
+        `kind` 와 `keys=` 를 한눈에 보도록 한 의도적 중첩.
         """
         kis = self._ensure_kis()
         date_str = day.strftime("%Y%m%d")
@@ -445,6 +450,7 @@ class KisMinuteBarLoader:
         is_first_page = True
         malformed_warned = False
         parse_skip_emitted: set[_ParseFailureKind] = set()
+        parse_skip_counts: dict[_ParseFailureKind, int] = {}
 
         while True:
             if not is_first_page and self._throttle_s > 0:
@@ -462,6 +468,7 @@ class KisMinuteBarLoader:
                 try:
                     bar = self._parse_row(symbol, row, day)
                 except _ParseSkipError as skip:
+                    parse_skip_counts[skip.kind] = parse_skip_counts.get(skip.kind, 0) + 1
                     if skip.kind not in parse_skip_emitted:
                         parse_skip_emitted.add(skip.kind)
                         logger.warning(
@@ -513,6 +520,15 @@ class KisMinuteBarLoader:
             if min_time <= _SESSION_OPEN_HHMMSS:
                 break
             cursor = _decrement_hhmmss_by_one_minute(min_time)
+
+        if parse_skip_counts:
+            logger.warning(
+                "KIS 분봉 skip 요약 — symbol={s} date={d} counts={c} kept={k}",
+                s=symbol,
+                d=date_str,
+                c=dict(sorted(parse_skip_counts.items())),
+                k=len(collected),
+            )
 
         return collected
 
@@ -645,8 +661,12 @@ class KisMinuteBarLoader:
         - `missing_date_or_time`: `stck_bsop_date` / `stck_cntg_hour` 길이 위반.
         - `malformed_bar_time`: 날짜·시각 문자열 파싱(`strptime`) 실패.
         - `date_mismatch`: `bar_time.date()` 가 요청 `expected_day` 와 불일치.
-        - `invalid_price`: OHLC 중 하나 이상이 `None` · 빈 문자열 · 비-finite.
-        - `invalid_volume`: `cntg_vol` 이 `None` · 빈 문자열 · 정수 변환 불가.
+        - `invalid_price`: OHLC 중 하나 이상이 `None` · 빈 문자열 · 비-finite 이거나
+          `_parse_decimal` 에서 `Decimal` 파싱 실패(`InvalidOperation` · `ValueError`
+          · `TypeError` — 비-수치 토큰·구분자 포함 등).
+        - `invalid_volume`: `cntg_vol` 이 `None` · 빈 문자열 이거나
+          `int(Decimal(...))` 변환 실패(`InvalidOperation` · `ValueError` ·
+          `TypeError` — 소수점·음수 포맷 오류·과대값 등).
         """
         row_keys = tuple(sorted(str(k) for k in row)) if isinstance(row, dict) else ()
 
