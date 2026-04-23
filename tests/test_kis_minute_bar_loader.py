@@ -1929,3 +1929,370 @@ class TestStreamAfterClose:
 
         with pytest.raises(RuntimeError, match="close"):
             list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+
+
+# ===========================================================================
+# TestParseRowSkipCategories — Issue #52 회귀: _ParseSkip kind 별 dedupe warning
+# ===========================================================================
+
+
+def _make_loguru_warnings() -> tuple[list[dict], int]:
+    """loguru WARNING 레벨 메시지 캡처 sink 등록 헬퍼.
+
+    반환값: (captured_list, handler_id). 호출자가 finally 에서
+    `logger.remove(handler_id)` 를 호출해 싱크를 해제해야 한다.
+    """
+    from loguru import logger as _logger
+
+    captured: list[dict] = []
+
+    def _sink(message) -> None:  # type: ignore[no-untyped-def]
+        record = message.record
+        captured.append({"level": record["level"].name, "message": record["message"]})
+
+    handler_id = _logger.add(_sink, level="WARNING", format="{message}")
+    return captured, handler_id
+
+
+class TestParseRowSkipCategories:
+    """Issue #52 회귀 — `_ParseSkip.kind` 단위 dedupe warning 검증.
+
+    검증 대상:
+    - 각 `_ParseFailureKind` 카테고리가 warning 에 `kind=<value>` 로 포함된다.
+    - 동일 날짜·동일 kind 는 여러 행이 있어도 1회만 방출된다 (로그 폭주 방지).
+    - `keys=` 접두 토큰 + 실제 row key 이름이 warning 메시지에 포함된다.
+    - `symbol=` + `date=` 맥락 정보가 포함된다.
+
+    테스트 레벨: `loader.stream(...)` 공개 API 경유 — `_parse_row` 직접 호출 금지.
+    """
+
+    # -----------------------------------------------------------------------
+    # 공통 픽스처: loguru WARNING sink
+    # -----------------------------------------------------------------------
+
+    @pytest.fixture
+    def _loguru_warnings(self):
+        """loguru WARNING 레벨 메시지 캡처 픽스처."""
+        from loguru import logger as _logger
+
+        captured: list[dict] = []
+
+        def _sink(message) -> None:  # type: ignore[no-untyped-def]
+            record = message.record
+            captured.append({"level": record["level"].name, "message": record["message"]})
+
+        handler_id = _logger.add(_sink, level="WARNING", format="{message}")
+        try:
+            yield captured
+        finally:
+            _logger.remove(handler_id)
+
+    # -----------------------------------------------------------------------
+    # 헬퍼: loader 생성 (반복 제거)
+    # -----------------------------------------------------------------------
+
+    def _make_loader(self, monkeypatch, pykis_factory, mock_sleep, tmp_path, clock_dt=None):
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+        dt = clock_dt or _kst(_TODAY, 10, 0)
+        return KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(dt),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+        )
+
+    # -----------------------------------------------------------------------
+    # 1. missing_date_or_time
+    # -----------------------------------------------------------------------
+
+    def test_missing_date_or_time_kind_warning_1회(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_warnings,
+    ) -> None:
+        """stck_bsop_date='' 행 2개 → kind=missing_date_or_time warning 1회, dedupe 검증.
+
+        회귀: Issue #52 — 행 단위가 아니라 (kind) 단위 dedupe 로 로그 폭주 방지.
+        """
+        # 두 행 모두 stck_bsop_date 가 빈 문자열 → 길이 != 8 → missing_date_or_time
+        bad_rows = [
+            {
+                "stck_bsop_date": "",
+                "stck_cntg_hour": f"09310{i}",
+                "stck_oprc": "71000",
+                "stck_hgpr": "71500",
+                "stck_lwpr": "70800",
+                "stck_prpr": "71200",
+                "cntg_vol": "1234",
+            }
+            for i in range(2)
+        ]
+        fake_kis.fetch.return_value = _make_api_response(bad_rows)
+
+        loader = self._make_loader(monkeypatch, pykis_factory, mock_sleep, tmp_path)
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        # WARNING 중 kind=missing_date_or_time 포함한 것만 추린다
+        warn_msgs = [
+            m["message"]
+            for m in _loguru_warnings
+            if m["level"] == "WARNING" and "kind=missing_date_or_time" in m["message"]
+        ]
+        # dedupe: 2행이지만 1회만 방출
+        assert len(warn_msgs) == 1, f"dedupe 실패: {len(warn_msgs)}회 방출됨"
+        msg = warn_msgs[0]
+        # 맥락 정보 포함 여부
+        assert f"symbol={_SYMBOL}" in msg
+        assert _YESTERDAY.strftime("%Y%m%d") in msg
+        # keys= 토큰 + 실제 키 이름
+        assert "keys=" in msg
+        assert "stck_bsop_date" in msg
+
+    # -----------------------------------------------------------------------
+    # 2. date_mismatch
+    # -----------------------------------------------------------------------
+
+    def test_date_mismatch_kind_warning_1회(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_warnings,
+    ) -> None:
+        """stck_bsop_date 가 요청 날짜와 다른 행 3개 → kind=date_mismatch warning 1회."""
+        wrong_date = _YESTERDAY - timedelta(days=1)  # _YESTERDAY 보다 1일 전
+        bad_rows = [_make_output2_row(wrong_date, 9, 31 + i) for i in range(3)]
+        fake_kis.fetch.return_value = _make_api_response(bad_rows)
+
+        # _YESTERDAY 기준으로 stream 요청 — wrong_date 는 date_mismatch
+        loader = self._make_loader(monkeypatch, pykis_factory, mock_sleep, tmp_path)
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        warn_msgs = [
+            m["message"]
+            for m in _loguru_warnings
+            if m["level"] == "WARNING" and "kind=date_mismatch" in m["message"]
+        ]
+        assert len(warn_msgs) == 1, f"dedupe 실패: {len(warn_msgs)}회 방출됨"
+
+    # -----------------------------------------------------------------------
+    # 3. invalid_price
+    # -----------------------------------------------------------------------
+
+    def test_invalid_price_kind_warning_1회(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_warnings,
+    ) -> None:
+        """stck_oprc='' 행 2개 → kind=invalid_price warning 1회."""
+        bad_rows = [_make_output2_row(_YESTERDAY, 9, 31 + i, oprc="") for i in range(2)]
+        fake_kis.fetch.return_value = _make_api_response(bad_rows)
+
+        loader = self._make_loader(monkeypatch, pykis_factory, mock_sleep, tmp_path)
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        warn_msgs = [
+            m["message"]
+            for m in _loguru_warnings
+            if m["level"] == "WARNING" and "kind=invalid_price" in m["message"]
+        ]
+        assert len(warn_msgs) == 1, f"dedupe 실패: {len(warn_msgs)}회 방출됨"
+
+    # -----------------------------------------------------------------------
+    # 4. invalid_volume
+    # -----------------------------------------------------------------------
+
+    def test_invalid_volume_kind_warning_1회(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_warnings,
+    ) -> None:
+        """cntg_vol='' 행 2개 → kind=invalid_volume warning 1회."""
+        bad_rows = [_make_output2_row(_YESTERDAY, 9, 31 + i, vol="") for i in range(2)]
+        fake_kis.fetch.return_value = _make_api_response(bad_rows)
+
+        loader = self._make_loader(monkeypatch, pykis_factory, mock_sleep, tmp_path)
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        warn_msgs = [
+            m["message"]
+            for m in _loguru_warnings
+            if m["level"] == "WARNING" and "kind=invalid_volume" in m["message"]
+        ]
+        assert len(warn_msgs) == 1, f"dedupe 실패: {len(warn_msgs)}회 방출됨"
+
+    # -----------------------------------------------------------------------
+    # 5. malformed_bar_time
+    # -----------------------------------------------------------------------
+
+    def test_malformed_bar_time_kind_warning_1회(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_warnings,
+    ) -> None:
+        """stck_cntg_hour='999999' 행 2개 → kind=malformed_bar_time warning 1회.
+
+        길이=6 조건을 통과하지만 시=99, 분=99, 초=99 로
+        `strptime('%Y%m%d%H%M%S', ...)` 에서 ValueError 가 발생한다.
+        """
+        bad_rows = [
+            {
+                "stck_bsop_date": _YESTERDAY.strftime("%Y%m%d"),
+                "stck_cntg_hour": "999999",  # 길이 6 이지만 파싱 실패 유도
+                "stck_oprc": "71000",
+                "stck_hgpr": "71500",
+                "stck_lwpr": "70800",
+                "stck_prpr": "71200",
+                "cntg_vol": "1234",
+            }
+            for _ in range(2)
+        ]
+        fake_kis.fetch.return_value = _make_api_response(bad_rows)
+
+        loader = self._make_loader(monkeypatch, pykis_factory, mock_sleep, tmp_path)
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        warn_msgs = [
+            m["message"]
+            for m in _loguru_warnings
+            if m["level"] == "WARNING" and "kind=malformed_bar_time" in m["message"]
+        ]
+        assert len(warn_msgs) == 1, f"dedupe 실패: {len(warn_msgs)}회 방출됨"
+
+    # -----------------------------------------------------------------------
+    # 6. 서로 다른 kind 혼재 — 각각 1회씩
+    # -----------------------------------------------------------------------
+
+    def test_서로_다른_kind_혼재_각각_1회씩(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_warnings,
+    ) -> None:
+        """invalid_price 2행 + invalid_volume 2행 → 각 kind 1회씩, 총 warning 2개."""
+        rows_invalid_price = [_make_output2_row(_YESTERDAY, 9, 31 + i, oprc="") for i in range(2)]
+        rows_invalid_volume = [_make_output2_row(_YESTERDAY, 9, 35 + i, vol="") for i in range(2)]
+        fake_kis.fetch.return_value = _make_api_response(rows_invalid_price + rows_invalid_volume)
+
+        loader = self._make_loader(monkeypatch, pykis_factory, mock_sleep, tmp_path)
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        price_warns = [
+            m
+            for m in _loguru_warnings
+            if m["level"] == "WARNING" and "kind=invalid_price" in m["message"]
+        ]
+        volume_warns = [
+            m
+            for m in _loguru_warnings
+            if m["level"] == "WARNING" and "kind=invalid_volume" in m["message"]
+        ]
+        assert len(price_warns) == 1, f"invalid_price dedupe 실패: {len(price_warns)}회"
+        assert len(volume_warns) == 1, f"invalid_volume dedupe 실패: {len(volume_warns)}회"
+
+
+# ===========================================================================
+# TestMalformedPageWarningKeysToken — Issue #52: M2 error 메시지에 keys= 포함 검증
+# ===========================================================================
+
+
+class TestMalformedPageWarningKeysToken:
+    """M2 error 메시지에 `keys=` 토큰 + 실제 key 이름 CSV 가 포함됨을 검증.
+
+    Issue #52 후속 — `_fetch_day` 의 `logger.error` 가 `keys={first_row_keys_csv}` 를
+    동봉해 스키마 변경 진단을 직결하도록 수정됨 (기존 메시지에 keys 필드 추가).
+    """
+
+    @pytest.fixture
+    def _loguru_errors(self):
+        """loguru ERROR 레벨 메시지 캡처."""
+        from loguru import logger as _logger
+
+        captured: list[dict] = []
+
+        def _sink(message) -> None:  # type: ignore[no-untyped-def]
+            record = message.record
+            captured.append({"level": record["level"].name, "message": record["message"]})
+
+        handler_id = _logger.add(_sink, level="ERROR", format="{message}")
+        try:
+            yield captured
+        finally:
+            _logger.remove(handler_id)
+
+    def test_error_메시지에_first_row_keys_포함(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_errors,
+    ) -> None:
+        """rows 3건 모두 stck_oprc='' (전원 파싱 실패) → logger.error 메시지에
+        `keys=` 토큰 + `stck_bsop_date`, `stck_cntg_hour` 등 실제 key 이름 CSV 포함.
+
+        Issue #52 회귀: M2 경보 메시지가 keys 필드를 동봉해야 스키마 변경 진단이 가능.
+        """
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        # 전원 파싱 실패 유도 (invalid_price) — page_bars 가 비어 M2 경보 트리거
+        malformed_rows = [_make_output2_row(_YESTERDAY, 9, 31 + i, oprc="") for i in range(3)]
+        fake_kis.fetch.return_value = _make_api_response(malformed_rows)
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+        )
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        errors = [m for m in _loguru_errors if m["level"] == "ERROR"]
+        assert len(errors) == 1, f"ERROR 경보 1회 기대, 실제 {len(errors)}회"
+        msg = errors[0]["message"]
+
+        # keys= 토큰 존재 확인
+        assert "keys=" in msg, f"keys= 토큰이 error 메시지에 없음: {msg!r}"
+        # _make_output2_row 가 생성하는 실제 key 이름들이 CSV 에 포함돼야 함
+        assert "stck_bsop_date" in msg, f"stck_bsop_date 가 keys 에 없음: {msg!r}"
+        assert "stck_cntg_hour" in msg, f"stck_cntg_hour 가 keys 에 없음: {msg!r}"

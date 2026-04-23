@@ -69,7 +69,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from types import TracebackType
-from typing import Any
+from typing import Any, Literal
 
 from loguru import logger
 
@@ -100,6 +100,31 @@ _SESSION_CLOSE_HHMMSS = "153000"
 
 class KisMinuteBarLoadError(Exception):
     """KIS 과거 분봉 로드 실패 공통 예외. 원본 예외는 `__cause__` 로 보존."""
+
+
+_ParseFailureKind = Literal[
+    "missing_date_or_time",
+    "date_mismatch",
+    "invalid_price",
+    "invalid_volume",
+    "malformed_bar_time",
+]
+
+
+class _ParseSkipError(Exception):
+    """`_parse_row` 가 한 행을 skip 할 때 내부 신호로 사용하는 예외.
+
+    Issue #52 회귀 — 원인 카테고리(`kind`) 와 row key 목록(`keys`) 을 담아
+    `_fetch_day` 가 `(symbol, day, kind)` 단위 dedupe 후 1회만 warning 을 방출
+    하도록 한다. 전체 row repr 은 포함하지 않아 로그 용량·가격 유출을 방지한다.
+    """
+
+    __slots__ = ("kind", "keys")
+
+    def __init__(self, kind: _ParseFailureKind, keys: tuple[str, ...]) -> None:
+        super().__init__(kind)
+        self.kind: _ParseFailureKind = kind
+        self.keys: tuple[str, ...] = keys
 
 
 class KisMinuteBarLoader:
@@ -406,7 +431,11 @@ class KisMinuteBarLoader:
         운영 경보 (M2): `rows` 는 비어있지 않은데 `page_bars` 가 비는 (전원
         파싱 실패) 상황은 KIS 응답 스키마 변경 또는 수신 오염 징후라 빈 응답
         (정상 공휴일) 과 구별되어야 한다. `(symbol, day)` 단위로 최초 1 회만
-        `logger.error` 방출해 로그 폭주 방지.
+        `logger.error` 방출해 로그 폭주 방지. 메시지에 첫 행의 정렬된 key 목록을
+        동봉해 스키마 변경 진단에 직결 (Issue #52).
+
+        행 단위 parse skip 경보는 `(kind)` 단위 로컬 dedupe — 같은 날짜·같은 원인
+        은 로그 1회만. 120 rows × N 일 × M 종목 로그 폭주 방지 (Issue #52).
         """
         kis = self._ensure_kis()
         date_str = day.strftime("%Y%m%d")
@@ -415,6 +444,7 @@ class KisMinuteBarLoader:
         seen: set[datetime] = set()
         is_first_page = True
         malformed_warned = False
+        parse_skip_emitted: set[_ParseFailureKind] = set()
 
         while True:
             if not is_first_page and self._throttle_s > 0:
@@ -429,10 +459,18 @@ class KisMinuteBarLoader:
 
             page_bars: list[MinuteBar] = []
             for row in rows:
-                bar = self._parse_row(symbol, row)
-                if bar is None:
-                    continue
-                if bar.bar_time.date() != day:
+                try:
+                    bar = self._parse_row(symbol, row, day)
+                except _ParseSkipError as skip:
+                    if skip.kind not in parse_skip_emitted:
+                        parse_skip_emitted.add(skip.kind)
+                        logger.warning(
+                            "KIS 분봉 행 파싱 실패 — symbol={s} date={d} kind={k} keys={ks}",
+                            s=symbol,
+                            d=date_str,
+                            k=skip.kind,
+                            ks=",".join(skip.keys),
+                        )
                     continue
                 if bar.bar_time in seen:
                     continue
@@ -440,11 +478,18 @@ class KisMinuteBarLoader:
                 page_bars.append(bar)
 
             if not page_bars and not malformed_warned:
+                first_row = rows[0] if rows else None
+                first_row_keys = (
+                    ",".join(sorted(str(k) for k in first_row))
+                    if isinstance(first_row, dict)
+                    else f"<non-dict:{type(first_row).__name__}>"
+                )
                 logger.error(
-                    "KIS 분봉 페이지 전원 파싱 실패 — symbol={s} date={d} rows={n}",
+                    "KIS 분봉 페이지 전원 파싱 실패 — symbol={s} date={d} rows={n} keys={ks}",
                     s=symbol,
                     d=date_str,
                     n=len(rows),
+                    ks=first_row_keys,
                 )
                 malformed_warned = True
 
@@ -586,34 +631,61 @@ class KisMinuteBarLoader:
             self._kis = kis
             return kis
 
-    def _parse_row(self, symbol: str, row: dict[str, Any]) -> MinuteBar | None:
-        """`output2` 한 행을 `MinuteBar` 로 변환. 파싱 실패 → `None` + warning."""
-        try:
-            date_s = str(row.get("stck_bsop_date", ""))
-            time_s = str(row.get("stck_cntg_hour", ""))
-            if len(date_s) != 8 or len(time_s) != 6:
-                raise ValueError(f"date={date_s!r} time={time_s!r}")
-            bar_time = datetime.strptime(date_s + time_s, "%Y%m%d%H%M%S").replace(tzinfo=KST)
-            bar_time = bar_time.replace(second=0, microsecond=0)
+    def _parse_row(
+        self,
+        symbol: str,
+        row: dict[str, Any],
+        expected_day: date,
+    ) -> MinuteBar:
+        """`output2` 한 행을 `MinuteBar` 로 변환.
 
+        실패 시 `_ParseSkipError(kind, keys)` 를 raise — `_fetch_day` 가 catch 해 원인
+        카테고리별 dedupe 후 1회 warning 을 방출한다 (Issue #52). 카테고리:
+
+        - `missing_date_or_time`: `stck_bsop_date` / `stck_cntg_hour` 길이 위반.
+        - `malformed_bar_time`: 날짜·시각 문자열 파싱(`strptime`) 실패.
+        - `date_mismatch`: `bar_time.date()` 가 요청 `expected_day` 와 불일치.
+        - `invalid_price`: OHLC 중 하나 이상이 `None` · 빈 문자열 · 비-finite.
+        - `invalid_volume`: `cntg_vol` 이 `None` · 빈 문자열 · 정수 변환 불가.
+        """
+        row_keys = tuple(sorted(str(k) for k in row)) if isinstance(row, dict) else ()
+
+        date_s = str(row.get("stck_bsop_date", ""))
+        time_s = str(row.get("stck_cntg_hour", ""))
+        if len(date_s) != 8 or len(time_s) != 6:
+            raise _ParseSkipError("missing_date_or_time", row_keys)
+
+        try:
+            bar_time = datetime.strptime(date_s + time_s, "%Y%m%d%H%M%S").replace(tzinfo=KST)
+        except ValueError as exc:
+            raise _ParseSkipError("malformed_bar_time", row_keys) from exc
+        bar_time = bar_time.replace(second=0, microsecond=0)
+
+        if bar_time.date() != expected_day:
+            raise _ParseSkipError("date_mismatch", row_keys)
+
+        try:
             open_ = _parse_decimal(row.get("stck_oprc"))
             high = _parse_decimal(row.get("stck_hgpr"))
             low = _parse_decimal(row.get("stck_lwpr"))
             close = _parse_decimal(row.get("stck_prpr"))
-            volume = _parse_int(row.get("cntg_vol"))
-
-            return MinuteBar(
-                symbol=symbol,
-                bar_time=bar_time,
-                open=open_,
-                high=high,
-                low=low,
-                close=close,
-                volume=volume,
-            )
         except (ValueError, InvalidOperation, TypeError) as exc:
-            logger.warning(f"KIS 분봉 행 파싱 실패 — skip: symbol={symbol} row={row!r} err={exc!r}")
-            return None
+            raise _ParseSkipError("invalid_price", row_keys) from exc
+
+        try:
+            volume = _parse_int(row.get("cntg_vol"))
+        except (ValueError, InvalidOperation, TypeError) as exc:
+            raise _ParseSkipError("invalid_volume", row_keys) from exc
+
+        return MinuteBar(
+            symbol=symbol,
+            bar_time=bar_time,
+            open=open_,
+            high=high,
+            low=low,
+            close=close,
+            volume=volume,
+        )
 
 
 # ---- 모듈 수준 순수 함수 ---------------------------------------------------
