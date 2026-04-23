@@ -81,6 +81,7 @@ from types import TracebackType
 from typing import Any, Literal
 
 from loguru import logger
+from requests.exceptions import Timeout as _RequestsTimeout
 
 from stock_agent.config import Settings
 from stock_agent.data.calendar import BusinessDayCalendar, YamlBusinessDayCalendar
@@ -110,6 +111,20 @@ _SESSION_CLOSE_HHMMSS = "153000"
 
 class KisMinuteBarLoadError(Exception):
     """KIS 과거 분봉 로드 실패 공통 예외. 원본 예외는 `__cause__` 로 보존."""
+
+
+class _DayHttpTimeoutError(Exception):
+    """`_request_with_retry` 내부 신호: 같은 날짜 HTTP 재시도 한도 초과.
+
+    `_fetch_day` 가 catch 해 해당 날짜를 skip(빈 리스트 반환) 한다. 외부로 전파되지
+    않는다 (Issue #71 — 무한 hang 방지, 운영자 감시 부담 완화).
+    """
+
+    __slots__ = ("attempts",)
+
+    def __init__(self, attempts: int) -> None:
+        super().__init__(f"HTTP timeout retry exhausted (attempts={attempts})")
+        self.attempts = attempts
 
 
 _ParseFailureKind = Literal[
@@ -194,6 +209,8 @@ class KisMinuteBarLoader:
         rate_limit_wait_s: float = 61.0,
         rate_limit_max_retries: int = 3,
         calendar: BusinessDayCalendar | None = None,
+        http_timeout_s: float = 30.0,
+        http_max_retries_per_day: int = 3,
     ) -> None:
         """
         Args:
@@ -225,6 +242,12 @@ class KisMinuteBarLoader:
             raise RuntimeError(
                 f"rate_limit_max_retries 는 1 이상이어야 합니다 (got={rate_limit_max_retries})"
             )
+        if http_timeout_s < 0:
+            raise RuntimeError(f"http_timeout_s 는 0 이상이어야 합니다 (got={http_timeout_s})")
+        if http_max_retries_per_day < 0:
+            raise RuntimeError(
+                f"http_max_retries_per_day 는 0 이상이어야 합니다 (got={http_max_retries_per_day})"
+            )
 
         if not settings.has_live_keys:
             raise KisMinuteBarLoadError(
@@ -241,6 +264,8 @@ class KisMinuteBarLoader:
         self._sleep: SleepFn = sleep or _time_mod.sleep
         self._rate_limit_wait_s = rate_limit_wait_s
         self._rate_limit_max_retries = rate_limit_max_retries
+        self._http_timeout_s = http_timeout_s
+        self._http_max_retries_per_day = http_max_retries_per_day
 
         self._cache_db_path = cache_db_path if cache_db_path is not None else _DEFAULT_CACHE_DB_PATH
         self._conn: sqlite3.Connection | None = None
@@ -525,7 +550,18 @@ class KisMinuteBarLoader:
                 self._sleep(self._throttle_s)
             is_first_page = False
 
-            response = self._request_with_retry(kis, symbol, date_str, cursor)
+            try:
+                response = self._request_with_retry(kis, symbol, date_str, cursor)
+            except _DayHttpTimeoutError as exc:
+                logger.error(
+                    "KIS 분봉 날짜 skip — HTTP timeout 재시도 한도 초과 "
+                    "symbol={s} date={d} cursor={c} attempts={n}",
+                    s=symbol,
+                    d=date_str,
+                    c=cursor,
+                    n=exc.attempts,
+                )
+                return []
             rows = response.get("output2") or []
 
             if not rows:
@@ -643,21 +679,7 @@ class KisMinuteBarLoader:
 
         while attempts < max_attempts:
             attempts += 1
-            try:
-                response = kis.fetch(
-                    _API_PATH,
-                    api=_TR_ID,
-                    params=params,
-                    domain="real",
-                )
-            except KisMinuteBarLoadError:
-                raise
-            except RuntimeError:
-                raise
-            except Exception as exc:
-                raise KisMinuteBarLoadError(
-                    f"KIS fetch 호출 실패: symbol={symbol} date={date_str}"
-                ) from exc
+            response = self._fetch_once_with_timeout_retry(kis, params, symbol, date_str)
 
             # python-kis 의 `KisDynamicDict` 는 `dict` 서브클래스가 아니라 `__data__`
             # 속성에 raw dict 를 보관한다. raw dict · KisDynamicDict 둘 다 허용하되,
@@ -699,6 +721,60 @@ class KisMinuteBarLoader:
             f"(max_retries={self._rate_limit_max_retries}, symbol={symbol} date={date_str})"
         )
 
+    def _fetch_once_with_timeout_retry(
+        self,
+        kis: Any,
+        params: dict[str, str],
+        symbol: str,
+        date_str: str,
+    ) -> dict[str, Any]:
+        """`kis.fetch` 를 호출하되 `requests.Timeout` 에 대해서만 재시도.
+
+        `http_max_retries_per_day` 회 재시도(총 시도 = `+1`) 후에도 Timeout 이면
+        `_DayHttpTimeoutError` 를 raise — 호출자(`_fetch_day`) 가 이를 catch 해 해당
+        날짜만 skip 한다. EGW00201 rate limit 은 응답 dict 계층이라 이 함수는 관여
+        하지 않고, 상위 `_request_with_retry` 가 처리한다.
+
+        `ConnectionError` 등 다른 예외는 기존 `KisMinuteBarLoadError` 래핑 규약을
+        유지(Issue #71 — 계약 변경 최소화).
+        """
+        max_timeout_attempts = self._http_max_retries_per_day + 1
+        timeout_attempts = 0
+        last_exc: _RequestsTimeout | None = None
+        while timeout_attempts < max_timeout_attempts:
+            timeout_attempts += 1
+            try:
+                response = kis.fetch(
+                    _API_PATH,
+                    api=_TR_ID,
+                    params=params,
+                    domain="real",
+                )
+            except KisMinuteBarLoadError:
+                raise
+            except RuntimeError:
+                raise
+            except _RequestsTimeout as exc:
+                last_exc = exc
+                if timeout_attempts >= max_timeout_attempts:
+                    break
+                logger.warning(
+                    "KIS HTTP timeout — 재시도 ({a}/{n}) symbol={s} date={d}",
+                    a=timeout_attempts,
+                    n=self._http_max_retries_per_day,
+                    s=symbol,
+                    d=date_str,
+                )
+                continue
+            except Exception as exc:
+                raise KisMinuteBarLoadError(
+                    f"KIS fetch 호출 실패: symbol={symbol} date={date_str}"
+                ) from exc
+            return response
+
+        assert last_exc is not None
+        raise _DayHttpTimeoutError(timeout_attempts) from last_exc
+
     def _ensure_kis(self) -> Any:
         """지연 초기화된 실전 키 PyKis 인스턴스 반환. 최초 호출 시 가드 설치."""
         with self._lock:
@@ -728,8 +804,46 @@ class KisMinuteBarLoader:
             except Exception as exc:
                 raise KisMinuteBarLoadError("PyKis 실전 인스턴스 생성 실패") from exc
             install_order_block_guard(kis)
+            self._install_http_timeout(kis)
             self._kis = kis
             return kis
+
+    def _install_http_timeout(self, kis: Any) -> None:
+        """`kis._sessions[*].request` 에 기본 timeout kwarg 를 강제 주입.
+
+        python-kis 2.1.6 의 `PyKis.request()` 가 `requests.Session.request(...)` 를
+        호출할 때 `timeout` 인자를 지정하지 않아, `requests` 기본값(None=무한 대기)
+        으로 백필 프로세스가 간헐 hang 하는 문제 해결(Issue #71).
+
+        `http_timeout_s <= 0` 이면 주입 skip (기존 동작 보존). `kis._sessions` 가
+        없으면 `logger.warning` 후 skip — python-kis 상위 버전에서 내부 구조가
+        바뀌더라도 프로세스가 죽지 않도록 방어.
+        """
+        if self._http_timeout_s <= 0:
+            return
+        sessions = getattr(kis, "_sessions", None)
+        if not isinstance(sessions, dict):
+            # 운영 경보 아님: python-kis 내부 구조가 바뀌거나 테스트 더블이라 dict
+            # 가 아닐 수 있음. 운영에서 실제 문제면 hang 으로 드러나 상위 timeout
+            # 경보가 발동하므로 여기서는 debug 레벨 충분.
+            logger.debug(
+                "KIS 인스턴스에 _sessions dict 없음 — HTTP timeout 설치 skip "
+                "(python-kis 내부 구조 변경 가능성)"
+            )
+            return
+        timeout = self._http_timeout_s
+        for session in sessions.values():
+            original = getattr(session, "request", None)
+            if not callable(original):
+                continue
+
+            def wrapped(  # noqa: E501
+                *args: Any, _orig: Any = original, _to: float = timeout, **kwargs: Any
+            ) -> Any:
+                kwargs.setdefault("timeout", _to)
+                return _orig(*args, **kwargs)
+
+            session.request = wrapped
 
     def _parse_row(
         self,
