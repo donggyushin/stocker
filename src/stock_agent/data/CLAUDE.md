@@ -13,9 +13,10 @@ YAML 로더, 실시간 분봉 소스를 한 자리에 모아 상위 레이어
 `KospiUniverse`, `UniverseLoadError`, `load_kospi200_universe`,
 `RealtimeDataStore`, `RealtimeDataError`, `TickQuote`, `MinuteBar`,
 `MinuteCsvBarLoader`, `MinuteCsvLoadError`,
-`KisMinuteBarLoader`, `KisMinuteBarLoadError`
+`KisMinuteBarLoader`, `KisMinuteBarLoadError`,
+`BusinessDayCalendar`, `HolidayCalendar`, `HolidayCalendarError`, `YamlBusinessDayCalendar`, `load_kospi_holidays`
 
-## 현재 상태 (2026-04-22 기준)
+## 현재 상태 (2026-04-23 기준)
 
 - **`historical.py`** — Phase 1 세 번째 산출물(축소판, v3)
   - 공개 API 1종: `fetch_daily_ohlcv(symbol, start, end)` + 보조 `close()` / 컨텍스트 매니저.
@@ -70,13 +71,24 @@ YAML 로더, 실시간 분봉 소스를 한 자리에 모아 상위 레이어
     - 페이지 단위 전원 파싱 실패가 여러 번 관측되면 `_fetch_day` return 직전 별도 `logger.warning` 1줄 방출 — `malformed_pages_count=N`. `malformed_pages_count=` 는 운영 grep 계약.
     - 전체 `row={!r}` repr 은 제거 (로그 용량·가격 유출 방지) — `_parse_decimal`/`_parse_int` 에 필드 라벨(`field=`) 포함, raw 원값은 포함 안 함. 진단이 필요하면 `scripts/debug_kis_minute.py` 로 분리된 덤프 경로 사용.
     - `_ParseSkipError.from_row(kind, row, detail=None)` classmethod 팩토리 — "항상 sorted dict keys" 계약을 단일 지점에 격리. `_parse_row` 의 모든 raise 지점이 `from_row` 경유.
-  - **주말 영업일 가드 (Issue #61)**: `_collect_symbol_bars` 에서 `current.weekday() >= 5` (토=5, 일=6) 이면 `_fetch_day` 호출 없이 skip. KIS 주말 요청 시 직전 영업일 데이터가 반환되어 `date_mismatch` 로 전원 skip 되던 허탕 호출 제거. 공휴일(월~금) 은 여전히 KIS 호출 후 `date_mismatch` skip 경로. `_fetch_day` docstring 정정: 빈 응답은 보관 경계 밖(≒1년 이전) 에만 해당 — 주말·공휴일에는 KIS 가 직전 영업일 데이터를 반환하므로 빈 응답 아님.
+  - **주말 영업일 가드 (Issue #61)**: `_collect_symbol_bars` 에서 `current.weekday() >= 5` (토=5, 일=6) 이면 `_fetch_day` 호출 없이 skip. KIS 주말 요청 시 직전 영업일 데이터가 반환되어 `date_mismatch` 로 전원 skip 되던 허탕 호출 제거. `_fetch_day` docstring 정정: 빈 응답은 보관 경계 밖(≒1년 이전) 에만 해당 — 주말·공휴일에는 KIS 가 직전 영업일 데이터를 반환하므로 빈 응답 아님.
+  - **공휴일 캘린더 가드 (Issue #63, ADR-0018)**: `__init__` 에 `calendar: BusinessDayCalendar | None = None` 파라미터 추가. `None` 이면 `YamlBusinessDayCalendar()` lazy 인스턴스화 (`config/holidays.yaml` 첫 `is_business_day` 호출 시 로드 + 캐시). `_collect_symbol_bars` 루프에서 주말 가드 다음 위치에 `not self._calendar.is_business_day(current)` 가드 추가. 주말 우선 평가로 캘린더 호출 비용 절감. 효과: 평일 공휴일 허탕 페이지 이전 ≒12,000건 → 0건. `EGW00201` rate limit 누적 제거.
   - **단일 스레드 전용 (ADR-0008)**: `sqlite3.Connection` 기본값 `check_same_thread=True` 유지. `_lock` 은 `_ensure_kis` 지연 초기화만 보호 — 다른 스레드에서 DB 호출 경로 진입 시 `sqlite3.ProgrammingError` 폭파. 백테스트 엔진 병렬화 요구 발생 시 별도 ADR 로 재평가 (H3 명문화, Issue #48).
   - **KIS 서버 보관 한도**: **최대 1년 분봉**. 2~3년 백테스트 요구는 본 어댑터로 해결 불가. Issue #5 후속으로 별도 데이터 소스(외부 유료 데이터, 직접 수집 등) 분리 평가 필요. Phase 2 PASS 검증은 CSV 어댑터(`minute_csv.py`)로 수행한다.
   - **`BarLoader` Protocol 준수**: `backtest/loader.py`의 `BarLoader` Protocol — `stream(start, end, symbols)` 계약 충족. 동일 인자 재호출 시 매번 새 Iterable 반환.
   - **CLI 스위치**: `scripts/backtest.py`·`scripts/sensitivity.py`에 `--loader={csv,kis}` 옵션 추가 (default `"csv"`). `--csv-dir`는 `--loader=csv`일 때만 필수.
   - **의존성**: stdlib + python-kis 2.1.6 + sqlite3. 추가 라이브러리 0.
   - **테스트**: `tests/test_kis_minute_bar_loader.py` 39건. KIS API 호출 목킹 (실 네트워크 접촉 0).
+
+- **`calendar.py`** — Phase 2 일곱 번째 산출물 보완 (공휴일 캘린더, Issue #63, ADR-0018)
+  - **공개 API**: `BusinessDayCalendar` Protocol (`is_business_day(date) -> bool`), `HolidayCalendar` (frozen dataclass: `as_of_date: date`, `source: str`, `holidays: frozenset[date]`), `YamlBusinessDayCalendar` (`calendar` 프로퍼티 lazy 로드), `HolidayCalendarError`, `load_kospi_holidays`.
+  - **데이터 소스**: `config/holidays.yaml` (`as_of_date` / `source` / `holidays: [YYYY-MM-DD, ...]`). KRX 정보데이터시스템 [12001] 휴장일 정보 + KRX 매년 12월 공식 공지 기준. 현재 KRX 2025·2026 휴장일 32일 수록. `config/universe.yaml` 운영 패턴 차용 — 운영자 연 1~2회 갱신 + 임시공휴일 발생 시 즉시.
+  - **lazy 로드**: `calendar` 프로퍼티 첫 접근 시 1회 `read_text`. 같은 인스턴스 재사용 시 디스크 I/O 1회.
+  - **`is_business_day(d)`**: 토·일(weekday >= 5) 또는 등록 공휴일 이면 `False`. 평일·비공휴일 이면 `True`. 주말 가드를 먼저 평가해 캘린더 로드 비용을 줄인다.
+  - **검증 실패 시점**: 첫 `load_kospi_holidays` 호출. 실패 시 `HolidayCalendarError` (메시지에 path 포함). silent fallback 없음.
+  - **빈 `holidays: []` 허용** + `logger.warning` (운영자 인지). `universe.py` 빈 tickers 패턴 차용.
+  - **의존성**: stdlib + PyYAML. 추가 의존성 0.
+  - **테스트**: `tests/test_calendar.py` 23 케이스. 외부 I/O 0 (`tmp_path` 만 사용). `Path.read_text` spy 시 `autospec=True` 필수.
 
 - **`minute_csv.py`** — Phase 2 네 번째 산출물 (실데이터 분봉 어댑터 — CSV 임포트)
   - **공개 API**: `MinuteCsvBarLoader(csv_dir: Path)` + `stream(start, end, symbols) -> Iterator[MinuteBar]` · 예외 `MinuteCsvLoadError`.
@@ -110,7 +122,8 @@ YAML 로더, 실시간 분봉 소스를 한 자리에 모아 상위 레이어
 - `universe.py`: 실제 PyYAML import 허용(외부 네트워크 없음), 파일은 `tmp_path` 에 작성해 격리. 로거 캡처는 loguru sink 바인딩으로.
 - `realtime.py`: 실 pykis import 금지. `pykis_factory` 에 `MagicMock` 반환 팩토리 주입, `clock` 주입으로 분 경계 제어, `polling_interval_s=0.0` 으로 폴링 루프 단축. WebSocket 모드 테스트는 `ensure_connected` 성공 mock, 폴링 fallback 테스트는 `ensure_connected` 를 `TimeoutError` 로 mock. 27 케이스 — 생명주기·WebSocket·폴링·분봉 집계·가드/엣지·live 키(fail-fast·factory 호출·`install_order_block_guard` 호출) 카테고리 커버.
 - `minute_csv.py`: 외부 I/O 없음 (stdlib `csv` + `tmp_path` CSV 작성만). 헬퍼로 `_write_csv(tmp_path, symbol, rows, *, header)` 패턴 사용 — 헤더 오버라이드로 정상·오류 시나리오를 같은 헬퍼로 커버. 56 케이스 — 생성자·정상 stream·다중 심볼·중복 심볼 행위 고정·날짜/심볼 필터·빈 파일·volume·헤더/행 파싱·bar_time/오프셋/분 경계·가격/OHLC·심볼 포맷·`symbols=()` `RuntimeError` 카테고리 커버.
-- `kis_minute_bars.py`: 실 KIS API 접촉 0. `pykis_factory` 에 `MagicMock` 반환 팩토리 주입, `kis.fetch()` 응답을 dict 더블로 대체. `EGW00201` 레이트 리밋 재시도·페이지네이션 종료 조건·캐시 적중·SQLite 저장·`has_live_keys=False` fail-fast 시나리오 포함. Issue #57 강화분: `TestParseSkipDetailField`(4) · `TestMalformedPageWarningKindsObserved`(2) · `TestMalformedPagesCountSummary`(3) · `TestParseSkipErrorFromRowFactory`(3) 추가. Issue #61 강화분: `TestCollectSymbolBarsWeekendSkip`(3) 추가. **75 케이스**.
+- `kis_minute_bars.py`: 실 KIS API 접촉 0. `pykis_factory` 에 `MagicMock` 반환 팩토리 주입, `kis.fetch()` 응답을 dict 더블로 대체. `EGW00201` 레이트 리밋 재시도·페이지네이션 종료 조건·캐시 적중·SQLite 저장·`has_live_keys=False` fail-fast 시나리오 포함. Issue #57 강화분: `TestParseSkipDetailField`(4) · `TestMalformedPageWarningKindsObserved`(2) · `TestMalformedPagesCountSummary`(3) · `TestParseSkipErrorFromRowFactory`(3) 추가. Issue #61 강화분: `TestCollectSymbolBarsWeekendSkip`(3) 추가. Issue #63 강화분: `TestCollectSymbolBarsHolidaySkip`(4) 추가 (공휴일 skip / 전구간 공휴일 빈결과 / 기본 calendar YAML 로드 / 주말 가드 우선 적용). **79 케이스**.
+- `calendar.py`: 외부 I/O 0 (stdlib + PyYAML + `tmp_path` 만 사용). `Path.read_text` spy 시 `autospec=True` 필수. 23 케이스 (정상 로드 4 + 오류 11 + Calendar 동작 8).
 - DB 는 `tmp_path / "test.db"` 또는 `":memory:"` 사용. `clock` 주입으로 "오늘" 판정을 고정.
 - 테스트 파일 작성·수정은 반드시 `unit-test-writer` 서브에이전트 경유 (root CLAUDE.md 하드 규칙).
 - 관련 테스트: `tests/test_historical.py`, `tests/test_universe.py`, `tests/test_realtime.py`, `tests/test_minute_csv.py`, `tests/test_kis_minute_bar_loader.py`.
@@ -125,6 +138,7 @@ YAML 로더, 실시간 분봉 소스를 한 자리에 모아 상위 레이어
 
 ## 범위 제외 (의도적 defer)
 
+- **자동 캘린더 갱신**: pykrx 또는 KRX 스크래핑으로 `config/holidays.yaml` 을 자동 갱신하는 경로. ADR-0011 "공휴일 수동 판정" 기조 유지. 임시공휴일 자동 감지·다른 어댑터(`historical.py` 등)에 캘린더 적용은 후속 PR.
 - **자동 유니버스 갱신**: Phase 5 후보. pykrx 수정 릴리스 또는 KRX 정보데이터시스템 스크래핑으로 `config/universe.yaml` 을 타겟으로 자동 갱신.
 - **다중 유니버스**(KOSPI 50, KOSDAQ 150 등): 현재는 KOSPI 200 고정. 필요 시 `load_universe(index_name)` 로 확장.
 - **과거 분봉 백필**: `minute_csv.py` 가 CSV 임포트 경로를 담당 (2026-04-20 Phase 2 네 번째 산출물). `kis_minute_bars.py` 가 KIS API 어댑터를 담당 (2026-04-22 Phase 2 일곱 번째 산출물, ADR-0016). 단 **KIS 서버 최대 1년 보관 제약**으로 2~3년 PASS 기준은 충족 불가 — Phase 2 PASS 검증은 CSV 로 수행. 2~3년 데이터는 Issue #5 후속으로 외부 데이터 소스 분리 평가. SQLite 캐시(`minute_bars.db`)는 `kis_minute_bars.py` 에서 이미 구현. `minute_csv.py` 용 SQLite 캐시는 성능 실측 후 후속 PR.

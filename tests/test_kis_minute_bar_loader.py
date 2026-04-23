@@ -3299,3 +3299,223 @@ class TestCollectSymbolBarsWeekendSkip:
             f"실제 fetch 호출 수: {fake_kis.fetch.call_count}"
         )
         assert fake_kis.fetch.call_count == 0, msg
+
+
+# ===========================================================================
+# TestCollectSymbolBarsHolidaySkip — _collect_symbol_bars 공휴일 skip 검증 (Issue #63)
+# ===========================================================================
+
+
+class TestCollectSymbolBarsHolidaySkip:
+    """_collect_symbol_bars 가 공휴일(평일 포함)을 건너뛰고 영업일만 fetch 하는지 검증.
+
+    src/stock_agent/data/calendar.py 가 아직 없어 import 단계에서 FAIL 한다 (RED 상태).
+    KisMinuteBarLoader 생성자가 BusinessDayCalendar 를 주입받아 공휴일 가드에 활용하는지 검증.
+    """
+
+    def test_collect_symbol_bars_skips_holiday_within_business_week(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+    ) -> None:
+        """화(2025-12-30) ~ 금(2026-01-02) 구간에서 목(2026-01-01 신정)은 공휴일 skip.
+
+        calendar mock 으로 2026-01-01 만 비영업일로 설정.
+        FID_INPUT_DATE_1 집합이 {"20251230","20251231","20260102"} 여야 한다.
+        "20260101" 이 없어야 한다.
+        """
+        from unittest.mock import MagicMock
+
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        tue = date(2025, 12, 30)  # 화요일
+        wed = date(2025, 12, 31)  # 수요일
+        holiday = date(2026, 1, 1)  # 목요일 — 신정 공휴일
+        fri = date(2026, 1, 2)  # 금요일
+
+        # calendar mock: 2026-01-01 만 공휴일, 나머지는 영업일
+        from stock_agent.data.calendar import BusinessDayCalendar  # type: ignore[import]
+
+        mock_calendar = MagicMock(spec=BusinessDayCalendar)
+        mock_calendar.is_business_day.side_effect = lambda d: d != holiday
+
+        def _side_effect(*args, **kwargs):
+            params = kwargs.get("params", {})
+            date_str = params.get("FID_INPUT_DATE_1", "")
+            day_map = {
+                "20251230": _make_output2_row(tue, 9, 31),
+                "20251231": _make_output2_row(wed, 9, 31),
+                "20260102": _make_output2_row(fri, 9, 31),
+            }
+            if date_str in day_map:
+                return _make_api_response([day_map[date_str]])
+            return _make_api_response([])
+
+        fake_kis.fetch.side_effect = _side_effect
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(datetime(2026, 1, 5, 10, 0, tzinfo=KST)),  # 월요일 — 교란 없음
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+            calendar=mock_calendar,
+        )
+        list(loader.stream(tue, fri, (_SYMBOL,)))
+        loader.close()
+
+        called_dates = {
+            c.kwargs.get("params", {}).get("FID_INPUT_DATE_1")
+            for c in fake_kis.fetch.call_args_list
+        }
+        assert called_dates == {
+            "20251230",
+            "20251231",
+            "20260102",
+        }, f"공휴일이 포함되지 않아야 한다. 실제 호출 날짜: {called_dates}"
+        assert "20260101" not in called_dates, "신정(2026-01-01) 이 호출되어서는 안 된다."
+
+    def test_collect_symbol_bars_all_holiday_range_returns_empty(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+    ) -> None:
+        """전 구간이 공휴일이면 fetch 호출 0 + 빈 결과."""
+        from unittest.mock import MagicMock
+
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        start = date(2026, 1, 1)  # 목요일
+        end = date(2026, 1, 2)  # 금요일
+
+        from stock_agent.data.calendar import BusinessDayCalendar  # type: ignore[import]
+
+        mock_calendar = MagicMock(spec=BusinessDayCalendar)
+        mock_calendar.is_business_day.return_value = False  # 전 구간 비영업일
+
+        fake_kis.fetch.return_value = _make_api_response([])
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(datetime(2026, 1, 5, 10, 0, tzinfo=KST)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+            calendar=mock_calendar,
+        )
+        bars = list(loader.stream(start, end, (_SYMBOL,)))
+        loader.close()
+
+        msg = (
+            f"전 구간 비영업일이면 _fetch_day 가 호출되지 않아야 한다. "
+            f"실제 호출 수: {fake_kis.fetch.call_count}"
+        )
+        assert fake_kis.fetch.call_count == 0, msg
+        assert bars == [], f"전 구간 비영업일은 빈 결과여야 한다. 실제: {bars!r}"
+
+    def test_collect_symbol_bars_default_calendar_loads_yaml(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        mocker,
+    ) -> None:
+        """calendar=None (기본값) 이면 YamlBusinessDayCalendar 로 기본 config/holidays.yaml 로드.
+
+        YamlBusinessDayCalendar 를 patch 해 생성 여부와 호출 여부를 검증한다.
+        """
+        from unittest.mock import MagicMock
+
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        mock_calendar_instance = MagicMock()
+        mock_calendar_instance.is_business_day.return_value = True
+
+        MockYamlCal = mocker.patch(
+            "stock_agent.data.kis_minute_bars.YamlBusinessDayCalendar",
+            return_value=mock_calendar_instance,
+        )
+
+        fake_kis.fetch.return_value = _make_api_response([])
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(datetime(2026, 4, 22, 10, 0, tzinfo=KST)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+            # calendar 인자를 넘기지 않음 → 기본값 None → 내부에서 YamlBusinessDayCalendar 생성
+        )
+        list(loader.stream(date(2026, 4, 22), date(2026, 4, 22), (_SYMBOL,)))
+        loader.close()
+
+        assert MockYamlCal.called, "calendar=None 이면 YamlBusinessDayCalendar 가 생성되어야 한다."
+        msg = "YamlBusinessDayCalendar.is_business_day 가 호출되어야 한다."
+        assert mock_calendar_instance.is_business_day.called, msg
+
+    def test_collect_symbol_bars_calendar_called_after_weekend_guard(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+    ) -> None:
+        """주말 가드가 먼저 적용 → 토·일에는 calendar.is_business_day 가 호출되지 않는다.
+
+        구간: 2026-04-17(금) ~ 2026-04-20(월). 토(18)·일(19) 에 calendar 미호출 검증.
+        """
+        from unittest.mock import MagicMock
+
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+
+        fri = date(2026, 4, 17)
+        mon = date(2026, 4, 20)
+
+        from stock_agent.data.calendar import BusinessDayCalendar  # type: ignore[import]
+
+        mock_calendar = MagicMock(spec=BusinessDayCalendar)
+        mock_calendar.is_business_day.return_value = True  # 공휴일 없음
+
+        fake_kis.fetch.return_value = _make_api_response([])
+
+        loader = KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(datetime(2026, 4, 22, 10, 0, tzinfo=KST)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+            calendar=mock_calendar,
+        )
+        list(loader.stream(fri, mon, (_SYMBOL,)))
+        loader.close()
+
+        called_with_dates = {
+            call_args.args[0] for call_args in mock_calendar.is_business_day.call_args_list
+        }
+        sat = date(2026, 4, 18)
+        sun = date(2026, 4, 19)
+        msg_sat = (
+            f"토요일({sat}) 은 주말 가드에서 먼저 skip 되므로 calendar 에 도달하지 않아야 한다."
+        )
+        assert sat not in called_with_dates, msg_sat
+        msg_sun = (
+            f"일요일({sun}) 은 주말 가드에서 먼저 skip 되므로 calendar 에 도달하지 않아야 한다."
+        )
+        assert sun not in called_with_dates, msg_sun

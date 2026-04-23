@@ -4,6 +4,13 @@
 pykrx 라이브러리 내부 타입(DataFrame 등) 은 누출하지 않고 DTO(`DailyBar`) 로 정규화한다.
 """
 
+from stock_agent.data.calendar import (
+    BusinessDayCalendar,
+    HolidayCalendar,
+    HolidayCalendarError,
+    YamlBusinessDayCalendar,
+    load_kospi_holidays,
+)
 from stock_agent.data.historical import (
     DailyBar,
     HistoricalDataError,
@@ -30,9 +37,12 @@ from stock_agent.data.universe import (
 )
 
 __all__ = [
+    "BusinessDayCalendar",
     "DailyBar",
     "HistoricalDataError",
     "HistoricalDataStore",
+    "HolidayCalendar",
+    "HolidayCalendarError",
     "KisMinuteBarLoadError",
     "KisMinuteBarLoader",
     "KospiUniverse",
@@ -43,5 +53,7 @@ __all__ = [
     "RealtimeDataStore",
     "TickQuote",
     "UniverseLoadError",
+    "YamlBusinessDayCalendar",
     "load_kospi200_universe",
+    "load_kospi_holidays",
 ]

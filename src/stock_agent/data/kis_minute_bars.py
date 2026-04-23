@@ -83,6 +83,7 @@ from typing import Any, Literal
 from loguru import logger
 
 from stock_agent.config import Settings
+from stock_agent.data.calendar import BusinessDayCalendar, YamlBusinessDayCalendar
 from stock_agent.data.realtime import MinuteBar
 from stock_agent.safety import install_order_block_guard
 
@@ -192,6 +193,7 @@ class KisMinuteBarLoader:
         sleep: SleepFn | None = None,
         rate_limit_wait_s: float = 61.0,
         rate_limit_max_retries: int = 3,
+        calendar: BusinessDayCalendar | None = None,
     ) -> None:
         """
         Args:
@@ -204,6 +206,9 @@ class KisMinuteBarLoader:
             sleep: 슬립 함수. `None` 이면 `time.sleep`. 테스트는 `MagicMock` 주입.
             rate_limit_wait_s: EGW00201 수신 시 대기 시간. 기본 61.
             rate_limit_max_retries: EGW00201 재시도 최대 횟수. 기본 3 (총 4회 호출).
+            calendar: 영업일 판정기 (`BusinessDayCalendar` Protocol). `None` 이면
+                `YamlBusinessDayCalendar()` (lazy `config/holidays.yaml` 로드, ADR-0018).
+                테스트·다른 캘린더 소스 주입 시 임의 구현 전달.
 
         Raises:
             RuntimeError: `throttle_s < 0` · `rate_limit_wait_s < 0` ·
@@ -242,6 +247,9 @@ class KisMinuteBarLoader:
         self._kis: Any | None = None
         self._closed = False
         self._lock = threading.Lock()
+        self._calendar: BusinessDayCalendar = (
+            calendar if calendar is not None else YamlBusinessDayCalendar()
+        )
 
         try:
             self._init_db()
@@ -375,12 +383,15 @@ class KisMinuteBarLoader:
 
         current = end
         while current >= start:
-            # 영업일 가드 (Issue #61): KIS 는 주말 요청 시 빈 응답 대신 직전 영업일
-            # 데이터를 반환 → `_parse_row` 가 `date_mismatch` 로 전원 skip → API 호출
-            # 낭비 + rate limit 유발. 토(5)·일(6) 은 `_fetch_day` 호출 자체를 생략.
-            # 공휴일(월~금 중) 은 여전히 KIS 호출 후 `date_mismatch` 경로로 skip —
-            # 공휴일 캘린더 도입은 후속 이슈.
+            # 영업일 가드 (Issue #61 + Issue #63): KIS 는 비영업일 요청 시 빈 응답 대신
+            # 직전 영업일 데이터를 반환 → `_parse_row` 가 `date_mismatch` 로 전원 skip
+            # → API 호출 낭비 + rate limit 유발. 토(5)·일(6) 은 `_fetch_day` 호출 자체를 생략
+            # (Issue #61). 평일 공휴일은 `_calendar.is_business_day` 로 추가 차단
+            # (Issue #63 + ADR-0018). 주말 가드를 먼저 평가해 공휴일 캘린더 호출 비용을 절감.
             if current.weekday() >= 5:
+                current -= timedelta(days=1)
+                continue
+            if not self._calendar.is_business_day(current):
                 current -= timedelta(days=1)
                 continue
             if current == today:
