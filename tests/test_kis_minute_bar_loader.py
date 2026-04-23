@@ -2450,10 +2450,10 @@ class TestFetchDaySkipSummary:
         assert "'invalid_price': 2" in msg, f"invalid_price count 누락: {msg!r}"
         assert "'invalid_volume': 2" in msg, f"invalid_volume count 누락: {msg!r}"
 
-        # 카테고리별 kind warning (invalid_price 1 + invalid_volume 1) + 요약 1 = 총 3개
+        # 카테고리별 kind warning (invalid_price 1 + invalid_volume 1) + 요약 2 = 총 4개
         all_warns = [m for m in _loguru_warnings if m["level"] == "WARNING"]
-        assert len(all_warns) == 3, (
-            f"총 warning 3개 기대 (kind×2 + 요약×1), 실제={len(all_warns)}: "
+        assert len(all_warns) == 4, (
+            f"총 warning 4개 기대 (kind×2 + 요약×2), 실제={len(all_warns)}: "
             f"{[m['message'] for m in all_warns]}"
         )
 
@@ -2639,3 +2639,520 @@ class TestParseSkipEmittedResetsPerFetchDay:
         ]
         n_summary2 = len(summary_warns)
         assert n_summary2 == 2, f"날짜 단위 요약 warning 2회 기대 (실제={n_summary2})"
+
+
+# ===========================================================================
+# Issue #57 item 1: TestParseSkipDetailField
+# — _ParseSkipError.detail 필드 + warning 메시지의 detail= / field= 토큰 검증
+# ===========================================================================
+
+
+class TestParseSkipDetailField:
+    """Issue #57 item 1: `_ParseSkipError` 에 `detail` 필드가 추가되고,
+    `_fetch_day` warning 메시지에 `detail=` + `field=<필드명>` 토큰이 포함되어야 한다.
+
+    로그 유출 방지 계약: 가격 raw 값 자체는 메시지에 포함돼선 안 된다.
+    """
+
+    @pytest.fixture
+    def _loguru_warnings(self):
+        """loguru WARNING 레벨 메시지 캡처 픽스처."""
+        from loguru import logger as _logger
+
+        captured: list[dict] = []
+
+        def _sink(message) -> None:  # type: ignore[no-untyped-def]
+            record = message.record
+            captured.append({"level": record["level"].name, "message": record["message"]})
+
+        handler_id = _logger.add(_sink, level="WARNING", format="{message}")
+        try:
+            yield captured
+        finally:
+            _logger.remove(handler_id)
+
+    def _make_loader(self, monkeypatch, pykis_factory, mock_sleep, tmp_path):
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+        return KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+        )
+
+    def test_invalid_price_warning_detail_필드_OHLC_라벨_포함(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_warnings,
+    ) -> None:
+        """stck_oprc='' 1행 → kind=invalid_price warning 에 detail= + field=stck_oprc 포함.
+
+        로그 유출 방지: 가격 raw 값("71000" 등) 자체는 메시지에 포함돼선 안 됨.
+        """
+        bad_rows = [_make_output2_row(_YESTERDAY, 9, 31, oprc="")]
+        fake_kis.fetch.return_value = _make_api_response(bad_rows)
+
+        loader = self._make_loader(monkeypatch, pykis_factory, mock_sleep, tmp_path)
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        warn_msgs = [
+            m["message"]
+            for m in _loguru_warnings
+            if m["level"] == "WARNING" and "kind=invalid_price" in m["message"]
+        ]
+        assert len(warn_msgs) == 1, f"invalid_price warning 1건 기대: {len(warn_msgs)}건"
+        msg = warn_msgs[0]
+
+        # detail= 토큰 포함
+        assert "detail=" in msg, f"detail= 토큰 누락: {msg!r}"
+        # field=stck_oprc 포함 (어느 필드가 실패했는지 표시)
+        assert "field=stck_oprc" in msg, f"field=stck_oprc 누락: {msg!r}"
+        # 가격 raw 값이 노출되면 안 됨 (로그 유출 방지)
+        # stck_oprc="" 이므로 다른 정상 필드 값이 메시지에 혼입되는지 확인
+        for raw_val in ("71500", "70800", "71200", "1234"):
+            assert raw_val not in msg, f"raw 가격값 {raw_val!r} 이 메시지에 노출됨: {msg!r}"
+
+    def test_invalid_price_high_필드_detail(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_warnings,
+    ) -> None:
+        """stck_hgpr='' 1행 → detail 에 field=stck_hgpr 포함."""
+        # _make_output2_row 의 hgpr 파라미터명 확인: hgpr=""
+        bad_rows = [_make_output2_row(_YESTERDAY, 9, 31, hgpr="")]
+        fake_kis.fetch.return_value = _make_api_response(bad_rows)
+
+        loader = self._make_loader(monkeypatch, pykis_factory, mock_sleep, tmp_path)
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        warn_msgs = [
+            m["message"]
+            for m in _loguru_warnings
+            if m["level"] == "WARNING" and "kind=invalid_price" in m["message"]
+        ]
+        assert len(warn_msgs) == 1, f"invalid_price warning 1건 기대: {len(warn_msgs)}건"
+        msg = warn_msgs[0]
+
+        assert "detail=" in msg, f"detail= 토큰 누락: {msg!r}"
+        assert "field=stck_hgpr" in msg, f"field=stck_hgpr 누락: {msg!r}"
+
+    def test_invalid_volume_warning_detail_cntg_vol_라벨(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_warnings,
+    ) -> None:
+        """cntg_vol='' 1행 → kind=invalid_volume warning 에 detail= + field=cntg_vol 포함."""
+        bad_rows = [_make_output2_row(_YESTERDAY, 9, 31, vol="")]
+        fake_kis.fetch.return_value = _make_api_response(bad_rows)
+
+        loader = self._make_loader(monkeypatch, pykis_factory, mock_sleep, tmp_path)
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        warn_msgs = [
+            m["message"]
+            for m in _loguru_warnings
+            if m["level"] == "WARNING" and "kind=invalid_volume" in m["message"]
+        ]
+        assert len(warn_msgs) == 1, f"invalid_volume warning 1건 기대: {len(warn_msgs)}건"
+        msg = warn_msgs[0]
+
+        assert "detail=" in msg, f"detail= 토큰 누락: {msg!r}"
+        assert "field=cntg_vol" in msg, f"field=cntg_vol 누락: {msg!r}"
+
+    def test_missing_date_or_time_detail_None_허용(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_warnings,
+    ) -> None:
+        """stck_bsop_date='' 1행 → missing_date_or_time warning 방출.
+
+        detail= 토큰은 선택적 — 존재하지 않아도 OK (missing_date_or_time 은
+        어떤 필드가 문제인지 date/time 둘 다일 수 있어 field 특정이 어려움).
+        warning 방출 자체만 검증.
+        """
+        bad_rows = [
+            {
+                "stck_bsop_date": "",
+                "stck_cntg_hour": "093100",
+                "stck_oprc": "71000",
+                "stck_hgpr": "71500",
+                "stck_lwpr": "70800",
+                "stck_prpr": "71200",
+                "cntg_vol": "1234",
+            }
+        ]
+        fake_kis.fetch.return_value = _make_api_response(bad_rows)
+
+        loader = self._make_loader(monkeypatch, pykis_factory, mock_sleep, tmp_path)
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        warn_msgs = [
+            m["message"]
+            for m in _loguru_warnings
+            if m["level"] == "WARNING" and "kind=missing_date_or_time" in m["message"]
+        ]
+        # warning 방출 자체 확인 (detail= 유무는 선택적)
+        assert len(warn_msgs) >= 1, f"missing_date_or_time warning 미방출: {_loguru_warnings}"
+
+
+# ===========================================================================
+# Issue #57 item 2: TestMalformedPageWarningKindsObserved
+# — M2 error 메시지에 kinds_observed= 동봉 + cursor= HHMMSS 포함
+# ===========================================================================
+
+
+class TestMalformedPageWarningKindsObserved:
+    """Issue #57 item 2: 전원 파싱 실패(M2 error) 시 `kinds_observed=` 토큰 +
+    알파벳 오름차순 정렬된 kind 목록이 error 메시지에 포함되어야 한다.
+    또한 `cursor=HHMMSS` 토큰도 포함되어야 한다.
+    """
+
+    @pytest.fixture
+    def _loguru_errors(self):
+        """loguru ERROR 레벨 메시지 캡처."""
+        from loguru import logger as _logger
+
+        captured: list[dict] = []
+
+        def _sink(message) -> None:  # type: ignore[no-untyped-def]
+            record = message.record
+            captured.append({"level": record["level"].name, "message": record["message"]})
+
+        handler_id = _logger.add(_sink, level="ERROR", format="{message}")
+        try:
+            yield captured
+        finally:
+            _logger.remove(handler_id)
+
+    def _make_loader(self, monkeypatch, pykis_factory, mock_sleep, tmp_path):
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+        return KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+        )
+
+    def test_M2_error_kinds_observed_정렬_포함(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_errors,
+    ) -> None:
+        """invalid_price 2행 + invalid_volume 1행 (전원 skip) → M2 error 메시지에
+        kinds_observed= 토큰 + invalid_price + invalid_volume 알파벳 오름차순 포함.
+
+        `invalid_price` 가 `invalid_volume` 보다 알파벳 앞에 위치해야 한다.
+        """
+
+        rows = [_make_output2_row(_YESTERDAY, 9, 31 + i, oprc="") for i in range(2)] + [
+            _make_output2_row(_YESTERDAY, 9, 33, vol="")
+        ]
+        fake_kis.fetch.return_value = _make_api_response(rows)
+
+        loader = self._make_loader(monkeypatch, pykis_factory, mock_sleep, tmp_path)
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        errors = [m for m in _loguru_errors if m["level"] == "ERROR"]
+        assert len(errors) == 1, f"M2 ERROR 1회 기대 (실제={len(errors)})"
+        msg = errors[0]["message"]
+
+        # kinds_observed= 토큰 존재
+        assert "kinds_observed=" in msg, f"kinds_observed= 토큰 누락: {msg!r}"
+
+        # invalid_price 와 invalid_volume 모두 포함
+        assert "invalid_price" in msg, f"invalid_price 누락: {msg!r}"
+        assert "invalid_volume" in msg, f"invalid_volume 누락: {msg!r}"
+
+        # 알파벳 오름차순: invalid_price 가 invalid_volume 보다 앞
+        idx_price = msg.index("invalid_price")
+        idx_volume = msg.index("invalid_volume")
+        assert idx_price < idx_volume, (
+            f"kinds_observed 정렬 오류: invalid_price({idx_price}) 가 "
+            f"invalid_volume({idx_volume}) 보다 앞이어야 함"
+        )
+
+    def test_M2_error_cursor_HHMMSS_필드(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_errors,
+    ) -> None:
+        """전원 skip 시나리오 → M2 error 메시지에 cursor= 토큰 + 6자리 HHMMSS 패턴 포함.
+
+        첫 페이지 커서는 session close 시작점 '153000' 이어야 한다.
+        """
+        import re
+
+        rows = [_make_output2_row(_YESTERDAY, 9, 31 + i, oprc="") for i in range(3)]
+        fake_kis.fetch.return_value = _make_api_response(rows)
+
+        loader = self._make_loader(monkeypatch, pykis_factory, mock_sleep, tmp_path)
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        errors = [m for m in _loguru_errors if m["level"] == "ERROR"]
+        assert len(errors) == 1, f"M2 ERROR 1회 기대 (실제={len(errors)})"
+        msg = errors[0]["message"]
+
+        # cursor= 토큰 존재
+        assert "cursor=" in msg, f"cursor= 토큰 누락: {msg!r}"
+
+        # 6자리 HHMMSS 패턴 (정규식 cursor=\d{6})
+        m = re.search(r"cursor=(\d{6})", msg)
+        assert m is not None, f"cursor=HHMMSS (6자리) 패턴 미매칭: {msg!r}"
+
+        # 첫 페이지 커서는 세션 종료 시각 153000
+        cursor_val = m.group(1)
+        fail_msg = f"첫 페이지 cursor 는 153000 이어야 함 (실제={cursor_val}): {msg!r}"
+        assert cursor_val == "153000", fail_msg
+
+
+# ===========================================================================
+# Issue #57 item 2: TestMalformedPagesCountSummary
+# — 복수 페이지 전원 파싱 실패 시 malformed_pages_count 요약 warning 검증
+# ===========================================================================
+
+
+class TestMalformedPagesCountSummary:
+    """Issue #57 item 2: `_fetch_day` 내 여러 페이지에서 연속으로 전원 파싱 실패가
+    발생할 때, return 직전에 `malformed_pages_count=N` 을 포함한 요약 warning 이
+    별도로 방출돼야 한다 (기존 M2 error + parse_skip_counts 요약과는 별개).
+    """
+
+    @pytest.fixture
+    def _loguru_all(self):
+        """loguru WARNING + ERROR 전 레벨 메시지 캡처."""
+        from loguru import logger as _logger
+
+        captured: list[dict] = []
+
+        def _sink(message) -> None:  # type: ignore[no-untyped-def]
+            record = message.record
+            captured.append({"level": record["level"].name, "message": record["message"]})
+
+        handler_id = _logger.add(_sink, level="WARNING", format="{message}")
+        try:
+            yield captured
+        finally:
+            _logger.remove(handler_id)
+
+    def _make_loader(self, monkeypatch, pykis_factory, mock_sleep, tmp_path):
+        KisMinuteBarLoader, _ = _import_loader()
+        settings = _make_settings_with_live_keys(monkeypatch)
+        return KisMinuteBarLoader(
+            settings,
+            pykis_factory=pykis_factory,
+            clock=_fixed_clock(_kst(_TODAY, 10, 0)),
+            cache_db_path=tmp_path / "test.db",
+            sleep=mock_sleep,
+        )
+
+    def _make_120_invalid_price_rows(self, day: date) -> list[dict]:
+        """120건 전원 invalid_price (stck_oprc='') 행 생성 — 페이지 전체 불량."""
+        # 시간은 9:31 ~ 11:30 범위 내에서 분 단위 120개
+        rows = []
+        for i in range(120):
+            h = 9 + (31 + i) // 60
+            m = (31 + i) % 60
+            rows.append(_make_output2_row(day, h, m, oprc=""))
+        return rows
+
+    def test_2페이지_모두_malformed_summary_warning_count_2(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_all,
+    ) -> None:
+        """페이지 1 (120행 전원 invalid_price) + 페이지 2 (120행 전원 invalid_price)
+        → malformed_pages_count=2 + symbol + date 포함 warning 정확히 1개.
+
+        페이지 2 는 len(rows)==120 이므로 페이지네이션 계속 진행.
+        페이지 2 의 min_time 을 090000 이하로 설정해 루프 종료.
+        """
+        day = _YESTERDAY
+        date_str = day.strftime("%Y%m%d")
+
+        # 페이지 1: 120행 전원 invalid_price, stck_cntg_hour 는 정상 범위
+        page1_rows = self._make_120_invalid_price_rows(day)
+
+        # 페이지 2: 120행 전원 invalid_price
+        # min_time 이 090000 이 되도록 시간 설정 → 루프 종료
+        page2_rows = []
+        for i in range(120):
+            h = 9
+            m = i % 60
+            page2_rows.append(_make_output2_row(day, h, m, oprc=""))
+
+        fake_kis.fetch.side_effect = [
+            _make_api_response(page1_rows),  # 페이지 1
+            _make_api_response(page2_rows),  # 페이지 2
+        ]
+
+        loader = self._make_loader(monkeypatch, pykis_factory, mock_sleep, tmp_path)
+        list(loader.stream(day, day, (_SYMBOL,)))
+        loader.close()
+
+        malformed_count_warns = [
+            m["message"]
+            for m in _loguru_all
+            if m["level"] == "WARNING" and "malformed_pages_count=" in m["message"]
+        ]
+        assert len(malformed_count_warns) == 1, (
+            f"malformed_pages_count warning 정확히 1개 기대 (실제={len(malformed_count_warns)}): "
+            f"{malformed_count_warns}"
+        )
+        msg = malformed_count_warns[0]
+
+        assert "malformed_pages_count=2" in msg, f"malformed_pages_count=2 누락: {msg!r}"
+        assert f"symbol={_SYMBOL}" in msg, f"symbol 필드 누락: {msg!r}"
+        assert f"date={date_str}" in msg, f"date 필드 누락: {msg!r}"
+
+    def test_1페이지만_malformed_summary_warning_count_1(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_all,
+    ) -> None:
+        """페이지 1이 119행 전원 malformed (len<120 → 루프 종료)
+        → malformed_pages_count=1 포함 warning 1개.
+        """
+        day = _YESTERDAY
+        date_str = day.strftime("%Y%m%d")
+
+        # 119행 (< 120) → 첫 페이지에서 루프 종료
+        rows = [_make_output2_row(day, 9, 31 + i, oprc="") for i in range(119)]
+        fake_kis.fetch.return_value = _make_api_response(rows)
+
+        loader = self._make_loader(monkeypatch, pykis_factory, mock_sleep, tmp_path)
+        list(loader.stream(day, day, (_SYMBOL,)))
+        loader.close()
+
+        malformed_count_warns = [
+            m["message"]
+            for m in _loguru_all
+            if m["level"] == "WARNING" and "malformed_pages_count=" in m["message"]
+        ]
+        n_warns = len(malformed_count_warns)
+        assert n_warns == 1, f"malformed_pages_count warning 1개 기대 (실제={n_warns})"
+        msg = malformed_count_warns[0]
+        assert "malformed_pages_count=1" in msg, f"malformed_pages_count=1 누락: {msg!r}"
+        assert f"date={date_str}" in msg, f"date 필드 누락: {msg!r}"
+
+    def test_정상_페이지_malformed_pages_count_0_방출_안함(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_kis,
+        pykis_factory,
+        guard_patch,
+        mock_sleep,
+        tmp_path: Path,
+        _loguru_all,
+    ) -> None:
+        """정상 bar 30건 응답 → malformed_pages_count= 포함 warning 0개.
+
+        정상 케이스에 노이즈 방출 금지.
+        """
+        rows = [_make_output2_row(_YESTERDAY, 9, 31 + i) for i in range(30)]
+        fake_kis.fetch.return_value = _make_api_response(rows)
+
+        loader = self._make_loader(monkeypatch, pykis_factory, mock_sleep, tmp_path)
+        list(loader.stream(_YESTERDAY, _YESTERDAY, (_SYMBOL,)))
+        loader.close()
+
+        malformed_count_warns = [
+            m["message"] for m in _loguru_all if "malformed_pages_count=" in m["message"]
+        ]
+        n_warns = len(malformed_count_warns)
+        fail_msg = f"정상 케이스에서 malformed_pages_count warning 방출됨: {malformed_count_warns}"
+        assert n_warns == 0, fail_msg
+
+
+# ===========================================================================
+# Issue #57 item 3: TestParseSkipErrorFromRowFactory
+# — _ParseSkipError.from_row() 클래스 메서드 계약 검증
+# ===========================================================================
+
+
+class TestParseSkipErrorFromRowFactory:
+    """Issue #57 item 3: `_ParseSkipError.from_row(kind, row, *, detail=None)` 클래스
+    메서드 계약 검증. 내부 API 이지만 factory 패턴 회귀 방지를 위해 단위 테스트.
+
+    계약:
+    - dict 입력: keys 는 알파벳 오름차순 정렬 tuple.
+    - non-dict 입력: keys == (), 예외 없이 반환.
+    - detail 키워드 인자: .detail 속성으로 보존.
+    """
+
+    def test_from_row_dict_input_keys_정렬(self) -> None:
+        """dict 입력 → .keys 가 알파벳 오름차순 tuple."""
+        from stock_agent.data.kis_minute_bars import _ParseSkipError
+
+        err = _ParseSkipError.from_row("invalid_price", {"b": 1, "a": 2})
+
+        assert err.kind == "invalid_price", f"kind 불일치: {err.kind!r}"
+        assert err.keys == ("a", "b"), f"keys 알파벳 정렬 불일치: {err.keys!r} (기대: ('a', 'b'))"
+
+    def test_from_row_non_dict_input_빈_keys(self) -> None:
+        """non-dict 입력 → .keys == (), 예외 없이 반환."""
+        from stock_agent.data.kis_minute_bars import _ParseSkipError
+
+        err = _ParseSkipError.from_row("invalid_price", "not-a-dict")
+
+        assert err.kind == "invalid_price", f"kind 불일치: {err.kind!r}"
+        assert err.keys == (), f"non-dict 입력 시 keys=() 기대 (실제={err.keys!r})"
+
+    def test_from_row_detail_선택적(self) -> None:
+        """detail 키워드 인자 → .detail 속성으로 보존."""
+        from stock_agent.data.kis_minute_bars import _ParseSkipError
+
+        err = _ParseSkipError.from_row(
+            "invalid_price", {"a": 1}, detail="field=stck_oprc reason=empty"
+        )
+
+        assert err.detail == "field=stck_oprc reason=empty", f"detail 속성 불일치: {err.detail!r}"

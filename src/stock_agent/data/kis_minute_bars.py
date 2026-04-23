@@ -56,10 +56,13 @@
   `/trading/order*` 경로 도메인 무관 차단 (`realtime.py` 와 동일).
 
 로그 포맷 계약
-- 행·페이지 단위 파싱 경보 메시지의 `kind=<value>` 토큰은 **운영 grep 계약**.
-  카테고리 이름(`_ParseFailureKind` Literal 5종) 은 고정이며, 변경 시 운영
-  grep·대시보드·알림 규칙이 함께 깨진다 — `_ParseSkipError.kind` ↔
+- 행·페이지 단위 파싱 경보 메시지의 `kind=<_ParseFailureKind value>` 토큰은
+  **운영 grep 계약**. 카테고리 이름(`_ParseFailureKind` Literal 5종) 은 고정이며,
+  변경 시 운영 grep·대시보드·알림 규칙이 함께 깨진다 — `_ParseSkipError.kind` ↔
   warning 메시지 ↔ `parse_skip_counts` 요약 warning 이 동일 문자열을 공유.
+- 동일 원칙으로 `keys=<csv>`, `kinds_observed=<csv>`, `cursor=<HHMMSS>`,
+  `malformed_pages_count=<int>`, `detail=<field=... reason=...>` 토큰도
+  운영 모니터링 grep 계약. 값 문자열 변경은 모니터링 측 계약 변경과 동등.
 """
 
 from __future__ import annotations
@@ -121,16 +124,46 @@ class _ParseSkipError(Exception):
     """`_parse_row` 가 한 행을 skip 할 때 내부 신호로 사용하는 예외.
 
     Issue #52 회귀 — 원인 카테고리(`kind`) 와 row key 목록(`keys`) 을 담아
-    날짜 단위 페치 루프가 `(symbol, day, kind)` 단위 dedupe 후 1회만 warning 을
-    방출하도록 한다. 전체 row repr 은 포함하지 않아 로그 용량·가격 유출을 방지한다.
+    날짜 단위 페치 루프(`_fetch_day`) 가 `(symbol, day, kind)` 단위 dedupe 후
+    1회만 warning 을 방출하도록 한다. 전체 row repr 은 포함하지 않아 로그
+    용량·가격 유출을 방지한다.
+
+    Issue #57 확장:
+        - `detail`: 원인 세부 라벨(예: `"field=stck_oprc reason=empty"`).
+          `invalid_price`/`invalid_volume` 이 OHLC·volume 5 필드 중 어디서 실패했는지
+          식별. 가격·volume 원값은 담지 않음 (로그 유출 방지).
+        - `from_row(kind, row, detail=None)` factory: row 가 dict 인지 검사해
+          정렬된 key tuple 을 만드는 로직을 단일 지점으로 격리. `_parse_row` 의
+          5 개 raise 지점에서 재사용.
     """
 
-    __slots__ = ("kind", "keys")
+    __slots__ = ("kind", "keys", "detail")
 
-    def __init__(self, kind: _ParseFailureKind, keys: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        kind: _ParseFailureKind,
+        keys: tuple[str, ...],
+        detail: str | None = None,
+    ) -> None:
         super().__init__(kind)
         self.kind: _ParseFailureKind = kind
         self.keys: tuple[str, ...] = keys
+        self.detail: str | None = detail
+
+    @classmethod
+    def from_row(
+        cls,
+        kind: _ParseFailureKind,
+        row: Any,
+        detail: str | None = None,
+    ) -> _ParseSkipError:
+        """row 가 dict 면 정렬된 key tuple 을, 아니면 빈 tuple 을 담아 인스턴스 생성.
+
+        타입 경계에서 "항상 sorted dict keys" 계약을 강제 (`_parse_row` 의 분산된
+        키 수집 로직을 단일화).
+        """
+        keys = tuple(sorted(str(k) for k in row)) if isinstance(row, dict) else ()
+        return cls(kind, keys, detail)
 
 
 class KisMinuteBarLoader:
@@ -434,19 +467,23 @@ class KisMinuteBarLoader:
 
         빈 응답은 주말·공휴일 또는 KIS 서버 보관 경계 밖으로 간주해 빈 리스트 반환.
 
-        운영 경보 (M2): `rows` 는 비어있지 않은데 `page_bars` 가 비는 (전원
-        파싱 실패) 상황은 KIS 응답 스키마 변경 또는 수신 오염 징후라 빈 응답
-        (정상 공휴일) 과 구별되어야 한다. `(symbol, day)` 단위로 최초 1 회만
-        `logger.error` 방출해 로그 폭주 방지. 메시지에 첫 행의 정렬된 key 목록을
-        동봉해 스키마 변경 진단에 직결 (Issue #52).
+        운영 경보 (M2, Issue #52 + Issue #57): `rows` 는 비어있지 않은데 `page_bars`
+        가 비는 (전원 파싱 실패) 상황은 KIS 응답 스키마 변경 또는 수신 오염 징후라
+        빈 응답(정상 공휴일) 과 구별되어야 한다. **같은 페이지에서 `(kind)` warning
+        과 M2 error 가 동시 방출되는 의도적 중첩** — 운영자가 `kind` / `keys=` /
+        `kinds_observed=` / `cursor=` 를 한눈에 보도록 한 설계. `(symbol, day)` 단위로
+        최초 1 회만 `logger.error` 방출해 로그 폭주 방지. 메시지 필드:
+        `keys=<첫 행 sorted CSV>` · `kinds_observed=<parse_skip_emitted sorted CSV>` ·
+        `cursor=<현재 페이지 HHMMSS>` — 스키마 변경·수신 오염 진단 직결.
 
         행 단위 parse skip 경보는 `(kind)` 단위 로컬 dedupe — 같은 날짜·같은 원인
         은 로그 1회만. 최대 `_PAGE_SIZE` rows × N 일 × M 종목 로그 폭주 방지 (Issue #52).
 
-        날짜 단위 요약 (Issue #52 C1): return 직전에 `parse_skip_counts` 를
-        `logger.warning` 1줄로 방출해 "1건 실패 vs 119건 실패" 구별 불가 문제를
-        해소한다. 같은 페이지에서 warning·error 가 동시 방출될 수 있다 — 운영자가
-        `kind` 와 `keys=` 를 한눈에 보도록 한 의도적 중첩.
+        날짜 단위 요약 (Issue #52 C1 + Issue #57 item 2): return 직전에
+        `parse_skip_counts` 를 `logger.warning` 1줄로 방출해 "1건 실패 vs 119건 실패"
+        구별 불가 문제를 해소한다. 같은 날짜 내 전원 파싱 실패 페이지가 여러 번
+        관측됐으면 `malformed_pages_count=N` 을 포함한 별도 요약 warning 1 줄을
+        추가 방출해 "페이지 단위 drift" 를 가시화한다 (Issue #57).
         """
         kis = self._ensure_kis()
         date_str = day.strftime("%Y%m%d")
@@ -455,6 +492,7 @@ class KisMinuteBarLoader:
         seen: set[datetime] = set()
         is_first_page = True
         malformed_warned = False
+        malformed_pages_count = 0
         parse_skip_emitted: set[_ParseFailureKind] = set()
         parse_skip_counts: dict[_ParseFailureKind, int] = {}
 
@@ -477,12 +515,14 @@ class KisMinuteBarLoader:
                     parse_skip_counts[skip.kind] = parse_skip_counts.get(skip.kind, 0) + 1
                     if skip.kind not in parse_skip_emitted:
                         parse_skip_emitted.add(skip.kind)
+                        detail_token = f" detail={skip.detail}" if skip.detail is not None else ""
                         logger.warning(
-                            "KIS 분봉 행 파싱 실패 — symbol={s} date={d} kind={k} keys={ks}",
+                            "KIS 분봉 행 파싱 실패 — symbol={s} date={d} kind={k} keys={ks}{dt}",
                             s=symbol,
                             d=date_str,
                             k=skip.kind,
                             ks=",".join(skip.keys),
+                            dt=detail_token,
                         )
                     continue
                 if bar.bar_time in seen:
@@ -490,21 +530,27 @@ class KisMinuteBarLoader:
                 seen.add(bar.bar_time)
                 page_bars.append(bar)
 
-            if not page_bars and not malformed_warned:
-                first_row = rows[0] if rows else None
-                first_row_keys = (
-                    ",".join(sorted(str(k) for k in first_row))
-                    if isinstance(first_row, dict)
-                    else f"<non-dict:{type(first_row).__name__}>"
-                )
-                logger.error(
-                    "KIS 분봉 페이지 전원 파싱 실패 — symbol={s} date={d} rows={n} keys={ks}",
-                    s=symbol,
-                    d=date_str,
-                    n=len(rows),
-                    ks=first_row_keys,
-                )
-                malformed_warned = True
+            if not page_bars:
+                malformed_pages_count += 1
+                if not malformed_warned:
+                    first_row = rows[0] if rows else None
+                    first_row_keys = (
+                        ",".join(sorted(str(k) for k in first_row))
+                        if isinstance(first_row, dict)
+                        else f"<non-dict:{type(first_row).__name__}>"
+                    )
+                    kinds_observed_csv = ",".join(sorted(parse_skip_emitted))
+                    logger.error(
+                        "KIS 분봉 페이지 전원 파싱 실패 — symbol={s} date={d} rows={n} "
+                        "keys={ks} kinds_observed={ko} cursor={c}",
+                        s=symbol,
+                        d=date_str,
+                        n=len(rows),
+                        ks=first_row_keys,
+                        ko=kinds_observed_csv,
+                        c=cursor,
+                    )
+                    malformed_warned = True
 
             collected.extend(page_bars)
 
@@ -534,6 +580,14 @@ class KisMinuteBarLoader:
                 d=date_str,
                 c=dict(sorted(parse_skip_counts.items())),
                 k=len(collected),
+            )
+
+        if malformed_pages_count > 0:
+            logger.warning(
+                "KIS 분봉 전원실패 페이지 요약 — symbol={s} date={d} malformed_pages_count={n}",
+                s=symbol,
+                d=date_str,
+                n=malformed_pages_count,
             )
 
         return collected
@@ -661,47 +715,45 @@ class KisMinuteBarLoader:
     ) -> MinuteBar:
         """`output2` 한 행을 `MinuteBar` 로 변환.
 
-        실패 시 `_ParseSkipError(kind, keys)` 를 raise — `_fetch_day` 가 catch 해 원인
-        카테고리별 dedupe 후 1회 warning 을 방출한다 (Issue #52). 카테고리:
+        실패 시 `_ParseSkipError.from_row(kind, row, detail=...)` 를 raise —
+        `_fetch_day` 가 catch 해 원인 카테고리별 dedupe 후 1회 warning 을 방출한다
+        (Issue #52 + Issue #57). 카테고리:
 
         - `missing_date_or_time`: `stck_bsop_date` / `stck_cntg_hour` 길이 위반.
         - `malformed_bar_time`: 날짜·시각 문자열 파싱(`strptime`) 실패.
         - `date_mismatch`: `bar_time.date()` 가 요청 `expected_day` 와 불일치.
         - `invalid_price`: OHLC 중 하나 이상이 `None` · 빈 문자열 · 비-finite 이거나
-          `_parse_decimal` 에서 `Decimal` 파싱 실패(`InvalidOperation` · `ValueError`
-          · `TypeError` — 비-수치 토큰·구분자 포함 등).
-        - `invalid_volume`: `cntg_vol` 이 `None` · 빈 문자열 이거나
-          `int(Decimal(...))` 변환 실패(`InvalidOperation` · `ValueError` ·
-          `TypeError` — 소수점·음수 포맷 오류·과대값 등).
+          `_parse_decimal` 에서 `Decimal` 파싱 실패. detail 에 `field=<stck_*>
+          reason=<...>` 라벨 동봉 (4 필드 중 최초 실패). 가격 원값은 담지 않음.
+        - `invalid_volume`: `cntg_vol` 이 `None` · 빈 문자열 이거나 변환 실패.
+          detail 에 `field=cntg_vol reason=<...>` 동봉.
         """
-        row_keys = tuple(sorted(str(k) for k in row)) if isinstance(row, dict) else ()
-
         date_s = str(row.get("stck_bsop_date", ""))
         time_s = str(row.get("stck_cntg_hour", ""))
         if len(date_s) != 8 or len(time_s) != 6:
-            raise _ParseSkipError("missing_date_or_time", row_keys)
+            raise _ParseSkipError.from_row("missing_date_or_time", row)
 
         try:
             bar_time = datetime.strptime(date_s + time_s, "%Y%m%d%H%M%S").replace(tzinfo=KST)
         except ValueError as exc:
-            raise _ParseSkipError("malformed_bar_time", row_keys) from exc
+            raise _ParseSkipError.from_row("malformed_bar_time", row) from exc
         bar_time = bar_time.replace(second=0, microsecond=0)
 
         if bar_time.date() != expected_day:
-            raise _ParseSkipError("date_mismatch", row_keys)
+            raise _ParseSkipError.from_row("date_mismatch", row)
 
         try:
-            open_ = _parse_decimal(row.get("stck_oprc"))
-            high = _parse_decimal(row.get("stck_hgpr"))
-            low = _parse_decimal(row.get("stck_lwpr"))
-            close = _parse_decimal(row.get("stck_prpr"))
+            open_ = _parse_decimal(row.get("stck_oprc"), field="stck_oprc")
+            high = _parse_decimal(row.get("stck_hgpr"), field="stck_hgpr")
+            low = _parse_decimal(row.get("stck_lwpr"), field="stck_lwpr")
+            close = _parse_decimal(row.get("stck_prpr"), field="stck_prpr")
         except (ValueError, InvalidOperation, TypeError) as exc:
-            raise _ParseSkipError("invalid_price", row_keys) from exc
+            raise _ParseSkipError.from_row("invalid_price", row, detail=str(exc)) from exc
 
         try:
-            volume = _parse_int(row.get("cntg_vol"))
+            volume = _parse_int(row.get("cntg_vol"), field="cntg_vol")
         except (ValueError, InvalidOperation, TypeError) as exc:
-            raise _ParseSkipError("invalid_volume", row_keys) from exc
+            raise _ParseSkipError.from_row("invalid_volume", row, detail=str(exc)) from exc
 
         return MinuteBar(
             symbol=symbol,
@@ -717,25 +769,36 @@ class KisMinuteBarLoader:
 # ---- 모듈 수준 순수 함수 ---------------------------------------------------
 
 
-def _parse_decimal(raw: Any) -> Decimal:
+def _parse_decimal(raw: Any, *, field: str) -> Decimal:
+    """문자열·None 을 `Decimal` 로 변환. 실패 시 `field=<name> reason=<...>` 메시지.
+
+    raw 원값은 메시지에 담지 않는다 — 운영 로그 유출 방지 (Issue #57 item 1).
+    """
     if raw is None:
-        raise ValueError("Decimal None")
+        raise ValueError(f"field={field} reason=none")
     text = str(raw).strip()
     if not text:
-        raise ValueError("Decimal empty")
-    value = Decimal(text)
+        raise ValueError(f"field={field} reason=empty")
+    try:
+        value = Decimal(text)
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise ValueError(f"field={field} reason=parse_error") from exc
     if not value.is_finite():
-        raise ValueError(f"Decimal non-finite: {raw!r}")
+        raise ValueError(f"field={field} reason=non_finite")
     return value
 
 
-def _parse_int(raw: Any) -> int:
+def _parse_int(raw: Any, *, field: str) -> int:
+    """문자열·None 을 정수로 변환. 실패 시 `field=<name> reason=<...>` 메시지."""
     if raw is None:
-        raise ValueError("int None")
+        raise ValueError(f"field={field} reason=none")
     text = str(raw).strip()
     if not text:
-        raise ValueError("int empty")
-    return int(Decimal(text))
+        raise ValueError(f"field={field} reason=empty")
+    try:
+        return int(Decimal(text))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise ValueError(f"field={field} reason=parse_error") from exc
 
 
 def _bar_time_to_hhmmss(dt: datetime) -> str:
