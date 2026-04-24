@@ -66,7 +66,9 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **Phase 1 PASS (코드·테스트 레벨)** (2026-04-19 선언). Phase 0 환경 준비 완료. broker(KisClient + rate_limiter) + data(historical + universe + realtime) 모두 완료. pytest **131건 green**. **paper 주문 + live 시세 하이브리드 키 정책 도입**: KIS paper 도메인에 시세 API가 없어 `RealtimeDataStore`는 별도 실전 APP_KEY로 실전 도메인을 호출하며, 실전 키 PyKis 인스턴스에는 `install_order_block_guard`를 설치해 주문 경로를 구조적으로 차단한다.
 
-**Phase 2 진행 중 — ORB 전략 엔진 + 리스크 매니저 + 백테스트 엔진 코어 + CSV 분봉 어댑터 + 파라미터 민감도 그리드 + backtest.py CLI + KIS 과거 분봉 API 어댑터 + 백필 CLI 완료** (2026-04-20~22). `strategy/` + `risk/` + `backtest/` + `data/kis_minute_bars.py` 완료. `scripts/backtest.py`·`scripts/sensitivity.py` 에 `--loader={csv,kis}` 옵션 추가. **PASS 선언은 1년치 KIS 분봉 백필 + 낙폭 절대값 15% 미만 확인 (MDD > -15%, 240 영업일 이상, 다중 종목) 이후.** KIS 서버 1년 보관 한도에 맞춰 Phase 2 PASS 기준 기간을 1년으로 완화했다. 임계값 -15% 유지. 상세는 ADR-0017. 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
+**Phase 2 진행 중 — ORB 전략 엔진 + 리스크 매니저 + 백테스트 엔진 코어 + CSV 분봉 어댑터 + 파라미터 민감도 그리드 + backtest.py CLI + KIS 과거 분봉 API 어댑터 + 백필 CLI 완료** (2026-04-20~22). `strategy/` + `risk/` + `backtest/` + `data/kis_minute_bars.py` 완료. `scripts/backtest.py`·`scripts/sensitivity.py` 에 `--loader={csv,kis}` 옵션 추가. PASS 판정은 ADR-0019 세 게이트(MDD > -15% · 승률 × 손익비 > 1.0 · 연환산 샤프 > 0) 전부 충족 + walk-forward 검증 통과 조건.
+
+**Phase 2 1차 백테스트 FAIL (2026-04-24, ADR-0019)**. 2026-04-24 에 1년치 KIS 분봉 백필 완료 (199 심볼, 2.78 GB) + `uv run python scripts/backtest.py --loader=kis --from 2025-04-22 --to 2026-04-21` 1회 실행. 결과: **MDD -51.36%**, 총수익률 -50.05%, 샤프 -6.81, 승률 31.35%, 손익비 1.28, 트레이드당 기대값 ≈ -0.28R. Phase 2 PASS 기준 3.4배 초과 미달. **사용자 정책**: 수익률 확인 전까지 Phase 3 진입 금지 (ADR-0019). 복구 5단계 로드맵 A(민감도 그리드) → B(비용 가정 재검정) → C(유니버스 필터) → D(전략 파라미터 구조 변경) → E(전략 교체) 순차 게이팅. 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
 
 **Phase 3 착수 전제 통과** (2026-04-21). 실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK) 완료.
 
