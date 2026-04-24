@@ -25,6 +25,7 @@ from stock_agent.backtest.sensitivity import (
     default_grid,
     render_markdown_table,
     run_sensitivity,
+    run_sensitivity_parallel,
     write_csv,
 )
 from stock_agent.backtest.walk_forward import (
@@ -56,6 +57,7 @@ __all__ = [
     "generate_windows",
     "render_markdown_table",
     "run_sensitivity",
+    "run_sensitivity_parallel",
     "run_walk_forward",
     "write_csv",
 ]

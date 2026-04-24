@@ -49,6 +49,7 @@ ADR 가 **불필요** 한 변경:
 | [0017](./0017-phase2-pass-1year.md) | Phase 2 PASS 판정 기간 완화 — 2~3 년 → 1 년 (MDD > -15% 유지) | 승인됨 | 2026-04-22 |
 | [0018](./0018-holiday-calendar-yaml.md) | KisMinuteBarLoader 공휴일 캘린더 — `config/holidays.yaml` YAML 수동 관리 | 승인됨 | 2026-04-23 |
 | [0019](./0019-phase2-backtest-fail-remediation.md) | Phase 2 백테스트 1차 FAIL + 수익률 확보 전 Phase 3 금지 정책 + 복구 5단계 로드맵 | 승인됨 | 2026-04-24 |
+| [0020](./0020-sensitivity-parallel-execution.md) | Sensitivity 그리드 ProcessPool 병렬 실행 경로 도입 (`run_sensitivity_parallel` + `--workers`) | 승인됨 | 2026-04-24 |
 
 ## 관련 문서
 

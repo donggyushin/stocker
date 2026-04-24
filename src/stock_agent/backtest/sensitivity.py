@@ -9,17 +9,23 @@
   도구이지 과적합 허가가 아니다. 최종 파라미터 교체는 Walk-forward 검증 후에만
   (plan.md 위험 테이블 "백테스트 과적합" 기조).
 
+실행 경로 2종
+- `run_sensitivity` — 단일 프로세스 직렬 실행. 회귀 안전망·소형 그리드용.
+- `run_sensitivity_parallel` — `ProcessPoolExecutor` 기반 병렬 (ADR-0020).
+  ADR-0008 단일 프로세스 정책의 명시적 예외 (분석 도구 범위). 결과 순서·
+  fail-fast 계약은 직렬 경로와 동일.
+
 범위 제외 (의도적 defer — 후속 PR / Phase 5)
 - HTML/Jupyter 노트북 렌더러 (Phase 5 후보 — backtest/CLAUDE.md 참조).
-- Walk-forward 검증 · 멀티프로세스 병렬 실행 (Phase 5).
+- Walk-forward 검증 (Phase 5).
 - YAML 기반 축 외부화 — 코드 상수 기조 (YAGNI).
 
 설계 원칙 (`backtest/engine.py` 와 동일 기조)
 - 외부 I/O = CSV 쓰기 경로 1개만. Markdown 은 문자열 반환.
 - 결정론 — 그리드 순회는 축 선언 순서 · 각 축 후보값 선언 순서 고정.
+  병렬 경로도 `combo_idx` 기반 재정렬로 동일 순서 유지.
 - generic `except Exception` 금지. 사용자 입력 오류는 `RuntimeError` 전파.
 - `@dataclass(frozen=True, slots=True)` 로 DTO 불변화.
-- 단일 프로세스 전용. 동시 호출 금지.
 
 파라미터 이름 공간
 - `strategy.<field>` — `StrategyConfig` 필드 (`stop_loss_pct`, `take_profit_pct`,
@@ -36,10 +42,12 @@ from __future__ import annotations
 
 import csv
 import dataclasses
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, time
 from decimal import Decimal
+from multiprocessing.context import BaseContext
 from pathlib import Path
 from typing import Any
 
@@ -281,6 +289,93 @@ def run_sensitivity(
     return tuple(rows)
 
 
+def run_sensitivity_parallel(
+    loader_factory: Callable[[], BarLoader],
+    start: date,
+    end: date,
+    symbols: tuple[str, ...],
+    base_config: BacktestConfig,
+    grid: SensitivityGrid,
+    *,
+    max_workers: int | None = None,
+    mp_context: BaseContext | None = None,
+) -> tuple[SensitivityRow, ...]:
+    """`run_sensitivity` 의 ProcessPool 병렬 실행 경로 (ADR-0020).
+
+    각 조합을 별도 워커 프로세스에서 `BacktestEngine.run()` 으로 실행한 뒤
+    결과를 `combo_idx` 로 재정렬해 직렬 경로와 동일 순서를 보장한다. 한
+    워커가 예외를 발생시키면 즉시 잔여 future 를 취소하고 호출자로 예외를
+    전파한다 (직렬 fail-fast 계약 동일).
+
+    `loader` 인스턴스 대신 `loader_factory` 를 받는 이유: `KisMinuteBarLoader`
+    의 PyKis 세션 / `requests.Session` / `sqlite3.Connection` 은 pickle 불가
+    능하다. 워커는 자기 프로세스 안에서 팩토리를 호출해 새 loader 를 만든다.
+    팩토리는 pickleable 해야 한다 (모듈 top-level 함수 또는
+    `functools.partial`).
+
+    Args:
+        loader_factory: 워커 프로세스 안에서 호출해 새 `BarLoader` 를 생성하
+            는 callable. pickle 가능해야 한다.
+        start: 구간 시작 (경계 포함).
+        end: 구간 종료 (경계 포함).
+        symbols: 대상 종목 코드 튜플 (1개 이상).
+        base_config: 그리드로 덮어쓰지 않은 필드의 기본값을 담은 `BacktestConfig`.
+        grid: 축 조합. `SensitivityGrid` 가 축 1개 이상을 강제하므로 빈 결과는
+            발생하지 않는다.
+        max_workers: 동시 워커 수. `None` 이면 `ProcessPoolExecutor` 기본값.
+            `< 1` → `RuntimeError`.
+        mp_context: `multiprocessing` 컨텍스트. `None` 이면 PPE 기본값(macOS·
+            Linux Python 3.12 → `spawn`). 테스트에서 `fork` 를 주입하면 워커
+            가 부모 모듈 상태를 그대로 상속해 spawn 의 import 비용을 회피.
+
+    Returns:
+        조합 순서대로 생성된 `SensitivityRow` 튜플 (`grid.iter_combinations()`
+        순서와 동일 — 결정론).
+
+    Raises:
+        RuntimeError: `max_workers < 1`.
+        Exception: 워커 안에서 발생한 첫 예외 (`BacktestEngine.run()` 의
+            `RuntimeError` 또는 `loader_factory` / `loader.stream` 의 예외).
+            발생 시 잔여 future 는 `cancel_futures=True` 로 즉시 취소된다.
+    """
+    if max_workers is not None and max_workers < 1:
+        raise RuntimeError(f"max_workers 는 1 이상이어야 합니다 (got={max_workers})")
+    combos = list(grid.iter_combinations())
+    results: list[SensitivityRow | None] = [None] * len(combos)
+    logger.info(
+        "sensitivity.parallel.start combos={c} workers={w}",
+        c=len(combos),
+        w=max_workers,
+    )
+    with ProcessPoolExecutor(max_workers=max_workers, mp_context=mp_context) as executor:
+        futures = {
+            executor.submit(
+                _run_single_combo,
+                idx,
+                combo,
+                loader_factory,
+                start,
+                end,
+                symbols,
+                base_config,
+            ): idx
+            for idx, combo in enumerate(combos)
+        }
+        try:
+            for future in as_completed(futures):
+                idx, row = future.result()
+                results[idx] = row
+        except BaseException:
+            # 첫 예외 → 잔여 future 즉시 취소. context manager 의 shutdown(wait=True)
+            # 이 후행돼도 idempotent.
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+    # 정상 종료 경로에서는 모든 인덱스가 채워져야 함 — 누락은 내부 invariant 위반.
+    if any(r is None for r in results):
+        raise RuntimeError("run_sensitivity_parallel 내부 오류: 결과 누락 (combo idx 순서 무결성 위반)")
+    return tuple(r for r in results if r is not None)
+
+
 def render_markdown_table(
     rows: tuple[SensitivityRow, ...],
     sort_by: str = "total_return_pct",
@@ -407,6 +502,47 @@ def _require_dataclass_field(instance: Any, field_name: str, axis_name: str) -> 
             f"{type(instance).__name__} 에 필드 {field_name!r} 가 없습니다 "
             f"(axis={axis_name}, available={sorted(names)})"
         )
+
+
+def _run_single_combo(
+    combo_idx: int,
+    combo: dict[str, Any],
+    loader_factory: Callable[[], BarLoader],
+    start: date,
+    end: date,
+    symbols: tuple[str, ...],
+    base_config: BacktestConfig,
+) -> tuple[int, SensitivityRow]:
+    """ProcessPool 워커 진입점 — 단일 조합 실행 후 `(idx, row)` 반환.
+
+    모듈 top-level 함수로 유지해 `ProcessPoolExecutor.submit` 가 pickle 가능
+    하게 한다 (closure 사용 금지). loader 는 워커 안에서 생성·`close` 한다 —
+    KisMinuteBarLoader 처럼 SQLite·PyKis 세션을 잡고 있는 구현이 워커 종료
+    경로에서 누수되지 않도록.
+    """
+    loader = loader_factory()
+    try:
+        config = _apply_combo(base_config, combo)
+        engine = BacktestEngine(config)
+        logger.debug(
+            "sensitivity.parallel.attempt idx={i} combo={c}",
+            i=combo_idx,
+            c=combo,
+        )
+        result = engine.run(loader.stream(start, end, symbols))
+        row = _result_to_row(combo, result)
+        logger.info(
+            "sensitivity.parallel.combo_done idx={i} combo={c} net_pnl={p} trades={t}",
+            i=combo_idx,
+            c=combo,
+            p=result.metrics.net_pnl_krw,
+            t=len(result.trades),
+        )
+        return combo_idx, row
+    finally:
+        close = getattr(loader, "close", None)
+        if callable(close):
+            close()
 
 
 def _result_to_row(combo: dict[str, Any], result: BacktestResult) -> SensitivityRow:
@@ -538,5 +674,6 @@ __all__ = [
     "default_grid",
     "render_markdown_table",
     "run_sensitivity",
+    "run_sensitivity_parallel",
     "write_csv",
 ]
