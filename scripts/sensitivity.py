@@ -33,6 +33,8 @@ uv run python scripts/sensitivity.py \
 from __future__ import annotations
 
 import argparse
+import functools
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -44,6 +46,7 @@ from stock_agent.backtest import (
     default_grid,
     render_markdown_table,
     run_sensitivity,
+    run_sensitivity_parallel,
     write_csv,
 )
 from stock_agent.backtest.loader import BarLoader
@@ -146,19 +149,55 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Markdown 표를 오름차순으로 정렬 (기본 내림차순).",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help=(
+            "병렬 워커 수 (ProcessPool, ADR-0020). 미지정 시 기본값 "
+            "min(os.cpu_count() - 1, 8). 1 이면 직렬 경로(run_sensitivity) — "
+            "회귀 안전망. 0·음수 거부 (RuntimeError, exit 2). KIS·CSV loader "
+            "모두 워커별 새 인스턴스를 생성 (loader 는 pickle 불가)."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.loader == "csv" and args.csv_dir is None:
         parser.error("--loader=csv 에는 --csv-dir 이 필요합니다.")
     return args
 
 
-def _build_loader(args: argparse.Namespace) -> BarLoader:
-    """`--loader` 분기로 `BarLoader` 구현체를 생성한다."""
-    if args.loader == "kis":
+def _build_loader_primitive(loader_kind: str, csv_dir: Path | None) -> BarLoader:
+    """`--loader` 분기로 `BarLoader` 구현체 생성 — primitive 인자만 받는다.
+
+    `argparse.Namespace` 를 받지 않는 이유: `functools.partial(_build_loader_primitive,
+    args.loader, args.csv_dir)` 형태로 ProcessPool 워커에 전달할 때 pickle 호환을
+    보장하기 위함 (Namespace 자체는 pickleable 이지만 primitive 만 받는 편이
+    spawn 컨텍스트에서 안정적).
+    """
+    if loader_kind == "kis":
         settings = get_settings()
         return KisMinuteBarLoader(settings)
-    assert args.csv_dir is not None, "csv 모드에서 csv_dir 는 _parse_args 가 강제한다"
-    return MinuteCsvBarLoader(args.csv_dir)
+    assert csv_dir is not None, "csv 모드에서 csv_dir 는 _parse_args 가 강제한다"
+    return MinuteCsvBarLoader(csv_dir)
+
+
+def _build_loader(args: argparse.Namespace) -> BarLoader:
+    """`_build_loader_primitive` 의 Namespace 어댑터 — 직렬 경로 호환."""
+    return _build_loader_primitive(args.loader, args.csv_dir)
+
+
+def _resolve_workers(raw: int | None) -> int:
+    """`--workers` 인자 해석. `None` → `min(os.cpu_count() - 1, 8)`.
+
+    Raises:
+        RuntimeError: `raw <= 0`. (`main()` 의 except RuntimeError 가 exit 2 매핑.)
+    """
+    if raw is None:
+        cpu = os.cpu_count() or 2
+        return max(1, min(cpu - 1, 8))
+    if raw < 1:
+        raise RuntimeError(f"--workers 는 1 이상이어야 합니다 (got={raw})")
+    return raw
 
 
 def _resolve_symbols(raw: str) -> tuple[str, ...]:
@@ -186,41 +225,66 @@ def _run_pipeline(args: argparse.Namespace) -> None:
     경계를 single-purpose 로 분리해 `main()` 의 wrapper 는 오직 예외 → exit
     code 매핑에만 집중한다. 라이브러리 모듈의 `RuntimeError` fail-fast 기조를
     그대로 전파.
+
+    `--workers` 분기 (ADR-0020):
+    - `1` → 기존 직렬 경로 `run_sensitivity` (회귀 안전망).
+    - `>= 2` → `run_sensitivity_parallel` (`ProcessPoolExecutor`). loader 는
+      워커별 새 인스턴스로 생성하므로 메인 프로세스에서 loader 를 만들지 않는다.
     """
     symbols = _resolve_symbols(args.symbols)
-    loader = _build_loader(args)
+    workers = _resolve_workers(args.workers)
     base_config = BacktestConfig(starting_capital_krw=args.starting_capital)
     grid = default_grid()
     logger.info(
-        "sensitivity.start loader={l} from={s} to={e} symbols={n} combos={c}",
+        "sensitivity.start loader={l} from={s} to={e} symbols={n} combos={c} workers={w}",
         l=args.loader,
         s=args.start,
         e=args.end,
         n=len(symbols),
         c=grid.size,
+        w=workers,
     )
-    try:
-        rows = run_sensitivity(
-            loader=loader,
+
+    if workers == 1:
+        loader = _build_loader(args)
+        try:
+            rows = run_sensitivity(
+                loader=loader,
+                start=args.start,
+                end=args.end,
+                symbols=symbols,
+                base_config=base_config,
+                grid=grid,
+            )
+        finally:
+            close = getattr(loader, "close", None)
+            if callable(close):
+                close()
+    else:
+        loader_factory = functools.partial(
+            _build_loader_primitive,
+            args.loader,
+            args.csv_dir,
+        )
+        rows = run_sensitivity_parallel(
+            loader_factory=loader_factory,
             start=args.start,
             end=args.end,
             symbols=symbols,
             base_config=base_config,
             grid=grid,
+            max_workers=workers,
         )
-        args.output_markdown.parent.mkdir(parents=True, exist_ok=True)
-        args.output_csv.parent.mkdir(parents=True, exist_ok=True)
-        markdown = render_markdown_table(
-            rows,
-            sort_by=args.sort_by,
-            descending=not args.ascending,
-        )
-        args.output_markdown.write_text(markdown, encoding="utf-8")
-        write_csv(rows, args.output_csv)
-    finally:
-        close = getattr(loader, "close", None)
-        if callable(close):
-            close()
+
+    args.output_markdown.parent.mkdir(parents=True, exist_ok=True)
+    args.output_csv.parent.mkdir(parents=True, exist_ok=True)
+    markdown = render_markdown_table(
+        rows,
+        sort_by=args.sort_by,
+        descending=not args.ascending,
+    )
+    args.output_markdown.write_text(markdown, encoding="utf-8")
+    write_csv(rows, args.output_csv)
     logger.info(
         "sensitivity.done rows={n} markdown={m} csv={c}",
         n=len(rows),
