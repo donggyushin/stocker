@@ -536,9 +536,7 @@ _AXIS_PARSERS: dict[str, Callable[[str], Any]] = {
 }
 
 
-def load_sensitivity_rows(
-    path: Path, grid: SensitivityGrid
-) -> tuple[SensitivityRow, ...]:
+def load_sensitivity_rows(path: Path, grid: SensitivityGrid) -> tuple[SensitivityRow, ...]:
     """기존 sensitivity CSV 를 파싱해 `SensitivityRow` 튜플로 복원.
 
     `load_completed_combos` 가 params key 만 반환하는 것과 달리 이 함수는
@@ -573,9 +571,7 @@ def load_sensitivity_rows(
             return ()
         missing_axes = [name for name in axis_names if name not in header]
         if missing_axes:
-            raise RuntimeError(
-                f"CSV 헤더에 축 {missing_axes!r} 가 없습니다 (header={header})"
-            )
+            raise RuntimeError(f"CSV 헤더에 축 {missing_axes!r} 가 없습니다 (header={header})")
         missing_metrics = [name for name in metric_names if name not in header]
         if missing_metrics:
             raise RuntimeError(
@@ -589,15 +585,10 @@ def load_sensitivity_rows(
         rows: list[SensitivityRow] = []
         for row in data_rows:
             if len(row) < len(header):
-                raise RuntimeError(
-                    f"CSV 행 길이가 헤더보다 짧습니다 (row={row}, header={header})"
-                )
-            params = tuple(
-                (name, _AXIS_PARSERS[name](row[axis_col[name]])) for name in axis_names
-            )
+                raise RuntimeError(f"CSV 행 길이가 헤더보다 짧습니다 (row={row}, header={header})")
+            params = tuple((name, _AXIS_PARSERS[name](row[axis_col[name]])) for name in axis_names)
             metric_values = {
-                name: _parse_metric_value(name, row[metric_col[name]])
-                for name in metric_names
+                name: _parse_metric_value(name, row[metric_col[name]]) for name in metric_names
             }
             metrics = BacktestMetrics(
                 total_return_pct=metric_values["total_return_pct"],
@@ -638,9 +629,7 @@ def _parse_metric_value(name: str, raw: str) -> Any:
     return Decimal(raw)
 
 
-def load_completed_combos(
-    path: Path, grid: SensitivityGrid
-) -> set[tuple[tuple[str, Any], ...]]:
+def load_completed_combos(path: Path, grid: SensitivityGrid) -> set[tuple[tuple[str, Any], ...]]:
     """기존 sensitivity CSV 를 읽어 완료된 조합의 params key set 반환.
 
     `write_csv` 가 생성한 포맷 (헤더: 축 이름 + 메트릭 10종) 을 가정한다. 각
@@ -680,9 +669,7 @@ def load_completed_combos(
             return set()
         missing_cols = [name for name in axis_names if name not in header]
         if missing_cols:
-            raise RuntimeError(
-                f"CSV 헤더에 축 {missing_cols!r} 가 없습니다 (header={header})"
-            )
+            raise RuntimeError(f"CSV 헤더에 축 {missing_cols!r} 가 없습니다 (header={header})")
         unknown = [name for name in axis_names if name not in _AXIS_PARSERS]
         if unknown:
             raise RuntimeError(f"파싱 규칙 없는 축: {unknown!r}")
@@ -762,9 +749,7 @@ def merge_sensitivity_rows(
         else:
             missing.append(key)
     if missing:
-        raise RuntimeError(
-            f"병합 후 누락 조합: {len(missing)} 개 — {missing}"
-        )
+        raise RuntimeError(f"병합 후 누락 조합: {len(missing)} 개 — {missing}")
     return tuple(result)
 
 
