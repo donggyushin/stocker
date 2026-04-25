@@ -256,3 +256,155 @@ class TestWorkersRouting:
             "--workers 미지정 시 run_sensitivity_combos 또는 "
             "run_sensitivity_combos_parallel 중 하나가 호출돼야 한다"
         )
+
+
+# ---------------------------------------------------------------------------
+# --resume 분기 flush 콜백 주입 검증 (RED — 미구현)
+# ---------------------------------------------------------------------------
+
+
+class TestResumeFlushCallback:
+    """--resume 분기에서 on_row=_flush 가 run_sensitivity_combos /
+    run_sensitivity_combos_parallel 양쪽에 callable 로 주입되는지 검증.
+
+    구현 예정 동작:
+    - --resume 지정 + 미완료 조합 N개 → _run_pipeline 이 on_row=<callable> 로
+      run_sensitivity_combos 또는 run_sensitivity_combos_parallel 를 호출한다.
+    - --resume 없음 → on_row=None 또는 인자 자체 없음 (구현자 재량).
+    """
+
+    def _setup_flush_mocks(self, monkeypatch, resume_path=None):
+        """run_sensitivity_combos / run_sensitivity_combos_parallel 를 교체해
+        on_row kwarg 를 캡처한다.
+
+        반환: captured dict — 'serial_on_row', 'parallel_on_row' 키.
+        """
+        captured: dict[str, object] = {
+            "serial_on_row": ...,  # 아직 미호출 sentinel
+            "parallel_on_row": ...,
+        }
+
+        from stock_agent.backtest import InMemoryBarLoader  # noqa: PLC0415
+
+        _dummy_loader = InMemoryBarLoader([])
+
+        def _fake_build_loader(*args, **kwargs):
+            return _dummy_loader
+
+        def _fake_build_loader_primitive(*args, **kwargs):
+            return _dummy_loader
+
+        def _fake_serial(*args, **kwargs):
+            captured["serial_on_row"] = kwargs.get("on_row", ...)
+            return ()
+
+        def _fake_parallel(*args, **kwargs):
+            captured["parallel_on_row"] = kwargs.get("on_row", ...)
+            return ()
+
+        monkeypatch.setattr(sensitivity_cli, "_build_loader", _fake_build_loader)
+        monkeypatch.setattr(
+            sensitivity_cli, "_build_loader_primitive", _fake_build_loader_primitive
+        )
+        monkeypatch.setattr(sensitivity_cli, "run_sensitivity_combos", _fake_serial)
+        monkeypatch.setattr(sensitivity_cli, "run_sensitivity_combos_parallel", _fake_parallel)
+        monkeypatch.setattr(sensitivity_cli, "merge_sensitivity_rows", lambda *a, **kw: ())
+        monkeypatch.setattr(sensitivity_cli, "render_markdown_table", lambda *a, **kw: "")
+        monkeypatch.setattr(sensitivity_cli, "write_csv", lambda *a, **kw: None)
+
+        # --resume 파일이 존재하는 경우 load_sensitivity_rows 도 mock
+        if resume_path is not None:
+            monkeypatch.setattr(
+                sensitivity_cli,
+                "load_sensitivity_rows",
+                lambda path, grid: (),
+            )
+            monkeypatch.setattr(
+                sensitivity_cli,
+                "filter_remaining_combos",
+                # 미완료 조합 3개 반환 (전체 실행 분기 진입 보장)
+                lambda grid, completed: [next(iter(grid.iter_combinations())) for _ in range(3)],
+            )
+
+        return captured
+
+    def test_resume_분기_flush_콜백_주입(self, monkeypatch, tmp_path):
+        """--resume 지정 + 미완료 조합 N 개 → run_sensitivity_combos (또는 _parallel) 호출 시
+        on_row keyword 가 callable 로 주입된다."""
+        # --resume 파일 경로 (존재하는 파일로 만들어야 resume 분기 진입)
+        resume_path = tmp_path / "existing.csv"
+        resume_path.write_text("dummy", encoding="utf-8")
+
+        captured = self._setup_flush_mocks(monkeypatch, resume_path=resume_path)
+
+        result = main(
+            _WORKERS_BASE_ARGV
+            + [
+                "--workers=1",
+                "--symbols=005930",
+                f"--resume={resume_path}",
+            ]
+        )
+
+        assert result == 0, f"exit code 기대 0, 실제 {result}"
+
+        # serial 경로가 호출됐어야 한다 (workers=1)
+        on_row_value = captured["serial_on_row"]
+        _msg = "run_sensitivity_combos 가 호출되지 않음 (serial_on_row 가 sentinel)"
+        assert on_row_value is not ..., _msg
+        assert callable(on_row_value), (
+            f"on_row 가 callable 이 아님: {type(on_row_value)!r} = {on_row_value!r}\n"
+            "--resume 분기에서 on_row=_flush 를 주입해야 한다 (RED: 미구현)"
+        )
+
+    def test_resume_없음_콜백_주입_안함_또는_None(self, monkeypatch, tmp_path):
+        """--resume 미지정 → on_row 가 None 이거나 인자 자체가 없다 (구현자 재량).
+
+        즉 on_row 가 callable 이 아니어야 한다 — flush 는 resume 분기 전용.
+        """
+        captured = self._setup_flush_mocks(monkeypatch, resume_path=None)
+
+        result = main(
+            _WORKERS_BASE_ARGV
+            + [
+                "--workers=1",
+                "--symbols=005930",
+            ]
+        )
+
+        assert result == 0, f"exit code 기대 0, 실제 {result}"
+
+        on_row_value = captured["serial_on_row"]
+        # sentinel(...)은 호출 자체가 안 된 경우 — 호출됐다면 None or not callable 이어야 함
+        if on_row_value is not ...:
+            assert not callable(on_row_value), (
+                f"--resume 없는 경로에서 on_row 가 callable: {on_row_value!r}\n"
+                "flush 콜백은 --resume 분기에서만 주입돼야 한다"
+            )
+
+    def test_resume_parallel_분기_flush_콜백_주입(self, monkeypatch, tmp_path):
+        """--resume 지정 + workers=2 → run_sensitivity_combos_parallel 호출 시
+        on_row keyword 가 callable 로 주입된다."""
+        resume_path = tmp_path / "existing_parallel.csv"
+        resume_path.write_text("dummy", encoding="utf-8")
+
+        captured = self._setup_flush_mocks(monkeypatch, resume_path=resume_path)
+
+        result = main(
+            _WORKERS_BASE_ARGV
+            + [
+                "--workers=2",
+                "--symbols=005930",
+                f"--resume={resume_path}",
+            ]
+        )
+
+        assert result == 0, f"exit code 기대 0, 실제 {result}"
+
+        on_row_value = captured["parallel_on_row"]
+        _msg = "run_sensitivity_combos_parallel 가 호출되지 않음 (parallel_on_row 가 sentinel)"
+        assert on_row_value is not ..., _msg
+        assert callable(on_row_value), (
+            f"on_row 가 callable 이 아님: {type(on_row_value)!r} = {on_row_value!r}\n"
+            "--resume + --workers>=2 분기에서 on_row=_flush 를 주입해야 한다 (RED: 미구현)"
+        )

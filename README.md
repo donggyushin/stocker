@@ -175,7 +175,7 @@ stock-agent/
 └── scripts/
     ├── healthcheck.py              # KIS 모의 잔고 조회 + 텔레그램 hello (실주문 없음)
     ├── backtest.py                 # 단일 런 백테스트 CLI
-    ├── sensitivity.py              # 파라미터 민감도 32 조합 그리드
+    ├── sensitivity.py              # 파라미터 민감도 32 조합 그리드 (--resume 지정 시 조합 단위 incremental flush, freeze 내성)
     └── backfill_minute_bars.py     # KIS 과거 분봉 캐시 일괄 적재 CLI
 ```
 

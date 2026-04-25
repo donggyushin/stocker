@@ -36,6 +36,7 @@ import argparse
 import functools
 import os
 import sys
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 
@@ -44,6 +45,7 @@ from loguru import logger
 from stock_agent.backtest import (
     BacktestConfig,
     SensitivityRow,
+    append_sensitivity_row,
     default_grid,
     filter_remaining_combos,
     load_sensitivity_rows,
@@ -249,9 +251,15 @@ def _run_pipeline(args: argparse.Namespace) -> None:
       만들지 않는다.
 
     `--resume` 분기:
-    - 미지정 또는 파일 부재 → 전체 그리드 실행 (기존 동작).
-    - 파일 존재 → 기존 row 로드 → 미완료 조합만 실행 → 병합 후 CSV/MD 덮어쓰기.
-      이미 모두 완료된 상태면 엔진 호출 0회. freeze / 재부팅 내성.
+    - 미지정 → 전체 그리드 실행 (기존 동작), incremental flush 없음.
+    - 지정 + 파일 부재 → 전체 실행 + 조합 단위 incremental flush (Issue #82).
+    - 지정 + 파일 존재 → 기존 row 로드 → 미완료 조합만 실행 + 조합 단위
+      incremental flush. 이미 모두 완료된 상태면 엔진 호출 0회 + 마지막 1회
+      재렌더만. freeze / 재부팅 내성.
+
+    Incremental flush (Issue #82): `--resume` 가 지정되면 `on_row=_flush` 를
+    엔진 함수에 주입해 조합 1개 종료 시점마다 `args.output_csv` 에 atomic
+    append. 직렬·병렬 양쪽 동일. 메인 프로세스 단일 writer.
     """
     symbols = _resolve_symbols(args.symbols)
     workers = _resolve_workers(args.workers)
@@ -283,6 +291,19 @@ def _run_pipeline(args: argparse.Namespace) -> None:
         w=workers,
     )
 
+    # output_csv 디렉터리 미리 생성 — incremental flush 가 첫 호출에서 디렉터리
+    # 부재로 실패하지 않도록 엔진 실행 전에 보장.
+    args.output_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    # `--resume` 지정 시에만 incremental flush 콜백 주입 (Issue #82).
+    on_row_callback: Callable[[SensitivityRow], None] | None = None
+    if args.resume is not None:
+
+        def _flush(row: SensitivityRow) -> None:
+            append_sensitivity_row(row, args.output_csv, grid)
+
+        on_row_callback = _flush
+
     new_rows: tuple[SensitivityRow, ...] = ()
     if remaining_combos:
         if workers == 1:
@@ -295,6 +316,7 @@ def _run_pipeline(args: argparse.Namespace) -> None:
                     symbols=symbols,
                     base_config=base_config,
                     combos=remaining_combos,
+                    on_row=on_row_callback,
                 )
             finally:
                 close = getattr(loader, "close", None)
@@ -314,6 +336,7 @@ def _run_pipeline(args: argparse.Namespace) -> None:
                 base_config=base_config,
                 combos=remaining_combos,
                 max_workers=workers,
+                on_row=on_row_callback,
             )
     else:
         logger.info("sensitivity.skip_engine — 이미 완료된 조합으로 재렌더만 수행")
@@ -321,13 +344,14 @@ def _run_pipeline(args: argparse.Namespace) -> None:
     merged_rows = merge_sensitivity_rows(existing_rows, new_rows, grid)
 
     args.output_markdown.parent.mkdir(parents=True, exist_ok=True)
-    args.output_csv.parent.mkdir(parents=True, exist_ok=True)
     markdown = render_markdown_table(
         merged_rows,
         sort_by=args.sort_by,
         descending=not args.ascending,
     )
     args.output_markdown.write_text(markdown, encoding="utf-8")
+    # 마지막 1회 fully render — incremental flush 의 최종본 (정렬·서식 일관성
+    # 보강). 동일 컨텐츠라도 멱등.
     write_csv(merged_rows, args.output_csv)
     logger.info(
         "sensitivity.done rows={n} markdown={m} csv={c}",
