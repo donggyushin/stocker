@@ -40,8 +40,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import dataclasses
+import os
 from collections.abc import Callable, Iterator
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -289,6 +291,8 @@ def run_sensitivity_combos(
     symbols: tuple[str, ...],
     base_config: BacktestConfig,
     combos: list[dict[str, Any]],
+    *,
+    on_row: Callable[[SensitivityRow], None] | None = None,
 ) -> tuple[SensitivityRow, ...]:
     """명시적 조합 리스트에 대한 직렬 실행 — resume 경로용.
 
@@ -301,6 +305,10 @@ def run_sensitivity_combos(
 
     Args / Raises 계약은 `run_sensitivity` 와 동일. combos 순서가 반환 rows
     순서와 1:1 대응한다.
+
+    `on_row` (keyword-only): 조합 1개 완료 시점마다 메인 프로세스에서 호출되는
+    콜백. 디스크 incremental flush 등 부수효과 주입용 (Issue #82). 콜백 예외는
+    그대로 호출자에게 전파 — fail-fast.
     """
     rows: list[SensitivityRow] = []
     for combo in combos:
@@ -308,7 +316,10 @@ def run_sensitivity_combos(
         engine = BacktestEngine(config)
         logger.debug("sensitivity.run.attempt combo={combo}", combo=combo)
         result = engine.run(loader.stream(start, end, symbols))
-        rows.append(_result_to_row(combo, result))
+        row = _result_to_row(combo, result)
+        rows.append(row)
+        if on_row is not None:
+            on_row(row)
         logger.info(
             "sensitivity.run combo={combo} net_pnl={p} trades={t}",
             combo=combo,
@@ -391,6 +402,7 @@ def run_sensitivity_combos_parallel(
     *,
     max_workers: int | None = None,
     mp_context: BaseContext | None = None,
+    on_row: Callable[[SensitivityRow], None] | None = None,
 ) -> tuple[SensitivityRow, ...]:
     """명시적 조합 리스트에 대한 병렬 실행 — resume 경로용.
 
@@ -401,9 +413,15 @@ def run_sensitivity_combos_parallel(
     빈 `combos` 는 빈 튜플을 반환한다 — ProcessPool 은 생성하지 않는다
     (resume 플로우 상 "이미 전부 완료" 상태 단락).
 
+    `on_row` (keyword-only): `as_completed` 시점에 메인 프로세스에서 호출되는
+    콜백 (Issue #82). 호출 순서는 워커 종료 순서이므로 비결정적. 워커 자체
+    는 단순 결과 반환만 — 콜백을 워커로 보내지 않으므로 pickle 제약 없음.
+    콜백 예외는 그대로 전파되며 잔여 future 는 `cancel_futures=True` 로 취소.
+
     Raises:
         RuntimeError: `max_workers < 1`.
-        Exception: 워커 안에서 발생한 첫 예외. 잔여 future 는 즉시 취소.
+        Exception: 워커 안에서 발생한 첫 예외 또는 `on_row` 콜백 예외. 잔여
+            future 는 즉시 취소.
     """
     if max_workers is not None and max_workers < 1:
         raise RuntimeError(f"max_workers 는 1 이상이어야 합니다 (got={max_workers})")
@@ -433,6 +451,8 @@ def run_sensitivity_combos_parallel(
             for future in as_completed(futures):
                 idx, row = future.result()
                 results[idx] = row
+                if on_row is not None:
+                    on_row(row)
         except BaseException:
             executor.shutdown(wait=False, cancel_futures=True)
             raise
@@ -753,6 +773,57 @@ def merge_sensitivity_rows(
     return tuple(result)
 
 
+def append_sensitivity_row(
+    row: SensitivityRow,
+    path: Path,
+    grid: SensitivityGrid,
+) -> None:
+    """조합 1개 결과를 sensitivity CSV 에 atomic append (Issue #82).
+
+    `path` 부재 → 헤더 + row 1행 신규 작성. `path` 존재 → `load_sensitivity_rows`
+    로 기존 rows 복원 후 row 추가, 같은 디렉터리의 `.tmp` 파일에 `write_csv` 로
+    전체 작성, 마지막에 `os.replace(tmp, path)` 로 atomic rename.
+
+    헤더 포맷은 `write_csv` 와 동일 (축 이름 + 메트릭 10종) 이므로
+    `load_completed_combos` 와 round-trip 가능하다.
+
+    Atomic 보장:
+    - tmp 파일은 `path` 와 같은 디렉터리 (POSIX `os.replace` 가 동일 디렉터리
+      내에서만 atomic).
+    - tmp 파일은 `os.replace` 로 final 로 이동되므로 정상 종료 후 누수 없음.
+    - 작성 도중 실패 시 tmp 가 남을 수 있으나 final 은 손상되지 않음 — 다음
+      실행에서 새로 append.
+
+    동시성:
+    - 단일 writer 전제. `--workers >= 2` 의 경우 `as_completed` 직렬 소비
+      시점에서만 메인 프로세스가 `on_row` 콜백으로 이 함수를 호출 → 동시
+      쓰기 발생하지 않음.
+
+    Args:
+        row: append 할 단일 결과 행.
+        path: 최종 CSV 경로 (final). 디렉터리는 미리 존재해야 한다 (호출자 책임).
+        grid: 헤더 축 이름 검증 + 기존 파일 파싱용 그리드.
+
+    Raises:
+        OSError: 파일 쓰기·rename 실패.
+        RuntimeError: 기존 파일 헤더에 grid 축 이름이 없거나 파싱 규칙이 없는 축.
+    """
+    existing_rows: tuple[SensitivityRow, ...] = ()
+    if path.exists():
+        existing_rows = load_sensitivity_rows(path, grid)
+
+    merged = existing_rows + (row,)
+    tmp_path = path.with_name(path.name + ".tmp")
+    try:
+        write_csv(merged, tmp_path)
+        os.replace(str(tmp_path), str(path))
+    except BaseException:
+        # 실패 시 tmp 정리 — final 은 그대로 보존 (atomic 보장).
+        with contextlib.suppress(OSError):
+            tmp_path.unlink(missing_ok=True)
+        raise
+
+
 # ---------------------------------------------------------------------------
 # 내부 헬퍼
 # ---------------------------------------------------------------------------
@@ -981,6 +1052,7 @@ __all__ = [
     "ParameterAxis",
     "SensitivityGrid",
     "SensitivityRow",
+    "append_sensitivity_row",
     "default_grid",
     "filter_remaining_combos",
     "load_completed_combos",
