@@ -216,7 +216,7 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
 
 관련 자산: [.claude/hooks/src-first-requires-tests.sh](.claude/hooks/src-first-requires-tests.sh), [.claude/hooks/doc-sync-check.sh](.claude/hooks/doc-sync-check.sh), [.claude/agents/unit-test-writer.md](.claude/agents/unit-test-writer.md) 의 "TDD 모드 계약" 섹션, [docs/adr/0010-tdd-order-enforcement.md](./docs/adr/0010-tdd-order-enforcement.md).
 
-## 현재 상태 (2026-04-24 기준)
+## 현재 상태 (2026-04-25 기준)
 
 - **Phase 0 완료** (2026-04-19)
   - `scripts/healthcheck.py` 3종 통과: KIS 모의투자 토큰 발급 OK, 모의 계좌 잔고 조회 OK (시드 10,000,000원), 텔레그램 "hello" 수신 OK
@@ -328,8 +328,8 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
   - (2026-04-24) **Phase 2 1차 백테스트 FAIL (ADR-0019)** — 1년치 KIS 백필 완료 (199 심볼, 2.78 GB, 러닝 11 시간) + `uv run python scripts/backtest.py --loader=kis --from 2025-04-22 --to 2026-04-21` 1회 실행. 결과: **MDD -51.36%**, 총수익률 -50.05%, 샤프 -6.81, 승률 31.35%, 손익비 1.28, 트레이드당 기대값 ≈ -0.28R (비용 차감 전). Phase 2 PASS 기준 3.4 배 초과 미달. 종료 자본 499,489 KRW (시작 1,000,000). 거부 상위 `max_positions_reached` 14,568. **사용자 정책 결정**: *"수익률이 생길때까지 절대로 다음 Phase 로 넘어가면 안될 것 같아"* → ADR-0019 성문화. 신규 Phase 2 PASS 게이트: (1) MDD > -15% (ADR-0017 계승), (2) 승률 × 손익비 > 1.0, (3) 연환산 샤프 > 0 — 세 조건 전부 충족 + walk-forward 검증 통과 후에만 Phase 3 착수. 복구 5단계 로드맵 A(민감도) → B(비용) → C(유니버스 필터) → D(전략 파라미터) → E(전략 교체) 순차 게이팅. 부수적 개선: `config/holidays.yaml` 에 근로자의날 2 건 (`2025-05-01`, `2026-05-01`) 보강 — ADR-0018 YAML 관리 정책 계승.
 
 - **다음 작업 — Phase 2 복구 로드맵 (ADR-0019 게이팅)**
-  - **Step A — 민감도 그리드 실행**: `uv run python scripts/sensitivity.py --loader=kis --from 2025-04-22 --to 2026-04-21` (기본 32 조합). 캐시 재사용으로 KIS 호출 0, 수 분 ~ 수십 분 러닝. 출력 Markdown·CSV 상 상위 조합이 세 게이트 (MDD > -15% · 승률×손익비 > 1.0 · 샤프 > 0) 전부 통과하는지 확인. 통과 조합 존재 → walk-forward 검증 이행. 미통과 → Step B. Step A 가속을 위해 `run_sensitivity_parallel` (ProcessPool 병렬 실행, ADR-0020) 도입 — `scripts/sensitivity.py --workers N` 으로 활성화. 직렬 9~10h → 8 워커 ≒1~2h 예상. **freeze 내성**: `--resume <csv 경로>` 를 `--output-csv` 와 같은 경로로 지정하면 `append_sensitivity_row` (atomic `os.replace`) 가 조합 완료마다 CSV 에 즉시 flush — 재부팅·프로세스 종료 후 재실행 시 완료된 조합 자동 skip (Issue #82).
-  - **Step B — 비용 가정 재검정**: KIS 실전 키로 1 주 호가 스프레드 샘플 수집 → 종목별·시간대별 중앙값 산출 → `src/stock_agent/backtest/costs.py` 슬리피지 0.1% 가정 (ADR-0006) 재보정 여부 판정. 갱신 필요 시 새 ADR + Step A 재실행.
+  - **Step A — 민감도 그리드 실행 — 완료 / FAIL (2026-04-25)**: 2026-04-25 17:09~20:00 KST 28/32 조합 완료 (4 조합 미실행 — 207940 셀트리온헬스케어 2025-11 캐시 0건 + rate limit 누적으로 `KisMinuteBarLoadError`; 28 조합 일관 결과 상 4 조합 결과가 뒤집힐 가능성 0% — 즉시 종결). 데이터 범위: 2025-04-22 ~ 2026-04-21, 1,000,000 KRW 시작. 게이트 판정: MDD > -15% 통과 조합 **0 / 28**, 승률×손익비 > 1.0 통과 **0 / 28**, 샤프 > 0 통과 **0 / 28**. 최고 수익률 -40.91% (`or_end=09:15, stop=2.5%, take=4%`), 최저 MDD -42.08% (한도 -15% 의 2.8배). **Step A 결론: FAIL.** 상세 결과는 `docs/runbooks/step_a_result_2026-04-25.md` 참조.
+  - **Step B — 비용 가정 재검정 (다음 작업)**: KIS 실전 키로 1 주 호가 스프레드 샘플 수집 → 종목별·시간대별 중앙값 산출 → `src/stock_agent/backtest/costs.py` 슬리피지 0.1% 가정 (ADR-0006) 재보정 여부 판정. 갱신 필요 시 새 ADR + Step A 재실행.
   - **Step C — 유니버스 유동성 필터**: `pykrx` 일봉 거래대금 기반 상위 N (50·100) 서브셋 구성 → `scripts/backtest.py --symbols=...` 로 Step A 재실행.
   - **Step D — 전략 파라미터 구조 변경**: OR 윈도 (`09:00~09:15`·`09:00~10:00` 등), `force_close_at` (14:50·15:20), 재진입 허용, 일 N 진입. 변경마다 ADR/Issue 단위 관리.
   - **Step E — 전략 교체**: A~D 전부 실패 전제. ORB 폐기 → VWAP mean-reversion / opening gap reversal / pre-market pullback 후보 평가 → 신규 Strategy + ADR. 기존 `ORBStrategy`·테스트·백테스트 인프라 재사용.
