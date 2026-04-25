@@ -31,3 +31,6 @@ Thumbs.db
 .vscode/
 
 .omc
+
+# direnv (.envrc 안에 secret 두지 말 것 — 본 repo 는 venv activate 용도만)
+.envrc
