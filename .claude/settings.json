@@ -1,76 +1,82 @@
 {
-  "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Write|Edit|NotebookEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/tests-writer-guard.sh",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/src-first-requires-tests.sh",
-            "timeout": 5
-          }
+    "$schema": "https://json.schemastore.org/claude-code-settings.json",
+    "env": {
+        "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+    },
+    "preferences": {
+        "tmuxSplitPane": true
+    },
+    "hooks": {
+        "PreToolUse": [
+            {
+                "matcher": "Write|Edit|NotebookEdit",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "bash .claude/hooks/tests-writer-guard.sh",
+                        "timeout": 5
+                    },
+                    {
+                        "type": "command",
+                        "command": "bash .claude/hooks/src-first-requires-tests.sh",
+                        "timeout": 5
+                    }
+                ]
+            },
+            {
+                "matcher": "AskUserQuestion|ExitPlanMode",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "bash .claude/hooks/notify-waiting.sh",
+                        "timeout": 5
+                    }
+                ]
+            },
+            {
+                "matcher": "Bash",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "bash .claude/hooks/pyright-full-scope.sh",
+                        "timeout": 30
+                    },
+                    {
+                        "type": "command",
+                        "command": "bash .claude/hooks/ci-lint-full-scope.sh",
+                        "timeout": 30
+                    }
+                ]
+            }
+        ],
+        "Notification": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "bash .claude/hooks/notify-waiting.sh",
+                        "timeout": 5
+                    }
+                ]
+            }
+        ],
+        "Stop": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "bash .claude/hooks/doc-sync-check.sh",
+                        "timeout": 10,
+                        "statusMessage": "문서 동기화 체크"
+                    },
+                    {
+                        "type": "command",
+                        "command": "bash .claude/hooks/test-coverage-check.sh",
+                        "timeout": 10,
+                        "statusMessage": "단위 테스트 커버리지 체크"
+                    }
+                ]
+            }
         ]
-      },
-      {
-        "matcher": "AskUserQuestion|ExitPlanMode",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/notify-waiting.sh",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/pyright-full-scope.sh",
-            "timeout": 30
-          },
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/ci-lint-full-scope.sh",
-            "timeout": 30
-          }
-        ]
-      }
-    ],
-    "Notification": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/notify-waiting.sh",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/doc-sync-check.sh",
-            "timeout": 10,
-            "statusMessage": "문서 동기화 체크"
-          },
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/test-coverage-check.sh",
-            "timeout": 10,
-            "statusMessage": "단위 테스트 커버리지 체크"
-          }
-        ]
-      }
-    ]
-  }
+    }
 }
