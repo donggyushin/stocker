@@ -111,7 +111,7 @@ stock-agent 프로젝트의 Phase 별 산출물·결정·테스트 카운트 변
 
 - `src/stock_agent/broker/kis_client.py` 확장 — `PendingOrder.qty_filled: int` 필드 추가. `_to_pending_order` 가 PyKis 정식 필드(`executed_quantity`/`pending_quantity`) 우선 매핑 → `qty_remaining` fallback. `KisClient.cancel_order(order_number: str) -> None` 신설 (멱등, `OrderRateLimiter` 경유, `_call` 에러 래핑). 모듈 세부는 [src/stock_agent/broker/CLAUDE.md](../src/stock_agent/broker/CLAUDE.md) 참조.
 - `src/stock_agent/execution/executor.py` 확장 — `OrderSubmitter` Protocol 에 `cancel_order(order_number: str) -> None` 추가. `LiveOrderSubmitter.cancel_order` (KisClient 위임) + `DryRunOrderSubmitter.cancel_order` (info 로그 + no-op). 내부 `_FillOutcome` DTO 신설 (`filled_qty: int`, `status: Literal["full","partial","none"]`). `_wait_fill` → `_resolve_fill(ticket) -> _FillOutcome` 교체 — 타임아웃 시 `cancel_order` 호출 + 부분/0 체결 수습. `_handle_entry`: partial → `filled_qty` 만 기록·warning 로그, zero → skip·info 로그. `_handle_exit`: `status != "full"` → `ExecutorError` 승격 (운영자 개입 유도). 모듈 세부는 [src/stock_agent/execution/CLAUDE.md](../src/stock_agent/execution/CLAUDE.md) 참조.
-- pytest **963건 green** (`tests/test_kis_client.py` + `tests/test_executor.py` 확장, 기존 대비 +183). 회귀 0건. 의존성 추가 없음.
+- pytest **963건 green** (`tests/test_kis_client.py` + `tests/test_executor.py` 확장, 기존 대비 +183). 회귀 0건. 의존성 추가 없음. (직전 다섯 번째 산출물 989건 대비 카운트 역전은 병렬 PR 분기 누적 차이 — 원본 CLAUDE.md 사실 그대로 보존.)
 - Phase 3 코드 산출물 전부 완료 (broker 체결조회까지). **Phase 3 PASS 선언은 모의투자 연속 10영업일 무중단 운영 후.**
 
 ## 후속 정리 및 Issue 대응 (2026-04-22~23)
