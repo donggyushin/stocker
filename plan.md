@@ -351,9 +351,9 @@ pytest **245 → 324 → 384 → 464 → 477 → 539 → 542건 green** (기존 
 
 - `config/holidays.yaml` 에 `2025-05-01`·`2026-05-01` 근로자의날 2 건 보강. 1차 백테스트 시 해당 날짜 캐시 miss 로 199 심볼 × 4 페이지 KIS 허탕 호출 + `EGW00201` 캐스케이드 → 프로세스 비정상 종료 원인이었음. ADR-0018 YAML 관리 정책 그대로 계승 (신규 결정 아님).
 
-### Step B 코드·테스트 레벨 완료 (2026-04-26, Issue #75)
+### Step B 완료 — ADR-0006 슬리피지 가정 유지 결정 (2026-04-29, Issue #75)
 
-`src/stock_agent/data/spread_samples.py` + `scripts/collect_spread_samples.py` 신설. KIS 주식현재가 호가/예상체결 조회 (`/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn`, TR `FHKST01010200`) 를 통해 1단계 bid/ask 스냅샷을 수집하는 인프라 구축.
+`src/stock_agent/data/spread_samples.py` + `scripts/collect_spread_samples.py` 신설 (코드·테스트 레벨 완료 2026-04-26). 이후 운영자가 3 거래일 장중 실 호가 수집을 완료하여 Step B 종결.
 
 **구현 요약**:
 - `SpreadSample` (frozen dataclass): symbol, ts (KST aware), bid1, ask1, bid_qty1, ask_qty1, spread_pct. `__post_init__` 가드 7종 (symbol 정규식·naive ts·음수/0 가격·역전 스프레드·음수 잔량 → `RuntimeError`).
@@ -361,11 +361,25 @@ pytest **245 → 324 → 384 → 464 → 477 → 539 → 542건 green** (기존 
 - `scripts/collect_spread_samples.py`: `--symbols`/`--interval-s`(min 1.0)/`--duration-h`/`--output-dir`/`--http-timeout-s`/`--no-skip-outside-market`. JSONL 세션 날짜 단위 파일 (`Decimal` str 직렬화, ts isoformat). 심볼 단위 실패 격리. exit code: 0 정상 / 1 부분 실패 / 2 입력·설정 오류 / 3 I/O 오류.
 - pytest 신규 58건 (`test_spread_samples.py` 38 + `test_collect_spread_samples_cli.py` 20). 회귀 0건. 의존성 추가 0.
 
-**잔여 (운영자 수동 수행)**:
-1. 평일 1주 장중 실행: `uv run python scripts/collect_spread_samples.py --interval-s=30 --duration-h=6.5 --output-dir=data/spread_samples` (KIS 실전 키 + IP 화이트리스트 필요)
-2. JSONL 누적 후 `data/spread_analysis.md` 작성 — 종목별·시간대별·거래대금 버킷별 중앙값 산출
-3. 실측 중앙값이 현행 0.1% 가정과 큰 괴리(예: ≥0.2% 또는 ≤0.05%) 시 새 ADR 작성 (채택 or 기각)
-4. 채택 시 `src/stock_agent/backtest/costs.py` 슬리피지 상수 변경 + 회귀 테스트 + Step A 민감도 그리드 재실행 → 게이트 재평가
+**실측 결과 (2026-04-27, 04-29, 04-30 — 3 거래일)**:
+
+| 항목 | 값 |
+|---|---|
+| 수집 샘플 수 | 331,530 |
+| 전체 중앙값 스프레드 | 0.1305% |
+| 현행 가정 (ADR-0006) | 0.1% |
+| 비율 | 1.3× |
+| 사전 기준 범위 | 0.05~0.2% |
+| 기준 내 수렴 | 예 |
+
+상세 분석: `docs/runbooks/step_b_spread_analysis.md` 참조.
+
+**결정 (2026-04-29)**:
+- 현행 슬리피지 가정 **0.1% 유지**. ADR-0006 계승 — 새 ADR 불필요.
+- `src/stock_agent/backtest/costs.py` 변경 없음.
+- Step A 민감도 그리드 재실행 불필요.
+
+**→ Step C (유니버스 유동성 필터)** 로 이행.
 
 ---
 

@@ -156,6 +156,13 @@ stock-agent 프로젝트의 Phase 별 산출물·결정·테스트 카운트 변
 - `scripts/collect_spread_samples.py` 신설 — `--symbols`/`--interval-s`/`--duration-h`/`--output-dir`/`--http-timeout-s`/`--no-skip-outside-market`. JSONL 세션 날짜 단위 파일 (`Decimal` str 직렬화, ts isoformat). 심볼 단위 실패 격리. exit code 4종 (`backfill_minute_bars.py` 와 정합).
 - pytest 신규 58건 (`test_spread_samples.py` 38 + `test_collect_spread_samples_cli.py` 20). 회귀 0건. 의존성 추가 0.
 
+## Phase 2 복구 로드맵 Step B — 비용 가정 재검정 완료 / ADR-0006 슬리피지 0.1% 유지 결정 (2026-04-29, Issue #75)
+
+- 운영자 3 거래일 (2026-04-27, 04-29, 04-30) 장중 실 호가 수집 완료 (331,530 샘플).
+- 전체 중앙값 스프레드 **0.1305%** — 현행 가정 0.1% 대비 1.3×. 사전 기준 (0.05~0.2%) 내 수렴. 상세 분석: `docs/runbooks/step_b_spread_analysis.md` 참조.
+- **결정**: 현행 슬리피지 가정 0.1% 유지. `src/stock_agent/backtest/costs.py` 변경 없음. 새 ADR 불필요 (ADR-0006 그대로 계승). Step A 민감도 그리드 재실행 불필요.
+- **Step B 결론**: 완료. → Step C (유니버스 유동성 필터) 로 이행.
+
 ## 보조 산출물
 
 - **Issue #67 완료 (2026-04-23)**: `src/stock_agent/backtest/walk_forward.py` 신설 — Phase 5 본 구현 대비 walk-forward validation 스켈레톤 선행 도입. `WalkForwardWindow`·`WalkForwardMetrics`·`WalkForwardResult` DTO + `generate_windows`·`run_walk_forward` 스텁(`NotImplementedError`). `backtest/__init__.py` 5 심볼 재노출. `tests/test_walk_forward.py` 18건. `pass_threshold` 기본값 결정은 Phase 5 본 구현 PR 에서 ADR 로 기록 예정.

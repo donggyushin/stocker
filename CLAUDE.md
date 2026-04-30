@@ -216,7 +216,7 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
 
 관련 자산: [.claude/hooks/src-first-requires-tests.sh](.claude/hooks/src-first-requires-tests.sh), [.claude/hooks/doc-sync-check.sh](.claude/hooks/doc-sync-check.sh), [.claude/agents/unit-test-writer.md](.claude/agents/unit-test-writer.md) 의 "TDD 모드 계약" 섹션, [docs/adr/0010-tdd-order-enforcement.md](./docs/adr/0010-tdd-order-enforcement.md).
 
-## 현재 상태 (2026-04-26 기준)
+## 현재 상태 (2026-04-30 기준)
 
 **한 줄 진행도**: Phase 1 PASS · Phase 2 진행 중 (1차 백테스트 FAIL → ADR-0019 복구 로드맵). Phase 3 코드 산출물 완료 상태로 보존, 진입 금지.
 
@@ -224,7 +224,7 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
 - **신규 Phase 2 PASS 게이트 (ADR-0019)**: (1) MDD > -15%, (2) 승률 × 손익비 > 1.0, (3) 연환산 샤프 > 0 — 세 조건 전부 충족 + walk-forward 통과 후에만 Phase 3 착수.
 - **복구 로드맵 진행 상황**:
   - **Step A — 민감도 그리드** (2026-04-25): **FAIL**. 28/32 조합 게이트 0 통과, 최저 MDD -42.08%. 상세는 `docs/runbooks/step_a_result_2026-04-25.md`.
-  - **Step B — 비용 가정 재검정** (Issue #75, 진행 중): 코드·테스트 레벨 완료 (2026-04-26, `SpreadSampleCollector` + `scripts/collect_spread_samples.py`). 잔여 = 운영자 수동 — (1) 평일 1주 장중 호가 샘플 수집, (2) `data/spread_analysis.md` 종목·시간대·거래대금 버킷별 중앙값 산출, (3) 0.1% 슬리피지 가정 채택/기각 ADR, (4) 채택 시 `backtest/costs.py` 수정 + Step A 재실행.
+  - **Step B — 비용 가정 재검정** (Issue #75, 2026-04-29 완료): 3 거래일 (04-27·04-29·04-30) 장중 실 호가 331,530 샘플 수집 → 전체 중앙값 스프레드 0.1305% (현행 가정 0.1% 대비 1.3×, 사전 기준 0.05~0.2% 내). **ADR-0006 슬리피지 0.1% 유지 결정**. `backtest/costs.py` 변경 없음. 새 ADR 없음. Step A 재실행 불필요. 분석: `docs/runbooks/step_b_spread_analysis.md`.
   - **Step C** — 유니버스 유동성 필터 (pykrx 거래대금 상위 N).
   - **Step D** — 전략 파라미터 구조 변경 (OR 윈도·force_close_at·재진입·일 N 진입).
   - **Step E** — 전략 교체 (VWAP mean-reversion / opening gap reversal / pre-market pullback). A~D 전원 실패 전제.
