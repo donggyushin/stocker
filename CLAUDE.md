@@ -216,7 +216,7 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
 
 관련 자산: [.claude/hooks/src-first-requires-tests.sh](.claude/hooks/src-first-requires-tests.sh), [.claude/hooks/doc-sync-check.sh](.claude/hooks/doc-sync-check.sh), [.claude/agents/unit-test-writer.md](.claude/agents/unit-test-writer.md) 의 "TDD 모드 계약" 섹션, [docs/adr/0010-tdd-order-enforcement.md](./docs/adr/0010-tdd-order-enforcement.md).
 
-## 현재 상태 (2026-04-26 기준)
+## 현재 상태 (2026-04-29 기준)
 
 - **Phase 0 완료** (2026-04-19)
   - `scripts/healthcheck.py` 3종 통과: KIS 모의투자 토큰 발급 OK, 모의 계좌 잔고 조회 OK (시드 10,000,000원), 텔레그램 "hello" 수신 OK
@@ -327,16 +327,18 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
   - (2026-04-23) Issue #71 — `KisMinuteBarLoader` 장시간 hang 방지: `__init__` 에 `http_timeout_s: float = 30.0` + `http_max_retries_per_day: int = 3` kwarg 신설 (음수 → `RuntimeError`, `http_timeout_s=0` 이면 설치 skip). `_install_http_timeout` 이 `kis._sessions` dict 의 각 `requests.Session.request` 에 wrapper 를 설치해 `timeout=http_timeout_s` 기본 주입 — python-kis 2.1.6 미지원 무한 대기 해결. `_fetch_once_with_timeout_retry` 가 `requests.exceptions.Timeout` 재시도 후 한도 초과 시 내부 `_DayHttpTimeoutError` raise → `_fetch_day` catch 후 해당 날짜만 skip (빈 리스트 반환, 다음 날짜 계속 진행). `requests.exceptions.ConnectionError` 등 기타 예외는 기존 `KisMinuteBarLoadError` 래핑 유지 — 외부 계약 변경 없음. `scripts/backfill_minute_bars.py` 에 `--per-page-timeout-s` (float, default `30.0`) + `--max-retries-per-day` (int, default `3`) CLI 옵션 추가. pytest **1277 → 1293 passed, 4 skipped** (신규 16건: loader 10 + backfill CLI 6). 의존성 추가 없음. 잔여: 운영자 실 백필 1회 hang 없이 완주 검증 → Issue #71 close.
   - (2026-04-24) **Phase 2 1차 백테스트 FAIL (ADR-0019)** — 1년치 KIS 백필 완료 (199 심볼, 2.78 GB, 러닝 11 시간) + `uv run python scripts/backtest.py --loader=kis --from 2025-04-22 --to 2026-04-21` 1회 실행. 결과: **MDD -51.36%**, 총수익률 -50.05%, 샤프 -6.81, 승률 31.35%, 손익비 1.28, 트레이드당 기대값 ≈ -0.28R (비용 차감 전). Phase 2 PASS 기준 3.4 배 초과 미달. 종료 자본 499,489 KRW (시작 1,000,000). 거부 상위 `max_positions_reached` 14,568. **사용자 정책 결정**: *"수익률이 생길때까지 절대로 다음 Phase 로 넘어가면 안될 것 같아"* → ADR-0019 성문화. 신규 Phase 2 PASS 게이트: (1) MDD > -15% (ADR-0017 계승), (2) 승률 × 손익비 > 1.0, (3) 연환산 샤프 > 0 — 세 조건 전부 충족 + walk-forward 검증 통과 후에만 Phase 3 착수. 복구 5단계 로드맵 A(민감도) → B(비용) → C(유니버스 필터) → D(전략 파라미터) → E(전략 교체) 순차 게이팅. 부수적 개선: `config/holidays.yaml` 에 근로자의날 2 건 (`2025-05-01`, `2026-05-01`) 보강 — ADR-0018 YAML 관리 정책 계승.
 
-- **Phase 2 복구 로드맵 Step B 첫 산출물 — SpreadSampleCollector + collect_spread_samples.py CLI (코드·테스트 레벨, 2026-04-26)** (Issue #75)
+- **Phase 2 복구 로드맵 Step B — 비용 가정 재검정 완료 / ADR-0006 슬리피지 0.1% 유지 결정 (2026-04-29)** (Issue #75)
   - `src/stock_agent/data/spread_samples.py` 신설 — `SpreadSample` (frozen dataclass) · `SpreadSampleCollector` · `SpreadSampleCollectorError`. KIS 주식현재가 호가/예상체결 조회 (`/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn`, TR `FHKST01010200`) `kis.fetch()` 로우레벨 직접 호출. 실전 키 전용 + `install_order_block_guard` 설치. EGW00201 rate limit 자동 재시도. 거래정지(0)·빈문자열·역전 스프레드는 `None` 반환으로 흡수. (모듈 세부는 [src/stock_agent/data/CLAUDE.md](./src/stock_agent/data/CLAUDE.md) 참조.)
   - `scripts/collect_spread_samples.py` 신설 — `--symbols`/`--interval-s`/`--duration-h`/`--output-dir`/`--http-timeout-s`/`--no-skip-outside-market`. JSONL 세션 날짜 단위 파일 (`Decimal` str 직렬화, ts isoformat). 심볼 단위 실패 격리. exit code 4종 (`backfill_minute_bars.py` 와 정합).
   - pytest 신규 58건 (`test_spread_samples.py` 38 + `test_collect_spread_samples_cli.py` 20). 회귀 0건. 의존성 추가 0.
-  - **잔여 (다음 세션)**: 운영자 수동 — (1) 평일 1주 장중 실 호가 샘플 수집, (2) `data/spread_analysis.md` 종목별·시간대별·거래대금 버킷별 중앙값 산출, (3) ADR-0006 재보정 결정 ADR (채택/기각), (4) 채택 시 `src/stock_agent/backtest/costs.py` 수정 + Step A 민감도 그리드 재실행.
+  - **실측 결과 (2026-04-27, 04-29, 04-30 — 3 거래일, 331,530 샘플)**: 전체 중앙값 스프레드 0.1305% — 현행 가정 0.1% 대비 1.3×. 사전 기준 (0.05~0.2%) 내 수렴. 분석 결과: `docs/runbooks/step_b_spread_analysis.md` 참조.
+  - **결정**: 현행 슬리피지 가정 0.1% 유지. `src/stock_agent/backtest/costs.py` 변경 없음. 새 ADR 불필요 (ADR-0006 그대로 계승). Step A 민감도 그리드 재실행 불필요.
+  - **Step B 결론**: 완료. → Step C (유니버스 유동성 필터) 로 이행.
 
 - **다음 작업 — Phase 2 복구 로드맵 (ADR-0019 게이팅)**
   - **Step A — 민감도 그리드 실행 — 완료 / FAIL (2026-04-25)**: 2026-04-25 17:09~20:00 KST 28/32 조합 완료 (4 조합 미실행 — 207940 셀트리온헬스케어 2025-11 캐시 0건 + rate limit 누적으로 `KisMinuteBarLoadError`; 28 조합 일관 결과 상 4 조합 결과가 뒤집힐 가능성 0% — 즉시 종결). 데이터 범위: 2025-04-22 ~ 2026-04-21, 1,000,000 KRW 시작. 게이트 판정: MDD > -15% 통과 조합 **0 / 28**, 승률×손익비 > 1.0 통과 **0 / 28**, 샤프 > 0 통과 **0 / 28**. 최고 수익률 -40.91% (`or_end=09:15, stop=2.5%, take=4%`), 최저 MDD -42.08% (한도 -15% 의 2.8배). **Step A 결론: FAIL.** 상세 결과는 `docs/runbooks/step_a_result_2026-04-25.md` 참조.
-  - **Step B — 비용 가정 재검정 (Issue #75, 진행 중)**: 코드·테스트 레벨 완료 (2026-04-26). 잔여: 운영자 수동 — (1) `uv run python scripts/collect_spread_samples.py --interval-s=30 --duration-h=6.5 --output-dir=data/spread_samples` 평일 1주 장중 실행 → KIS 실전 키 + IP 화이트리스트 필요, (2) JSONL 누적 후 종목별·시간대별·거래대금 버킷별 중앙값 분석 → `data/spread_analysis.md`, (3) 실측 중앙값이 0.1% 와 큰 괴리(예: ≥0.2% 또는 ≤0.05%) 시 새 ADR 작성 (채택 or 기각), (4) 채택 시 `src/stock_agent/backtest/costs.py` 슬리피지 상수 변경 + 회귀 테스트 + Step A 민감도 그리드 재실행하여 게이트 재평가.
-  - **Step C — 유니버스 유동성 필터**: `pykrx` 일봉 거래대금 기반 상위 N (50·100) 서브셋 구성 → `scripts/backtest.py --symbols=...` 로 Step A 재실행.
+  - **Step B — 비용 가정 재검정 (Issue #75) 완료 (2026-04-29)**: 3 거래일 (2026-04-27, 04-29, 04-30) 장중 실 호가 수집 완료 (331,530 샘플). 전체 중앙값 0.1305% — 현행 가정 0.1% 대비 1.3× 이지만 사전 기준 (0.05~0.2%) 내. ADR-0006 슬리피지 가정 0.1% 유지 결정. `costs.py` 변경 없음. 새 ADR 없음. 분석 결과: `docs/runbooks/step_b_spread_analysis.md`.
+  - **Step C — 유니버스 유동성 필터 (다음 진행 대상)**: `pykrx` 일봉 거래대금 기반 상위 N (50·100) 서브셋 구성 → `scripts/backtest.py --symbols=...` 로 Step A 재실행.
   - **Step D — 전략 파라미터 구조 변경**: OR 윈도 (`09:00~09:15`·`09:00~10:00` 등), `force_close_at` (14:50·15:20), 재진입 허용, 일 N 진입. 변경마다 ADR/Issue 단위 관리.
   - **Step E — 전략 교체**: A~D 전부 실패 전제. ORB 폐기 → VWAP mean-reversion / opening gap reversal / pre-market pullback 후보 평가 → 신규 Strategy + ADR. 기존 `ORBStrategy`·테스트·백테스트 인프라 재사용.
   - **Phase 3 진입 금지 (ADR-0019)**: Step A~E 어느 단계에서든 세 게이트 전부 통과 + walk-forward 검증 통과 확인 전까지 `main.py` 모의투자 무중단 운영 계획 **전면 보류**. `execution/`·`main.py`·`monitor/`·`storage/` 코드 산출물은 이미 완료 상태로 보존 — 복구 후 그대로 재사용.
