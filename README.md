@@ -74,7 +74,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **Step B 완료 (2026-04-29)** — 3 거래일 장중 실 호가 수집 (331,530 샘플). 전체 중앙값 스프레드 0.1305% — 현행 가정 0.1% 대비 1.3× 이지만 사전 기준(0.05~0.2%) 내. **ADR-0006 슬리피지 가정 0.1% 유지 결정. `costs.py` 변경 없음.**
 
-**Step C 인프라 완료 (2026-04-30, Issue #76)** — `scripts/build_liquidity_ranking.py` + `scripts/build_universe_subset.py` 신설. `scripts/backtest.py`·`scripts/sensitivity.py` 에 `--universe-yaml PATH` 플래그 추가. 운영자 실행(랭킹 산출 → 서브셋 YAML → 백테스트 2회 → 게이트 판정)은 별도 PR. 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
+**Step C FAIL (2026-04-30, Issue #76)** — Top 50 / Top 100 유동성 서브셋 백테스트 실행 (`--loader=kis`, 2025-04-22 ~ 2026-04-21). 두 서브셋 모두 ADR-0019 세 게이트 전원 FAIL (Top 50: MDD -44.70%, 샤프 -6.68, 승률×손익비 0.377 / Top 100: MDD -50.13%, 샤프 -7.74, 승률×손익비 0.383). **Step D (전략 파라미터 구조 변경) 진입.** 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
 
 **Phase 3 착수 전제 통과** (2026-04-21). 실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK) 완료.
 

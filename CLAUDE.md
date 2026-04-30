@@ -4,7 +4,7 @@
 
 ## 프로젝트 한 줄 요약
 
-Python 기반 한국주식 **데이트레이딩** 자동매매 시스템. 한국투자증권 KIS Developers API + Opening Range Breakout(ORB) 전략 + 100~200만원 초기 자본. **paper 주문 + live 시세 하이브리드 키** 구조 (KIS paper 도메인에 시세 API 없음 — 시세는 별도 실전 APP_KEY 로 실전 도메인 호출). 현재 **Phase 1 PASS (코드·테스트 레벨). Phase 2 진행 중 — 백테스트 엔진·전략·리스크·CSV/KIS 분봉 어댑터·백필 CLI 까지 모든 코드 산출물 완료. 2026-04-24 1년치 KIS 백필 완료 후 1차 백테스트 실행 결과 FAIL (MDD -51.36%, 총수익률 -50.05%, 기대값 -0.28R) — ADR-0019 성문화 후 복구 5단계 로드맵 (A 민감도 → B 비용 → C 유니버스 → D 파라미터 → E 전략 교체) 순차 게이팅. Phase 3 코드 산출물 (Executor·main.py APScheduler·monitor/notifier·storage/db·세션 재기동·broker 체결조회) 모두 완료 상태로 보존 — 단 ADR-0019 에 따라 Phase 2 수익률 확인 전까지 Phase 3 진입 금지.**
+Python 기반 한국주식 **데이트레이딩** 자동매매 시스템. 한국투자증권 KIS Developers API + Opening Range Breakout(ORB) 전략 + 100~200만원 초기 자본. **paper 주문 + live 시세 하이브리드 키** 구조 (KIS paper 도메인에 시세 API 없음 — 시세는 별도 실전 APP_KEY 로 실전 도메인 호출). 현재 **Phase 1 PASS (코드·테스트 레벨). Phase 2 진행 중 — 백테스트 엔진·전략·리스크·CSV/KIS 분봉 어댑터·백필 CLI 까지 모든 코드 산출물 완료. 2026-04-24 1차 백테스트 FAIL + 복구 5단계 로드맵 (A 민감도 → B 비용 → C 유니버스 → D 파라미터 → E 전략 교체) 순차 게이팅. Step A FAIL (2026-04-25) · Step B FAIL (슬리피지 가정 유지) · Step C FAIL (2026-04-30, Top 50/100 두 서브셋 모두 ADR-0019 게이트 불통과) → Step D 진입. Phase 3 코드 산출물 (Executor·main.py APScheduler·monitor/notifier·storage/db·세션 재기동·broker 체결조회) 모두 완료 상태로 보존 — 단 ADR-0019 에 따라 Phase 2 수익률 확인 전까지 Phase 3 진입 금지.**
 
 상세 설계는 `plan.md`를 참조한다. 외부 독자용 개요는 `README.md`.
 
@@ -225,8 +225,8 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
 - **복구 로드맵 진행 상황**:
   - **Step A — 민감도 그리드** (2026-04-25): **FAIL**. 28/32 조합 게이트 0 통과, 최저 MDD -42.08%. 상세는 `docs/runbooks/step_a_result_2026-04-25.md`.
   - **Step B — 비용 가정 재검정** (Issue #75, 2026-04-29 완료): 3 거래일 (04-27·04-29·04-30) 장중 실 호가 331,530 샘플 수집 → 전체 중앙값 스프레드 0.1305% (현행 가정 0.1% 대비 1.3×, 사전 기준 0.05~0.2% 내). **ADR-0006 슬리피지 0.1% 유지 결정**. `backtest/costs.py` 변경 없음. 새 ADR 없음. Step A 재실행 불필요. 분석: `docs/runbooks/step_b_spread_analysis.md`.
-  - **Step C — 유니버스 유동성 필터 인프라 완료 (2026-04-30, Issue #76)**: `scripts/build_liquidity_ranking.py` (pykrx 영업일 bulk 호출 → `avg_value_krw` 랭킹 CSV) + `scripts/build_universe_subset.py` (랭킹 CSV → 서브셋 YAML) 신설. `scripts/backtest.py`·`scripts/sensitivity.py` 에 `--universe-yaml PATH` 플래그 추가 (default `config/universe.yaml`, backward-compat). 테스트 신규 44건. **운영자 실행 대기**: 12개월 윈도 랭킹 산출 → `universe_top50.yaml`·`universe_top100.yaml` 생성 → `--loader=kis --universe-yaml` 로 백테스트 2회 → ADR-0019 세 게이트 판정 → 결과 runbook 작성 (별도 PR).
-  - **Step D** — 전략 파라미터 구조 변경 (OR 윈도·force_close_at·재진입·일 N 진입). Step C 통과 서브셋 부재 시 진행.
+  - **Step C — 유니버스 유동성 필터 실행 완료 / FAIL (2026-04-30, Issue #76)**: 인프라 완료 후 운영자가 Top 50 / Top 100 두 서브셋 백테스트 실행 (`--loader=kis`, 2025-04-22 ~ 2026-04-21). 두 서브셋 모두 ADR-0019 세 게이트 전원 FAIL. Top 50: MDD -44.70%, 총수익률 -44.97%, 샤프 -6.68, 승률×손익비 0.377. Top 100: MDD -50.13%, 총수익률 -50.01%, 샤프 -7.74, 승률×손익비 0.383. ADR-0020 작성 안 함 (채택 결정 부재). 상세: `docs/runbooks/step_c_liquidity_filter_2026-04-30.md`. `config/universe_top50.yaml`·`config/universe_top100.yaml` git 추적 (커밋 781ec54). pykrx 1.2.7 부터 KRX_ID/KRX_PW env 필수 — `~/.config/stocker/.env` 및 `.env.example` 갱신 (커밋 36bfc65).
+  - **Step D** — 전략 파라미터 구조 변경 (OR 윈도·force_close_at·재진입·일 N 진입). **Step C FAIL 확인 → 현재 진입 단계.**
   - **Step E** — 전략 교체 (VWAP mean-reversion / opening gap reversal / pre-market pullback). A~D 전원 실패 전제.
 - **Phase 3 진입 금지 (ADR-0019)**: 게이트 통과 전까지 `main.py` 모의투자 무중단 운영 계획 전면 보류. `execution/`·`main.py`·`monitor/`·`storage/` 코드 산출물은 보존 — 복구 후 그대로 재사용.
 - **테스트 카운트**: pytest **1408 passed, 4 skipped** (Step C 인프라 PR 기준 — 신규 44건: `test_build_liquidity_ranking.py` 16 + `test_build_universe_subset.py` 16 + `test_backtest_cli.py` +6 + `test_sensitivity_cli.py` +6).

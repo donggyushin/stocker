@@ -163,6 +163,26 @@ stock-agent 프로젝트의 Phase 별 산출물·결정·테스트 카운트 변
 - **결정**: 현행 슬리피지 가정 0.1% 유지. `src/stock_agent/backtest/costs.py` 변경 없음. 새 ADR 불필요 (ADR-0006 그대로 계승). Step A 민감도 그리드 재실행 불필요.
 - **Step B 결론**: 완료. → Step C (유니버스 유동성 필터) 로 이행.
 
+## Phase 2 복구 로드맵 Step C — 유니버스 유동성 필터 실행 / FAIL (2026-04-30, Issue #76)
+
+인프라 완료(scripts 4건·테스트 44건 신규, PR #89) 후 운영자가 Top 50 / Top 100 두 서브셋 백테스트를 실행하여 결과 확인.
+
+**실행 조건**: `--loader=kis`, 기간 2025-04-22 ~ 2026-04-21, 시작 자본 1,000,000 KRW.
+
+| 서브셋 | MDD | 총수익률 | 샤프 | 승률 | 손익비 | 승률×손익비 |
+|---|---|---|---|---|---|---|
+| Top 50 (`config/universe_top50.yaml`) | -44.70% | -44.97% | -6.68 | 32.84% | 1.147 | 0.377 |
+| Top 100 (`config/universe_top100.yaml`) | -50.13% | -50.01% | -7.74 | 30.68% | 1.248 | 0.383 |
+| 베이스라인 199종목 (Step A) | -51.36% | -50.05% | -6.81 | 31.35% | 1.28 | 0.401 |
+
+- 게이트 판정: 세 조건(MDD > -15% · 승률×손익비 > 1.0 · 샤프 > 0) 전원 FAIL (Top 50, Top 100 모두).
+- Top 50 이 베이스라인 대비 MDD 소폭 개선이나 PASS 기준 -15% 와 3배 격차.
+- ADR-0020 작성 안 함 (채택 결정 부재).
+- 신규 추적 파일: `config/universe_top50.yaml`·`config/universe_top100.yaml` (커밋 781ec54).
+- pykrx 1.2.7 부터 KRX_ID/KRX_PW env 필수 — `~/.config/stocker/.env` 및 `.env.example` 갱신 (커밋 36bfc65).
+- 상세 runbook: `docs/runbooks/step_c_liquidity_filter_2026-04-30.md`.
+- **Step C 결론: FAIL.** → Step D (전략 파라미터 구조 변경) 진입.
+
 ## 보조 산출물
 
 - **Issue #67 완료 (2026-04-23)**: `src/stock_agent/backtest/walk_forward.py` 신설 — Phase 5 본 구현 대비 walk-forward validation 스켈레톤 선행 도입. `WalkForwardWindow`·`WalkForwardMetrics`·`WalkForwardResult` DTO + `generate_windows`·`run_walk_forward` 스텁(`NotImplementedError`). `backtest/__init__.py` 5 심볼 재노출. `tests/test_walk_forward.py` 18건. `pass_threshold` 기본값 결정은 Phase 5 본 구현 PR 에서 ADR 로 기록 예정.
