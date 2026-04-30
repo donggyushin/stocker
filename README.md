@@ -72,7 +72,9 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **ADR-0019 복구 로드맵 Step A FAIL (2026-04-25)**. 32 조합 민감도 그리드 실행 (28/32 완료 — 4 조합 미실행, 결과 뒤집힐 가능성 0% 로 즉시 종결). 세 게이트(MDD > -15% · 승률×손익비 > 1.0 · 샤프 > 0) 동시 통과 조합 **0 / 28**. 최고 수익률 -40.91%, 전 조합 샤프 음수.
 
-**Step B 완료 (2026-04-29)** — 3 거래일 장중 실 호가 수집 (331,530 샘플). 전체 중앙값 스프레드 0.1305% — 현행 가정 0.1% 대비 1.3× 이지만 사전 기준(0.05~0.2%) 내. **ADR-0006 슬리피지 가정 0.1% 유지 결정. `costs.py` 변경 없음.** 다음 단계: Step C (유니버스 유동성 필터). 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
+**Step B 완료 (2026-04-29)** — 3 거래일 장중 실 호가 수집 (331,530 샘플). 전체 중앙값 스프레드 0.1305% — 현행 가정 0.1% 대비 1.3× 이지만 사전 기준(0.05~0.2%) 내. **ADR-0006 슬리피지 가정 0.1% 유지 결정. `costs.py` 변경 없음.**
+
+**Step C 인프라 완료 (2026-04-30, Issue #76)** — `scripts/build_liquidity_ranking.py` + `scripts/build_universe_subset.py` 신설. `scripts/backtest.py`·`scripts/sensitivity.py` 에 `--universe-yaml PATH` 플래그 추가. 운영자 실행(랭킹 산출 → 서브셋 YAML → 백테스트 2회 → 게이트 판정)은 별도 PR. 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
 
 **Phase 3 착수 전제 통과** (2026-04-21). 실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK) 완료.
 
@@ -98,7 +100,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 ## 디렉토리 구조
 
-현재 존재하는 파일 (Phase 2 여덟 번째 산출물 완료 기준):
+현재 존재하는 파일 (Phase 2 Step C 인프라 완료 기준):
 
 ```text
 stock-agent/
@@ -182,7 +184,9 @@ stock-agent/
     ├── backtest.py                 # 단일 런 백테스트 CLI
     ├── sensitivity.py              # 파라미터 민감도 32 조합 그리드 (--resume 지정 시 조합 단위 incremental flush, freeze 내성)
     ├── backfill_minute_bars.py     # KIS 과거 분봉 캐시 일괄 적재 CLI
-    └── collect_spread_samples.py   # KIS 호가 스프레드 스냅샷 수집 CLI (Step B 인프라, JSONL 출력)
+    ├── collect_spread_samples.py   # KIS 호가 스프레드 스냅샷 수집 CLI (Step B 인프라, JSONL 출력)
+    ├── build_liquidity_ranking.py  # KOSPI 200 유동성 랭킹 산출 CLI (Step C 인프라, CSV 출력)
+    └── build_universe_subset.py    # 유동성 랭킹 CSV → KOSPI 200 서브셋 YAML 생성 (Step C 보조)
 ```
 
 미착수 모듈의 청사진은 [`plan.md`](./plan.md)의 디렉토리 구조 섹션 참조.

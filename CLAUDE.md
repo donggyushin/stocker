@@ -225,11 +225,11 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
 - **복구 로드맵 진행 상황**:
   - **Step A — 민감도 그리드** (2026-04-25): **FAIL**. 28/32 조합 게이트 0 통과, 최저 MDD -42.08%. 상세는 `docs/runbooks/step_a_result_2026-04-25.md`.
   - **Step B — 비용 가정 재검정** (Issue #75, 2026-04-29 완료): 3 거래일 (04-27·04-29·04-30) 장중 실 호가 331,530 샘플 수집 → 전체 중앙값 스프레드 0.1305% (현행 가정 0.1% 대비 1.3×, 사전 기준 0.05~0.2% 내). **ADR-0006 슬리피지 0.1% 유지 결정**. `backtest/costs.py` 변경 없음. 새 ADR 없음. Step A 재실행 불필요. 분석: `docs/runbooks/step_b_spread_analysis.md`.
-  - **Step C** — 유니버스 유동성 필터 (pykrx 거래대금 상위 N).
-  - **Step D** — 전략 파라미터 구조 변경 (OR 윈도·force_close_at·재진입·일 N 진입).
+  - **Step C — 유니버스 유동성 필터 인프라 완료 (2026-04-30, Issue #76)**: `scripts/build_liquidity_ranking.py` (pykrx 영업일 bulk 호출 → `avg_value_krw` 랭킹 CSV) + `scripts/build_universe_subset.py` (랭킹 CSV → 서브셋 YAML) 신설. `scripts/backtest.py`·`scripts/sensitivity.py` 에 `--universe-yaml PATH` 플래그 추가 (default `config/universe.yaml`, backward-compat). 테스트 신규 44건. **운영자 실행 대기**: 12개월 윈도 랭킹 산출 → `universe_top50.yaml`·`universe_top100.yaml` 생성 → `--loader=kis --universe-yaml` 로 백테스트 2회 → ADR-0019 세 게이트 판정 → 결과 runbook 작성 (별도 PR).
+  - **Step D** — 전략 파라미터 구조 변경 (OR 윈도·force_close_at·재진입·일 N 진입). Step C 통과 서브셋 부재 시 진행.
   - **Step E** — 전략 교체 (VWAP mean-reversion / opening gap reversal / pre-market pullback). A~D 전원 실패 전제.
 - **Phase 3 진입 금지 (ADR-0019)**: 게이트 통과 전까지 `main.py` 모의투자 무중단 운영 계획 전면 보류. `execution/`·`main.py`·`monitor/`·`storage/` 코드 산출물은 보존 — 복구 후 그대로 재사용.
-- **테스트 카운트**: pytest **1364 passed, 4 skipped** (Issue #82 incremental flush 후 기준).
+- **테스트 카운트**: pytest **1408 passed, 4 skipped** (Step C 인프라 PR 기준 — 신규 44건: `test_build_liquidity_ranking.py` 16 + `test_build_universe_subset.py` 16 + `test_backtest_cli.py` +6 + `test_sensitivity_cli.py` +6).
 - **운영자 close 대기 Issue**: #51 (Phase 2 PASS 판정 FAIL → 복구 로드맵으로 대체) · #52 (`KisMinuteBarLoader` 파싱 실패 대응, 운영자 `scripts/debug_kis_minute.py` 실행 후 댓글) · #63 (공휴일 캘린더 가드, 백필 재실행으로 `date_mismatch` 0 확인 후 댓글) · #71 (장시간 hang 방지, 2026-04-24 백필 완주 확인 — 운영자 댓글만 잔여).
 
 상세한 Phase 별 산출물·결정·테스트 카운트 변화·Issue 대응 이력은 [docs/phase-history.md](./docs/phase-history.md) 참조.

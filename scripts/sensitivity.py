@@ -123,7 +123,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--symbols",
         type=str,
         default="",
-        help="쉼표 구분 종목 코드 (미지정 시 config/universe.yaml 전체 사용).",
+        help="쉼표 구분 종목 코드 (미지정 시 --universe-yaml 전체 사용).",
+    )
+    parser.add_argument(
+        "--universe-yaml",
+        type=Path,
+        default=Path("config/universe.yaml"),
+        help=(
+            "유니버스 YAML 경로. --symbols 미지정 시 이 YAML 의 tickers 를 사용 "
+            "(서브셋 민감도 시 config/universe_top50.yaml 등 지정)."
+        ),
     )
     parser.add_argument(
         "--starting-capital",
@@ -218,21 +227,27 @@ def _resolve_workers(raw: int | None) -> int:
     return raw
 
 
-def _resolve_symbols(raw: str) -> tuple[str, ...]:
+def _resolve_symbols(raw: str, universe_yaml: Path | None = None) -> tuple[str, ...]:
     """`--symbols` 인자 해석 — 빈 값이면 유니버스 YAML 전체.
 
     `raw` 에 쉼표만 들어오는 극단 케이스는 `raw.strip()` 이 falsy 로 평가되어
     자동으로 유니버스 로드 분기로 빠진다 (별도 RuntimeError 불필요 — 현재
     분기 구조상 도달 불가능한 방어 코드는 두지 않는다).
+
+    `universe_yaml=None` 이면 backward-compat 으로 `load_kospi200_universe()` 를
+    인자 없이 호출. path 가 주어지면 해당 path 를 전달 (Step C 서브셋 지원).
     """
     if raw.strip():
         parts = tuple(s.strip() for s in raw.split(",") if s.strip())
         return parts
-    universe = load_kospi200_universe()
+    if universe_yaml is None:
+        universe = load_kospi200_universe()
+    else:
+        universe = load_kospi200_universe(universe_yaml)
     if not universe.tickers:
         raise RuntimeError(
-            "config/universe.yaml 이 비어있습니다 — --symbols 로 명시하거나 "
-            "유니버스 YAML 을 갱신하세요."
+            f"유니버스 YAML 이 비어있습니다 — --symbols 로 명시하거나 "
+            f"YAML 을 갱신하세요 (path={universe_yaml or 'config/universe.yaml'})."
         )
     return universe.tickers
 
@@ -261,7 +276,7 @@ def _run_pipeline(args: argparse.Namespace) -> None:
     엔진 함수에 주입해 조합 1개 종료 시점마다 `args.output_csv` 에 atomic
     append. 직렬·병렬 양쪽 동일. 메인 프로세스 단일 writer.
     """
-    symbols = _resolve_symbols(args.symbols)
+    symbols = _resolve_symbols(args.symbols, args.universe_yaml)
     workers = _resolve_workers(args.workers)
     base_config = BacktestConfig(starting_capital_krw=args.starting_capital)
     grid = default_grid()

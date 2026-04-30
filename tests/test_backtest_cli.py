@@ -746,3 +746,81 @@ class TestMainExitCode:
             ]
         )
         assert result == 0
+
+
+# ---------------------------------------------------------------------------
+# 9. _resolve_symbols — universe_yaml 인자 (RED: --universe-yaml 미구현)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveSymbolsUniverseYaml:
+    def test_명시적_path_전달_load_kospi200_universe_path_호출(self, monkeypatch):
+        """universe_yaml=Path('/custom/path.yaml') 전달 시
+        load_kospi200_universe(path) 가 정확히 그 경로로 호출된다."""
+        call_args: list = []
+        fake_universe = type("U", (), {"tickers": ("005930", "000660")})()
+
+        def spy(path):
+            call_args.append(path)
+            return fake_universe
+
+        monkeypatch.setattr(backtest_cli, "load_kospi200_universe", spy)
+        custom_path = Path("/custom/path.yaml")
+        result = _resolve_symbols("", universe_yaml=custom_path)
+        assert result == ("005930", "000660")
+        assert len(call_args) == 1
+        assert call_args[0] == custom_path
+
+    def test_path_전달_raw_우선_universe_미호출(self, monkeypatch):
+        """raw='005930,000660', universe_yaml=Path('/x.yaml') →
+        tuple('005930','000660') 반환, load_kospi200_universe 호출 0회."""
+        call_count: list = []
+
+        def spy(path=None):
+            call_count.append(True)
+            return type("U", (), {"tickers": ()})()
+
+        monkeypatch.setattr(backtest_cli, "load_kospi200_universe", spy)
+        result = _resolve_symbols("005930,000660", universe_yaml=Path("/x.yaml"))
+        assert result == ("005930", "000660")
+        assert len(call_count) == 0
+
+    def test_universe_yaml_None_인자_없이_호출(self, monkeypatch):
+        """universe_yaml=None 키워드 전달 시 load_kospi200_universe() 를
+        인자 없이(zero-arg) 호출하는 분기에 진입한다."""
+        call_log: list = []
+        fake_universe = type("U", (), {"tickers": ("035420",)})()
+
+        def spy_noarg():
+            call_log.append("noarg")
+            return fake_universe
+
+        monkeypatch.setattr(backtest_cli, "load_kospi200_universe", spy_noarg)
+        result = _resolve_symbols("", universe_yaml=None)
+        assert result == ("035420",)
+        assert call_log == ["noarg"]
+
+
+# ---------------------------------------------------------------------------
+# 10. _parse_args — --universe-yaml 옵션 (RED: 미구현)
+# ---------------------------------------------------------------------------
+
+
+class TestParseArgsUniverseYaml:
+    _BASE = ["--csv-dir=/tmp/dummy", "--from=2023-01-01", "--to=2025-12-31"]
+
+    def test_기본값_config_universe_yaml(self):
+        """--universe-yaml 미지정 시 args.universe_yaml == Path('config/universe.yaml')."""
+        args = _parse_args(self._BASE)
+        assert args.universe_yaml == Path("config/universe.yaml")
+
+    def test_명시적_전달_상대경로(self):
+        """--universe-yaml=config/universe_top50.yaml →
+        args.universe_yaml == Path('config/universe_top50.yaml')."""
+        args = _parse_args(self._BASE + ["--universe-yaml=config/universe_top50.yaml"])
+        assert args.universe_yaml == Path("config/universe_top50.yaml")
+
+    def test_절대경로_isinstance_Path(self):
+        """--universe-yaml=/abs/path.yaml → isinstance(args.universe_yaml, Path) True."""
+        args = _parse_args(self._BASE + ["--universe-yaml=/abs/path.yaml"])
+        assert isinstance(args.universe_yaml, Path)
