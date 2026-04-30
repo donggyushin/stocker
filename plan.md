@@ -381,6 +381,41 @@ pytest **245 → 324 → 384 → 464 → 477 → 539 → 542건 green** (기존 
 
 **→ Step C (유니버스 유동성 필터)** 로 이행.
 
+### Step C 인프라 완료 — 운영자 실행 대기 (2026-04-30, Issue #76)
+
+코드 산출물 4건 완료. 운영자 실행(별도 PR)은 미완료.
+
+**신규 스크립트**:
+
+- `scripts/build_liquidity_ranking.py`: KOSPI 200 유동성 랭킹 산출.
+  - `pykrx get_market_ohlcv_by_ticker(yyyymmdd, market="KOSPI")` 영업일 bulk 호출
+  - `YamlBusinessDayCalendar` 영업일 필터 (주말·공휴일 skip)
+  - 출력 CSV 컬럼: `symbol,avg_value_krw,daily_return_std,sample_days,rank_value`
+  - 50% 이상 영업일 실패 시 `RuntimeError("excessive_failures: ...")` fail-fast
+  - exit code: `0` 정상 / `2` 입력·설정 오류 / `3` I/O 오류
+  - 사용 예: `uv run python scripts/build_liquidity_ranking.py --start 2024-04-22 --end 2025-04-21 --universe-yaml config/universe.yaml --output-csv data/liquidity_ranking.csv`
+
+- `scripts/build_universe_subset.py`: 유동성 랭킹 CSV → KOSPI 200 서브셋 YAML 생성.
+  - `rank_value <= top_n` 종목 추출. 출력 스키마: `as_of_date / source / tickers` (`config/universe.yaml` 정본과 동일)
+  - 작성 직후 `load_kospi200_universe(output)` 자체 검증. `rank_value` 1..N 연속 검증 (음수·중복·결손 거부)
+  - ADR-0004 수동 관리 정책 계승: 자동 git 커밋 아님 — 운영자 검토 후 `git add` 책임
+  - 사용 예: `uv run python scripts/build_universe_subset.py --ranking-csv data/liquidity_ranking.csv --top-n 50 --output-yaml config/universe_top50.yaml --source "Step C — Top 50 by avg_value_krw, window=2024-04-22..2025-04-21" --as-of 2025-04-21`
+
+**기존 CLI 확장** (`scripts/backtest.py`, `scripts/sensitivity.py`):
+- `--universe-yaml PATH` 플래그 추가 (default `config/universe.yaml`, backward-compat)
+- `_resolve_symbols(raw, universe_yaml=None)` 시그니처 확장 — path 주어지면 `load_kospi200_universe(path)` 호출
+- 효과: `--loader=kis --universe-yaml config/universe_top50.yaml` 로 서브셋 백테스트 실행 가능
+
+**테스트**: 신규 44건 (`test_build_liquidity_ranking.py` 16 + `test_build_universe_subset.py` 16 + `test_backtest_cli.py` +6 + `test_sensitivity_cli.py` +6). 4종 정적 검사 GREEN.
+
+**다음 단계 (별도 PR — 운영자 실행)**:
+1. `uv run python scripts/build_liquidity_ranking.py --start 2024-04-22 --end 2025-04-21 --universe-yaml config/universe.yaml --output-csv data/liquidity_ranking.csv`
+2. `uv run python scripts/build_universe_subset.py --ranking-csv data/liquidity_ranking.csv --top-n 50 --output-yaml config/universe_top50.yaml ...` (top-100 도 동일)
+3. `uv run python scripts/backtest.py --loader=kis --universe-yaml config/universe_top50.yaml --from 2025-04-22 --to 2026-04-21` (top-100 도 동일)
+4. ADR-0019 세 게이트 판정 (MDD > -15%, 승률 × 손익비 > 1.0, 샤프 > 0)
+5. `docs/runbooks/step_c_liquidity_filter_YYYY-MM-DD.md` 작성
+6. 통과 서브셋 없으면 Step D 진행
+
 ---
 
 ## Phase 3 진행 요약 (2026-04-21 기준)

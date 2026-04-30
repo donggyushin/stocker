@@ -115,7 +115,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--symbols",
         type=str,
         default="",
-        help="쉼표 구분 종목 코드 (미지정 시 config/universe.yaml 전체 사용).",
+        help="쉼표 구분 종목 코드 (미지정 시 --universe-yaml 전체 사용).",
+    )
+    parser.add_argument(
+        "--universe-yaml",
+        type=Path,
+        default=Path("config/universe.yaml"),
+        help=(
+            "유니버스 YAML 경로. --symbols 미지정 시 이 YAML 의 tickers 를 사용 "
+            "(서브셋 백테스트 시 config/universe_top50.yaml 등 지정)."
+        ),
     )
     parser.add_argument(
         "--starting-capital",
@@ -148,20 +157,27 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def _resolve_symbols(raw: str) -> tuple[str, ...]:
+def _resolve_symbols(raw: str, universe_yaml: Path | None = None) -> tuple[str, ...]:
     """`--symbols` 인자 해석 — 빈 값이면 유니버스 YAML 전체.
 
     `scripts/sensitivity.py:_resolve_symbols` 와 동일 계약. 공용 헬퍼로
     승격은 YAGNI (현재 소비자 2개).
+
+    `universe_yaml=None` 이면 backward-compat 으로 `load_kospi200_universe()` 를
+    인자 없이 호출 (기존 단인자 호출 경로 보존). path 가 주어지면 해당 path 를
+    `load_kospi200_universe(path)` 에 전달.
     """
     if raw.strip():
         parts = tuple(s.strip() for s in raw.split(",") if s.strip())
         return parts
-    universe = load_kospi200_universe()
+    if universe_yaml is None:
+        universe = load_kospi200_universe()
+    else:
+        universe = load_kospi200_universe(universe_yaml)
     if not universe.tickers:
         raise RuntimeError(
-            "config/universe.yaml 이 비어있습니다 — --symbols 로 명시하거나 "
-            "유니버스 YAML 을 갱신하세요."
+            f"유니버스 YAML 이 비어있습니다 — --symbols 로 명시하거나 "
+            f"YAML 을 갱신하세요 (path={universe_yaml or 'config/universe.yaml'})."
         )
     return universe.tickers
 
@@ -198,7 +214,7 @@ def _run_pipeline(args: argparse.Namespace) -> None:
     예외 → exit code 매핑에 집중한다 (sensitivity 와 동일 기조). `KisMinuteBarLoader`
     는 SQLite 커넥션을 닫아야 하므로 `try/finally` 로 `close()` 호출.
     """
-    symbols = _resolve_symbols(args.symbols)
+    symbols = _resolve_symbols(args.symbols, args.universe_yaml)
     loader = _build_loader(args)
     config = BacktestConfig(starting_capital_krw=args.starting_capital)
     engine = BacktestEngine(config)
