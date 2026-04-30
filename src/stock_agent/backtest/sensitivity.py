@@ -1048,6 +1048,48 @@ def default_grid() -> SensitivityGrid:
     )
 
 
+def step_d2_grid() -> SensitivityGrid:
+    """ADR-0019 Step D2 (Issue #77) — `force_close_at` 변경 스터디 그리드. 3×4×4 = 48 조합.
+
+    한국 시장 정규장 마감은 15:30, 동시호가는 15:20~15:30. 후보 3종으로
+    "동시호가 회피 / 현재 / 동시호가 시작 직전" 을 비교한다.
+
+    - `strategy.force_close_at`: 14:50, 15:00, 15:20 (동시호가 -30 / 현재 / 동시호가 +0)
+    - `strategy.stop_loss_pct`: 1.0%, 1.5%, 2.0%, 2.5% — `default_grid()` 동일
+    - `strategy.take_profit_pct`: 2.0%, 3.0%, 4.0%, 5.0% — `default_grid()` 동일
+
+    `or_end` 기본값 09:30 은 모든 후보보다 작으므로 `StrategyConfig.__post_init__`
+    의 `or_end < force_close_at` 검증을 통과한다. `default_grid()` · `step_d1_grid()`
+    동작은 그대로 보존 (회귀 0).
+    """
+    return SensitivityGrid(
+        axes=(
+            ParameterAxis(
+                name="strategy.force_close_at",
+                values=(time(14, 50), time(15, 0), time(15, 20)),
+            ),
+            ParameterAxis(
+                name="strategy.stop_loss_pct",
+                values=(
+                    Decimal("0.010"),
+                    Decimal("0.015"),
+                    Decimal("0.020"),
+                    Decimal("0.025"),
+                ),
+            ),
+            ParameterAxis(
+                name="strategy.take_profit_pct",
+                values=(
+                    Decimal("0.020"),
+                    Decimal("0.030"),
+                    Decimal("0.040"),
+                    Decimal("0.050"),
+                ),
+            ),
+        ),
+    )
+
+
 def step_d1_grid() -> SensitivityGrid:
     """ADR-0019 Step D1 (Issue #77) — OR 윈도 길이 스터디 그리드. 3×4×4 = 48 조합.
 
@@ -1107,5 +1149,6 @@ __all__ = [
     "run_sensitivity_combos_parallel",
     "run_sensitivity_parallel",
     "step_d1_grid",
+    "step_d2_grid",
     "write_csv",
 ]

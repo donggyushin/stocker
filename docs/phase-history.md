@@ -195,6 +195,30 @@ Step C FAIL 확정(2026-04-30) 후 Step D 진입.
 - ADR 없음 — 분석 도구 확장이며 라이브러리 채택·모듈 경계·정책 변경 해당 없음. 채택 결정 시 ADR 작성 예정.
 - 백테스트 미실행 — 운영자가 `scripts/sensitivity.py --grid step-d1` 실행 후 ADR-0019 게이트 판정 예정.
 
+## Phase 2 복구 로드맵 Step D1 — OR 윈도 스터디 실행 / FAIL (2026-04-30 ~ 2026-05-01)
+
+- 실행: `step_d1_grid` 48 조합 × Top 50 / Top 100 두 서브셋 = 96 런. 8 워커, KIS 캐시 hit 율 높음 (Top 50 ~22분, Top 100 ~58분).
+- 데이터 범위: 2025-04-22 ~ 2026-04-21, 시작 자본 1,000,000 KRW.
+- 최선 조합 (서브셋별):
+  - Top 50: `or_end=10:00, stop=2.5%, take=5.0%` — MDD **-37.18%**, 샤프 -5.07, 승률×손익비 0.396.
+  - Top 100: `or_end=09:15, stop=2.5%, take=5.0%` — MDD **-35.98%**, 샤프 -3.25, 승률×손익비 0.465.
+- Step C 대비: Top 50 MDD -44.70% → -37.18% (+7.5%p), Top 100 -50.13% → -35.98% (+14.2%p). 소폭 개선이나 게이트 한도 -15% 까지 21~23%p 격차.
+- 게이트 판정: 96/96 런 ADR-0019 세 조건 전원 FAIL.
+- 산출물: `data/sensitivity_step_d1_top50.{md,csv}`, `data/sensitivity_step_d1_top100.{md,csv}` (모두 `.gitignore`).
+- ADR 작성 안 함 (채택 결정 부재). `step_d1_grid()` 코드 보존.
+- 상세 runbook: `docs/runbooks/step_d1_or_window_2026-05-01.md`.
+- **Step D1 결론: FAIL.** → D2 (force_close_at 스터디) 진행.
+
+## Phase 2 복구 로드맵 Step D2 — force_close_at 스터디 코드 단계 완료 (2026-05-01)
+
+- `src/stock_agent/backtest/sensitivity.py` 에 `step_d2_grid()` 함수 추가. `backtest/__init__.py` `__all__` 노출.
+  - `strategy.force_close_at` 3종(`time(14,50)`, `time(15,0)`, `time(15,20)`) × `strategy.stop_loss_pct` 4종 × `strategy.take_profit_pct` 4종 = 48 조합.
+  - `default_grid()` · `step_d1_grid()` 동작 변경 없음 (회귀 0).
+- `scripts/sensitivity.py` 에 `--grid step-d2` 추가. `--grid {default,step-d1,step-d2}`. 기존 인자 전부 호환.
+- pytest **1478 → 1487 passed, 4 skipped** (신규 9건: `test_sensitivity.py` `TestStepD2Grid` 9건 + `test_sensitivity_cli.py` `TestGridFlag` `step-d2` 분기 1건 포함). ruff/black/pyright 4종 PASS.
+- ADR 없음 — 분석 도구 확장이며 라이브러리 채택·모듈 경계·정책 변경 해당 없음. 채택 결정 시 ADR 작성 예정.
+- 백테스트 미실행 — 운영자가 `scripts/sensitivity.py --grid step-d2` 실행 후 ADR-0019 게이트 판정 예정.
+
 ## 보조 산출물
 
 - **Issue #67 완료 (2026-04-23)**: `src/stock_agent/backtest/walk_forward.py` 신설 — Phase 5 본 구현 대비 walk-forward validation 스켈레톤 선행 도입. `WalkForwardWindow`·`WalkForwardMetrics`·`WalkForwardResult` DTO + `generate_windows`·`run_walk_forward` 스텁(`NotImplementedError`). `backtest/__init__.py` 5 심볼 재노출. `tests/test_walk_forward.py` 18건. `pass_threshold` 기본값 결정은 Phase 5 본 구현 PR 에서 ADR 로 기록 예정.

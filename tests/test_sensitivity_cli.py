@@ -586,8 +586,32 @@ class TestGridFlag:
         assert called["serial_combos"] == 1
         assert combo_counts.get("serial") == 32, f"32 조합 기대, 실제 {combo_counts.get('serial')}"
 
+    def test_grid_step_d2_step_d2_grid_호출_48조합(self, monkeypatch):
+        """--grid=step-d2 → step_d2_grid() 가 호출되어 48 조합이 엔진에 전달된다.
+
+        현재 RED 기대:
+        - sensitivity_cli 에 --grid choices 에 step-d2 가 없으면 argparse SystemExit(2).
+        - step_d2_grid 가 sensitivity.py 에 없으면 AttributeError / ImportError.
+        """
+        called, combo_counts = self._setup_grid_mocks(monkeypatch)
+
+        # step_d2_grid 를 sensitivity_cli 에 주입 (미구현 → AttributeError 회피)
+        from stock_agent.backtest.sensitivity import step_d2_grid  # noqa: PLC0415
+
+        monkeypatch.setattr(sensitivity_cli, "step_d2_grid", step_d2_grid, raising=False)
+
+        result = main(_GRID_BASE_ARGV + ["--workers=1", "--symbols=005930", "--grid=step-d2"])
+
+        assert result == 0, f"exit code 기대 0, 실제 {result}"
+        assert called["serial_combos"] == 1, "run_sensitivity_combos 가 호출돼야 한다"
+        # step_d2_grid().size == 48 → combos 길이 48
+        assert combo_counts.get("serial") == 48, f"48 조합 기대, 실제 {combo_counts.get('serial')}"
+
     def test_grid_foobar_exit_2(self, monkeypatch):
-        """--grid=foobar → argparse choices 위반 → SystemExit(2) 발생."""
+        """--grid=foobar → argparse choices 위반 → SystemExit(2) 발생.
+
+        choices 에 step-d2 가 추가되어도 잘못된 값은 여전히 거부된다 (회귀).
+        """
         # argparse 가 자체적으로 exit(2) 를 발생시키므로 SystemExit 예외로 잡는다.
         with pytest.raises(SystemExit) as exc_info:
             main(_GRID_BASE_ARGV + ["--symbols=005930", "--grid=foobar"])

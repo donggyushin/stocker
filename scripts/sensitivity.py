@@ -54,6 +54,7 @@ from stock_agent.backtest import (
     run_sensitivity_combos,
     run_sensitivity_combos_parallel,
     step_d1_grid,
+    step_d2_grid,
     write_csv,
 )
 from stock_agent.backtest.loader import BarLoader
@@ -164,11 +165,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--grid",
         type=str,
         default="default",
-        choices=("default", "step-d1"),
+        choices=("default", "step-d1", "step-d2"),
         help=(
             "그리드 선택. default=plan.md 기본 2×4×4=32 조합, "
             "step-d1=ADR-0019 Step D1(Issue #77) OR 윈도 확장 3×4×4=48 조합 "
-            "(or_end ∈ {09:15, 09:30, 10:00})."
+            "(or_end ∈ {09:15, 09:30, 10:00}), "
+            "step-d2=ADR-0019 Step D2 force_close_at 변경 3×4×4=48 조합 "
+            "(force_close_at ∈ {14:50, 15:00, 15:20})."
         ),
     )
     parser.add_argument(
@@ -213,6 +216,8 @@ def _select_grid(name: str):
         return default_grid()
     if name == "step-d1":
         return step_d1_grid()
+    if name == "step-d2":
+        return step_d2_grid()
     raise RuntimeError(f"알 수 없는 --grid 값: {name!r}")
 
 

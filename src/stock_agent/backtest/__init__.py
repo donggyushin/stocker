@@ -34,6 +34,7 @@ from stock_agent.backtest.sensitivity import (
     run_sensitivity_combos_parallel,
     run_sensitivity_parallel,
     step_d1_grid,
+    step_d2_grid,
     write_csv,
 )
 from stock_agent.backtest.walk_forward import (
@@ -75,5 +76,6 @@ __all__ = [
     "run_sensitivity_parallel",
     "run_walk_forward",
     "step_d1_grid",
+    "step_d2_grid",
     "write_csv",
 ]

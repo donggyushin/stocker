@@ -1201,3 +1201,92 @@ class TestStepD1Grid:
             "strategy.stop_loss_pct": Decimal("0.010"),
             "strategy.take_profit_pct": Decimal("0.020"),
         }
+
+
+# ---------------------------------------------------------------------------
+# I. step_d2_grid — Step D2 강제청산 시각 스터디 전용 그리드
+# ---------------------------------------------------------------------------
+
+
+class TestStepD2Grid:
+    """step_d2_grid() 공개 계약 — 3×4×4 = 48 조합.
+
+    현재 RED: step_d2_grid 가 stock_agent.backtest 에 미구현.
+    각 테스트 내부에서 import 해 ImportError 를 AssertionError 형태로 FAIL 유도.
+    """
+
+    @staticmethod
+    def _get_func():
+        """step_d2_grid 를 지연 import — ImportError 를 테스트 실패로 전환."""
+        from stock_agent.backtest import step_d2_grid  # noqa: PLC0415
+
+        return step_d2_grid
+
+    def test_반환타입_SensitivityGrid(self):
+        """step_d2_grid() 반환값은 SensitivityGrid 타입이다."""
+        step_d2_grid = self._get_func()
+        grid = step_d2_grid()
+        assert isinstance(grid, SensitivityGrid)
+
+    def test_size_48(self):
+        """3 × 4 × 4 = 48 조합."""
+        step_d2_grid = self._get_func()
+        grid = step_d2_grid()
+        assert grid.size == 48
+
+    def test_축_이름_순서(self):
+        """축 이름 순서: force_close_at, stop_loss_pct, take_profit_pct."""
+        step_d2_grid = self._get_func()
+        grid = step_d2_grid()
+        names = tuple(a.name for a in grid.axes)
+        assert names == (
+            "strategy.force_close_at",
+            "strategy.stop_loss_pct",
+            "strategy.take_profit_pct",
+        )
+
+    def test_force_close_at_후보값_순서(self):
+        """force_close_at 축 후보값 = (time(14, 50), time(15, 0), time(15, 20)) — 정확히 이 순서."""
+        step_d2_grid = self._get_func()
+        grid = step_d2_grid()
+        fc_axis = next(a for a in grid.axes if a.name == "strategy.force_close_at")
+        assert fc_axis.values == (time(14, 50), time(15, 0), time(15, 20))
+
+    def test_stop_loss_pct_후보값_default_grid_일치(self):
+        """stop_loss_pct 후보값 집합이 default_grid() 의 동일 축과 정확히 일치한다."""
+        step_d2_grid = self._get_func()
+        d2_grid = step_d2_grid()
+        ref_grid = default_grid()
+        d2_stop = next(a for a in d2_grid.axes if a.name == "strategy.stop_loss_pct")
+        ref_stop = next(a for a in ref_grid.axes if a.name == "strategy.stop_loss_pct")
+        assert d2_stop.values == ref_stop.values
+
+    def test_take_profit_pct_후보값_default_grid_일치(self):
+        """take_profit_pct 후보값 집합이 default_grid() 의 동일 축과 정확히 일치한다."""
+        step_d2_grid = self._get_func()
+        d2_grid = step_d2_grid()
+        ref_grid = default_grid()
+        d2_take = next(a for a in d2_grid.axes if a.name == "strategy.take_profit_pct")
+        ref_take = next(a for a in ref_grid.axes if a.name == "strategy.take_profit_pct")
+        assert d2_take.values == ref_take.values
+
+    def test_default_grid_size_32_회귀(self):
+        """step_d2_grid() 추가가 default_grid() 동작을 변경하지 않는다."""
+        assert default_grid().size == 32
+
+    def test_step_d1_grid_size_48_회귀(self):
+        """step_d2_grid() 추가가 step_d1_grid() 동작을 변경하지 않는다."""
+        from stock_agent.backtest import step_d1_grid  # noqa: PLC0415
+
+        assert step_d1_grid().size == 48
+
+    def test_iter_combinations_첫_조합(self):
+        """iter_combinations() 첫 조합 = force_close_at=14:50, stop=0.010, take=0.020."""
+        step_d2_grid = self._get_func()
+        grid = step_d2_grid()
+        first = next(iter(grid.iter_combinations()))
+        assert first == {
+            "strategy.force_close_at": time(14, 50),
+            "strategy.stop_loss_pct": Decimal("0.010"),
+            "strategy.take_profit_pct": Decimal("0.020"),
+        }
