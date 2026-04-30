@@ -404,6 +404,36 @@ pytest **245 → 324 → 384 → 464 → 477 → 539 → 542건 green** (기존 
 
 **Step C 결론: FAIL.** → Step D 진입.
 
+### Step D 진행 — 전략 파라미터 구조 변경 (Issue #77)
+
+#### Step D1 — OR 윈도 스터디 (코드 단계 완료, 백테스트 미실행)
+
+`src/stock_agent/backtest/sensitivity.py` 에 `step_d1_grid()` 함수 추가 + `scripts/sensitivity.py` 에 `--grid {default,step-d1}` 플래그 도입.
+
+- **`step_d1_grid()`** (`backtest/__init__.py` `__all__` 노출): `strategy.or_end` 3종 × `strategy.stop_loss_pct` 4종 × `strategy.take_profit_pct` 4종 = **48 조합**.
+  - `or_end`: `time(9, 15)` / `time(9, 30)` / `time(10, 0)` — 15분·30분·60분 윈도.
+  - `stop_loss_pct` / `take_profit_pct`: `default_grid()` 와 동일.
+  - `default_grid()` 동작 변경 없음 (회귀 0).
+- **CLI 플래그**: `--grid {default,step-d1}`. 기본값 `default`. `step-d1` 선택 시 `step_d1_grid()` 사용. 잘못된 값 → argparse `choices` 위반 → exit 2. 기존 인자(`--workers`, `--resume`, `--output-csv`, `--from`, `--to`, `--symbols`, `--universe-yaml` 등) 전부 호환.
+- pytest **1408 → 1478 passed, 4 skipped** (신규 11건: `TestStepD1Grid` 8 + `TestGridFlag` 3 + 기타 추가분).
+
+운영자 실행 명령 (Step D1 백테스트):
+
+```bash
+# Step D1 — OR 윈도 길이 스터디 (48 조합, Top 50 서브셋, 8 워커, incremental flush)
+uv run python scripts/sensitivity.py \
+  --loader=kis \
+  --from 2025-04-22 --to 2026-04-21 \
+  --universe-yaml config/universe_top50.yaml \
+  --grid step-d1 \
+  --workers 8 \
+  --output-markdown data/sensitivity_step_d1_top50.md \
+  --output-csv data/sensitivity_step_d1_top50.csv \
+  --resume data/sensitivity_step_d1_top50.csv
+```
+
+**D1 채택 조건**: 실행 후 ADR-0019 세 게이트(MDD > -15% · 승률×손익비 > 1.0 · 샤프 > 0) 중 하나 이상 통과 조합 존재 시 → walk-forward 검증 → Phase 3 착수 허가. 미달 시 D2(force_close_at 스터디) 등 다음 파라미터 변경으로 이행. ADR 작성은 채택 결정 시에만 (현재는 분석 도구 확장 — ADR 불필요).
+
 ---
 
 ## Phase 3 진행 요약 (2026-04-21 기준)

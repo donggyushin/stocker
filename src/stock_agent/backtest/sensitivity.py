@@ -1048,6 +1048,49 @@ def default_grid() -> SensitivityGrid:
     )
 
 
+def step_d1_grid() -> SensitivityGrid:
+    """ADR-0019 Step D1 (Issue #77) — OR 윈도 길이 스터디 그리드. 3×4×4 = 48 조합.
+
+    `default_grid()` 의 OR 윈도 축을 60분(`time(10, 0)`) 후보까지 확장한
+    별개 그리드. `stop_loss_pct` · `take_profit_pct` 후보값은 `default_grid()`
+    와 동일하게 유지해 운영자가 Step A 결과와 직접 1:1 비교할 수 있다.
+
+    - `strategy.or_end`: 09:15, 09:30, 10:00 (OR 15분 / 30분 / 60분)
+    - `strategy.stop_loss_pct`: 1.0%, 1.5%, 2.0%, 2.5% — `default_grid()` 동일
+    - `strategy.take_profit_pct`: 2.0%, 3.0%, 4.0%, 5.0% — `default_grid()` 동일
+
+    `default_grid()` 와 별개 함수로 유지하는 이유: plan.md 기본 sanity check 의
+    축(2×4×4) 은 외부 PR 이력·문서·CSV 와 묶여 있어 변경하면 회귀 비교가
+    깨진다. Step D1 은 분석 도구 확장 — `--grid step-d1` 로 명시 선택.
+    """
+    return SensitivityGrid(
+        axes=(
+            ParameterAxis(
+                name="strategy.or_end",
+                values=(time(9, 15), time(9, 30), time(10, 0)),
+            ),
+            ParameterAxis(
+                name="strategy.stop_loss_pct",
+                values=(
+                    Decimal("0.010"),
+                    Decimal("0.015"),
+                    Decimal("0.020"),
+                    Decimal("0.025"),
+                ),
+            ),
+            ParameterAxis(
+                name="strategy.take_profit_pct",
+                values=(
+                    Decimal("0.020"),
+                    Decimal("0.030"),
+                    Decimal("0.040"),
+                    Decimal("0.050"),
+                ),
+            ),
+        ),
+    )
+
+
 __all__ = [
     "ParameterAxis",
     "SensitivityGrid",
@@ -1063,5 +1106,6 @@ __all__ = [
     "run_sensitivity_combos",
     "run_sensitivity_combos_parallel",
     "run_sensitivity_parallel",
+    "step_d1_grid",
     "write_csv",
 ]

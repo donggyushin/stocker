@@ -12,6 +12,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # scripts/sensitivity.py 로드 (scripts/ 에 __init__.py 없음 — spec_from_file_location 사용)
 # ---------------------------------------------------------------------------
@@ -489,3 +491,104 @@ class TestParseArgsUniverseYaml:
         """--universe-yaml=/abs/path.yaml → isinstance(args.universe_yaml, Path) True."""
         args = _parse_args(self._BASE + ["--universe-yaml=/abs/path.yaml"])
         assert isinstance(args.universe_yaml, Path)
+
+
+# ---------------------------------------------------------------------------
+# --grid 플래그 분기 검증 (RED — step_d1_grid 미구현)
+# ---------------------------------------------------------------------------
+
+# step_d1_grid 는 아직 sensitivity.py 에 없으므로 import 를 테스트 내부에서 처리한다.
+# sensitivity_cli 모듈이 로드될 때 --grid 플래그 자체가 없으면 _parse_args 가
+# SystemExit(2) 를 발생시키므로 해당 케이스는 argparse 동작으로 검증한다.
+
+_GRID_BASE_ARGV = [
+    "--csv-dir=/tmp/dummy_csv",
+    "--from=2023-01-01",
+    "--to=2025-12-31",
+]
+
+
+class TestGridFlag:
+    """--grid {default,step-d1} 플래그 분기 계약.
+
+    step_d1_grid 함수와 --grid 플래그가 모두 미구현 상태이므로
+    이 클래스의 모든 테스트는 현재 RED (ImportError / SystemExit / AssertionError).
+    """
+
+    def _setup_grid_mocks(self, monkeypatch):
+        """엔진 함수와 loader 를 no-op mock 으로 대체한다.
+
+        TestWorkersRouting._setup_mocks 와 동일 패턴.
+        """
+        called: dict[str, int] = {"serial_combos": 0, "parallel_combos": 0}
+        combo_counts: dict[str, int] = {}
+
+        from stock_agent.backtest import InMemoryBarLoader  # noqa: PLC0415
+
+        _dummy_loader = InMemoryBarLoader([])
+
+        def _fake_build_loader(*args, **kwargs):
+            return _dummy_loader
+
+        def _fake_build_loader_primitive(*args, **kwargs):
+            return _dummy_loader
+
+        def _fake_serial(*args, **kwargs):
+            called["serial_combos"] += 1
+            combo_counts["serial"] = len(kwargs.get("combos", args[5] if len(args) > 5 else []))
+            return ()
+
+        def _fake_parallel(*args, **kwargs):
+            called["parallel_combos"] += 1
+            combo_counts["parallel"] = len(kwargs.get("combos", args[5] if len(args) > 5 else []))
+            return ()
+
+        monkeypatch.setattr(sensitivity_cli, "_build_loader", _fake_build_loader)
+        monkeypatch.setattr(
+            sensitivity_cli, "_build_loader_primitive", _fake_build_loader_primitive
+        )
+        monkeypatch.setattr(sensitivity_cli, "run_sensitivity_combos", _fake_serial)
+        monkeypatch.setattr(sensitivity_cli, "run_sensitivity_combos_parallel", _fake_parallel)
+        monkeypatch.setattr(sensitivity_cli, "merge_sensitivity_rows", lambda *a, **kw: ())
+        monkeypatch.setattr(sensitivity_cli, "render_markdown_table", lambda *a, **kw: "")
+        monkeypatch.setattr(sensitivity_cli, "write_csv", lambda *a, **kw: None)
+
+        return called, combo_counts
+
+    def test_grid_step_d1_step_d1_grid_호출_48조합(self, monkeypatch):
+        """--grid=step-d1 → step_d1_grid() 가 호출되어 48 조합이 엔진에 전달된다.
+
+        현재 RED 기대:
+        - sensitivity_cli 에 --grid 플래그가 없으면 argparse SystemExit(2).
+        - step_d1_grid 가 sensitivity.py 에 없으면 AttributeError / ImportError.
+        """
+        called, combo_counts = self._setup_grid_mocks(monkeypatch)
+
+        # step_d1_grid 를 sensitivity_cli 에 주입 (미구현 → AttributeError 회피)
+        from stock_agent.backtest.sensitivity import step_d1_grid  # noqa: PLC0415
+
+        monkeypatch.setattr(sensitivity_cli, "step_d1_grid", step_d1_grid, raising=False)
+
+        result = main(_GRID_BASE_ARGV + ["--workers=1", "--symbols=005930", "--grid=step-d1"])
+
+        assert result == 0, f"exit code 기대 0, 실제 {result}"
+        assert called["serial_combos"] == 1, "run_sensitivity_combos 가 호출돼야 한다"
+        # step_d1_grid().size == 48 → combos 길이 48
+        assert combo_counts.get("serial") == 48, f"48 조합 기대, 실제 {combo_counts.get('serial')}"
+
+    def test_grid_default_32조합_회귀(self, monkeypatch):
+        """--grid=default (또는 미지정) → default_grid() 호출 + 32 조합, 기존 동작 회귀 0."""
+        called, combo_counts = self._setup_grid_mocks(monkeypatch)
+
+        result = main(_GRID_BASE_ARGV + ["--workers=1", "--symbols=005930", "--grid=default"])
+
+        assert result == 0, f"exit code 기대 0, 실제 {result}"
+        assert called["serial_combos"] == 1
+        assert combo_counts.get("serial") == 32, f"32 조합 기대, 실제 {combo_counts.get('serial')}"
+
+    def test_grid_foobar_exit_2(self, monkeypatch):
+        """--grid=foobar → argparse choices 위반 → SystemExit(2) 발생."""
+        # argparse 가 자체적으로 exit(2) 를 발생시키므로 SystemExit 예외로 잡는다.
+        with pytest.raises(SystemExit) as exc_info:
+            main(_GRID_BASE_ARGV + ["--symbols=005930", "--grid=foobar"])
+        assert exc_info.value.code == 2

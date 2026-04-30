@@ -183,6 +183,18 @@ stock-agent 프로젝트의 Phase 별 산출물·결정·테스트 카운트 변
 - 상세 runbook: `docs/runbooks/step_c_liquidity_filter_2026-04-30.md`.
 - **Step C 결론: FAIL.** → Step D (전략 파라미터 구조 변경) 진입.
 
+## Phase 2 복구 로드맵 Step D 진입 — Step D1 OR 윈도 스터디 코드 단계 완료 (Issue #77)
+
+Step C FAIL 확정(2026-04-30) 후 Step D 진입.
+
+- `src/stock_agent/backtest/sensitivity.py` 에 `step_d1_grid()` 함수 추가. `backtest/__init__.py` `__all__` 노출.
+  - `strategy.or_end` 3종(`time(9,15)`, `time(9,30)`, `time(10,0)`) × `strategy.stop_loss_pct` 4종 × `strategy.take_profit_pct` 4종 = 48 조합.
+  - `default_grid()` 동작 변경 없음 (회귀 0).
+- `scripts/sensitivity.py` 에 `--grid {default,step-d1}` 플래그 추가. 기본값 `default`. 기존 인자 전부 호환.
+- pytest **1408 → 1478 passed, 4 skipped** (신규: `test_sensitivity.py` `TestStepD1Grid` 8건 + `test_sensitivity_cli.py` `TestGridFlag` 3건 + 기타 추가분). ruff/black/pyright 4종 PASS.
+- ADR 없음 — 분석 도구 확장이며 라이브러리 채택·모듈 경계·정책 변경 해당 없음. 채택 결정 시 ADR 작성 예정.
+- 백테스트 미실행 — 운영자가 `scripts/sensitivity.py --grid step-d1` 실행 후 ADR-0019 게이트 판정 예정.
+
 ## 보조 산출물
 
 - **Issue #67 완료 (2026-04-23)**: `src/stock_agent/backtest/walk_forward.py` 신설 — Phase 5 본 구현 대비 walk-forward validation 스켈레톤 선행 도입. `WalkForwardWindow`·`WalkForwardMetrics`·`WalkForwardResult` DTO + `generate_windows`·`run_walk_forward` 스텁(`NotImplementedError`). `backtest/__init__.py` 5 심볼 재노출. `tests/test_walk_forward.py` 18건. `pass_threshold` 기본값 결정은 Phase 5 본 구현 PR 에서 ADR 로 기록 예정.
