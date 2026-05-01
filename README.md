@@ -80,7 +80,9 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **Step D2 FAIL (2026-05-01)** — force_close_at 스터디. `step_d2_grid` 48 조합 × Top 50 / Top 100 = 96 런 전원 ADR-0019 게이트 미통과. 최선 조합 (`force_close_at=15:20, stop=2.5%, take=5.0%`): Top 50 MDD -35.02% / Top 100 MDD -37.56%. D1 vs D2 거의 동급 — `stop=2.5%/take=5.0%` 가 본질 개선 벡터.
 
-**Step E 진입 (2026-05-01)** — 전략 교체. PR1~PR4 코드 산출물 완료: `VWAPMRStrategy`(PR2) · `GapReversalStrategy`(PR3) · `strategy/factory.py` + `--strategy-type {orb,vwap-mr,gap-reversal}` CLI 옵션(PR4 Stage 1). **PR4 Stage 2 완료**: `backtest/prev_close.py` 신설 — `DailyBarPrevCloseProvider` 로 `--strategy-type gap-reversal` 이 이제 실 동작 가능 (일봉 캐시 `data/stock_agent.db` 미백필 시 pykrx 네트워크 호출 발생). **PR4 Stage 3 완료**: `scripts/backfill_daily_bars.py` 신설 — pykrx 일봉 캐시 일괄 백필 CLI. gap-reversal 백테스트 결정론 보장을 위한 사전 백필 도구 (Stage 3 선결 조건). `scripts/sensitivity.py` 에서 `--strategy-type gap-reversal + --workers >= 2` 조합은 pickle 제약으로 거부됨 (`--workers 1` 사용). 운영자 백테스트 실행(Stage 3) 및 결과 기반 ADR 작성(Stage 5)은 후속 단계. 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
+**Step E FAIL (2026-05-01, ADR-0021)** — PR1~PR4 코드 산출물 완료 후 4 런 실행. VWAP-MR(Top 50 MDD -49.09% / Top 100 MDD -50.11%) · Gap-Reversal(Top 50 MDD -10.19% / Top 100 MDD -19.99%) 전 4 런 ADR-0019 세 게이트 동시 통과 0. VWAP-MR · Gap-Reversal 두 후보 폐기. 코드 산출물 보존.
+
+**Step F 진입 (2026-05-01, ADR-0021·ADR-0022)** — 가설 풀 확장. 일중 데이트레이딩 가정 폐기 + 일/월 단위 전략 + DCA baseline 비교. ADR-0022 게이트 적용 (MDD > -25% · DCA 대비 양의 알파 · 연환산 샤프 > 0.3). 상세 진행 계획: [`docs/step_f_strategy_pool_plan.md`](./docs/step_f_strategy_pool_plan.md). 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
 
 **Phase 3 착수 전제 통과** (2026-04-21). 실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK) 완료.
 

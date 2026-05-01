@@ -78,6 +78,41 @@ PR #51 당초 계획은 PASS 시 docs-only PR 로 Phase 2 선언, FAIL 시 "ORB 
 - 민감도 그리드 (A) 는 기존 인프라 (`scripts/sensitivity.py`) 그대로 활용. 신규 코드 최소.
 - walk-forward 검증 모듈 (`backtest/walk_forward.py`) 은 이미 PR #70 으로 main 에 포함 — 단계 D·E 전환 시 활용 예정.
 
+## 사후 결과 보강 (Step A~E 실측, 2026-04-25 ~ 2026-05-01)
+
+> 본 ADR 은 로드맵 ADR 이므로 결과 섹션 사후 추가가 root CLAUDE.md "사후 수정 금지 규칙 검토 — ADR-0019 자체는 로드맵이라 결과 추가는 OK" 명시로 허용된다. 단계별 실측치 + 후속 결정 ADR 링크.
+
+### 단계별 실측 (2026-05-01 기준 종합)
+
+| 단계 | 실행 일자 | 런 수 | PASS | 베스트 MDD | 후속 |
+|---|---|---|---|---|---|
+| Step A 민감도 | 2026-04-25 | 32 | 0 | -42.08% | `docs/runbooks/step_a_result_2026-04-25.md` |
+| Step B 비용 | 2026-04-29 | (실호가 331,530) | — | 슬리피지 0.1% 유지 | `docs/runbooks/step_b_spread_analysis.md` |
+| Step C 유니버스 | 2026-04-30 | 2 (Top 50/100) | 0 | -44.70% (Top 50) | `docs/runbooks/step_c_liquidity_filter_2026-04-30.md` |
+| Step D1 OR 윈도 | 2026-05-01 | 96 | 0 | -35.98% (Top 100) | `docs/runbooks/step_d1_or_window_2026-05-01.md` |
+| Step D2 force_close | 2026-05-01 | 96 | 0 | -35.02% (Top 50) | `docs/runbooks/step_d2_force_close_2026-05-01.md` |
+| Step E VWAP-MR · Gap-Reversal | 2026-05-01 | 4 | 0 | -10.19% (Gap-Rev Top 50, MDD-only) | `docs/runbooks/step_e_vwap_mr_2026-05-01.md` · `docs/runbooks/step_e_gap_reversal_2026-05-01.md` |
+
+**합계: 230+ 백테스트 런 / 본 ADR 의 세 게이트 (MDD>-15% · 승×손익비>1.0 · 샤프>0) 동시 통과 0**.
+
+### 종합 의미
+
+한국 KOSPI 200 long-only **일중 데이트레이딩** 가정으로 retail 자본 (100~200만원) 에서 alpha 확보 불가능함을 확인. Barber-Lee-Liu-Odean 2014 (대만, 데이트레이더 0.5% 만 비용 후 양수) · Chague et al. 2019 (브라질, 1년 활동 후 97% 손실) 학술 통계와 정합.
+
+### 후속 결정 (ADR-0021 + ADR-0022)
+
+운영자 결정 (2026-05-01):
+
+1. **Step E 두 후보 (VWAP-MR · Gap-Reversal) 폐기** — [ADR-0021](./0021-step-e-vwap-gap-failed.md). ORB Strategy 도 비채택 유지 (코드는 회귀 비교용 보존).
+
+2. **일중 데이트레이딩 가정 자체 폐기** — Step F 로 일/월 시간프레임 전환. 학술 검증 가설 풀 (이평선 cross · cross-sectional 모멘텀 · 저변동성 · RSI 평균회귀) + Buy-and-Hold DCA baseline 비교. 상세 plan: `docs/step_f_strategy_pool_plan.md`.
+
+3. **본 ADR 의 세 게이트 (MDD>-15%·승×손익비>1.0·샤프>0) 는 일중 가정 산물**. Step F 부터는 [ADR-0022](./0022-step-f-gate-redefinition.md) 의 일/월 단위 게이트 (MDD>-25% · DCA baseline 대비 양의 알파 · 연환산 Sharpe>0.3) 로 전환. 본 ADR 게이트는 일중 가정 평가 사이클 (Step A~E) 의 사실 기록으로 보존.
+
+4. **본 ADR 자체의 상태는 `승인됨` 유지** — 로드맵 결정·맥락은 역사 기록. Step F 진입은 후속 결정의 누적이지 본 ADR 의 폐기 아님.
+
+5. **Phase 2 PASS 미달성 상태 + Phase 3 진입 금지 정책**은 Step F 평가 결과 산출 전까지 그대로 유지.
+
 ## 추적
 
 - 코드: `config/holidays.yaml` (근로자의날 2 건 보강), `scripts/sensitivity.py` · `scripts/backtest.py` (기존 인프라, 단계 A 에서 사용), `src/stock_agent/backtest/walk_forward.py` (단계 이후 게이트)
