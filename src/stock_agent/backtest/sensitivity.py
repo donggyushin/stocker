@@ -1048,6 +1048,91 @@ def default_grid() -> SensitivityGrid:
     )
 
 
+def step_d2_grid() -> SensitivityGrid:
+    """ADR-0019 Step D2 (Issue #77) — `force_close_at` 변경 스터디 그리드. 3×4×4 = 48 조합.
+
+    한국 시장 정규장 마감은 15:30, 동시호가는 15:20~15:30. 후보 3종으로
+    "동시호가 회피 / 현재 / 동시호가 시작 직전" 을 비교한다.
+
+    - `strategy.force_close_at`: 14:50, 15:00, 15:20 (동시호가 -30 / 현재 / 동시호가 +0)
+    - `strategy.stop_loss_pct`: 1.0%, 1.5%, 2.0%, 2.5% — `default_grid()` 동일
+    - `strategy.take_profit_pct`: 2.0%, 3.0%, 4.0%, 5.0% — `default_grid()` 동일
+
+    `or_end` 기본값 09:30 은 모든 후보보다 작으므로 `StrategyConfig.__post_init__`
+    의 `or_end < force_close_at` 검증을 통과한다. `default_grid()` · `step_d1_grid()`
+    동작은 그대로 보존 (회귀 0).
+    """
+    return SensitivityGrid(
+        axes=(
+            ParameterAxis(
+                name="strategy.force_close_at",
+                values=(time(14, 50), time(15, 0), time(15, 20)),
+            ),
+            ParameterAxis(
+                name="strategy.stop_loss_pct",
+                values=(
+                    Decimal("0.010"),
+                    Decimal("0.015"),
+                    Decimal("0.020"),
+                    Decimal("0.025"),
+                ),
+            ),
+            ParameterAxis(
+                name="strategy.take_profit_pct",
+                values=(
+                    Decimal("0.020"),
+                    Decimal("0.030"),
+                    Decimal("0.040"),
+                    Decimal("0.050"),
+                ),
+            ),
+        ),
+    )
+
+
+def step_d1_grid() -> SensitivityGrid:
+    """ADR-0019 Step D1 (Issue #77) — OR 윈도 길이 스터디 그리드. 3×4×4 = 48 조합.
+
+    `default_grid()` 의 OR 윈도 축을 60분(`time(10, 0)`) 후보까지 확장한
+    별개 그리드. `stop_loss_pct` · `take_profit_pct` 후보값은 `default_grid()`
+    와 동일하게 유지해 운영자가 Step A 결과와 직접 1:1 비교할 수 있다.
+
+    - `strategy.or_end`: 09:15, 09:30, 10:00 (OR 15분 / 30분 / 60분)
+    - `strategy.stop_loss_pct`: 1.0%, 1.5%, 2.0%, 2.5% — `default_grid()` 동일
+    - `strategy.take_profit_pct`: 2.0%, 3.0%, 4.0%, 5.0% — `default_grid()` 동일
+
+    `default_grid()` 와 별개 함수로 유지하는 이유: plan.md 기본 sanity check 의
+    축(2×4×4) 은 외부 PR 이력·문서·CSV 와 묶여 있어 변경하면 회귀 비교가
+    깨진다. Step D1 은 분석 도구 확장 — `--grid step-d1` 로 명시 선택.
+    """
+    return SensitivityGrid(
+        axes=(
+            ParameterAxis(
+                name="strategy.or_end",
+                values=(time(9, 15), time(9, 30), time(10, 0)),
+            ),
+            ParameterAxis(
+                name="strategy.stop_loss_pct",
+                values=(
+                    Decimal("0.010"),
+                    Decimal("0.015"),
+                    Decimal("0.020"),
+                    Decimal("0.025"),
+                ),
+            ),
+            ParameterAxis(
+                name="strategy.take_profit_pct",
+                values=(
+                    Decimal("0.020"),
+                    Decimal("0.030"),
+                    Decimal("0.040"),
+                    Decimal("0.050"),
+                ),
+            ),
+        ),
+    )
+
+
 __all__ = [
     "ParameterAxis",
     "SensitivityGrid",
@@ -1063,5 +1148,7 @@ __all__ = [
     "run_sensitivity_combos",
     "run_sensitivity_combos_parallel",
     "run_sensitivity_parallel",
+    "step_d1_grid",
+    "step_d2_grid",
     "write_csv",
 ]

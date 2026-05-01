@@ -53,6 +53,8 @@ from stock_agent.backtest import (
     render_markdown_table,
     run_sensitivity_combos,
     run_sensitivity_combos_parallel,
+    step_d1_grid,
+    step_d2_grid,
     write_csv,
 )
 from stock_agent.backtest.loader import BarLoader
@@ -160,6 +162,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Markdown 표 정렬 기준 메트릭.",
     )
     parser.add_argument(
+        "--grid",
+        type=str,
+        default="default",
+        choices=("default", "step-d1", "step-d2"),
+        help=(
+            "그리드 선택. default=plan.md 기본 2×4×4=32 조합, "
+            "step-d1=ADR-0019 Step D1(Issue #77) OR 윈도 확장 3×4×4=48 조합 "
+            "(or_end ∈ {09:15, 09:30, 10:00}), "
+            "step-d2=ADR-0019 Step D2 force_close_at 변경 3×4×4=48 조합 "
+            "(force_close_at ∈ {14:50, 15:00, 15:20})."
+        ),
+    )
+    parser.add_argument(
         "--ascending",
         action="store_true",
         help="Markdown 표를 오름차순으로 정렬 (기본 내림차순).",
@@ -191,6 +206,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.loader == "csv" and args.csv_dir is None:
         parser.error("--loader=csv 에는 --csv-dir 이 필요합니다.")
     return args
+
+
+def _select_grid(name: str):
+    """`--grid` 분기 — argparse `choices` 가 사전 검증하므로 unknown 분기는
+    `RuntimeError` 로 fail-fast (방어 depth, 도달 불가능 경로).
+    """
+    if name == "default":
+        return default_grid()
+    if name == "step-d1":
+        return step_d1_grid()
+    if name == "step-d2":
+        return step_d2_grid()
+    raise RuntimeError(f"알 수 없는 --grid 값: {name!r}")
 
 
 def _build_loader_primitive(loader_kind: str, csv_dir: Path | None) -> BarLoader:
@@ -279,7 +307,7 @@ def _run_pipeline(args: argparse.Namespace) -> None:
     symbols = _resolve_symbols(args.symbols, args.universe_yaml)
     workers = _resolve_workers(args.workers)
     base_config = BacktestConfig(starting_capital_krw=args.starting_capital)
-    grid = default_grid()
+    grid = _select_grid(args.grid)
 
     existing_rows: tuple[SensitivityRow, ...] = ()
     remaining_combos = list(grid.iter_combinations())

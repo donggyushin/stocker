@@ -74,7 +74,11 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **Step B 완료 (2026-04-29)** — 3 거래일 장중 실 호가 수집 (331,530 샘플). 전체 중앙값 스프레드 0.1305% — 현행 가정 0.1% 대비 1.3× 이지만 사전 기준(0.05~0.2%) 내. **ADR-0006 슬리피지 가정 0.1% 유지 결정. `costs.py` 변경 없음.**
 
-**Step C FAIL (2026-04-30, Issue #76)** — Top 50 / Top 100 유동성 서브셋 백테스트 실행 (`--loader=kis`, 2025-04-22 ~ 2026-04-21). 두 서브셋 모두 ADR-0019 세 게이트 전원 FAIL (Top 50: MDD -44.70%, 샤프 -6.68, 승률×손익비 0.377 / Top 100: MDD -50.13%, 샤프 -7.74, 승률×손익비 0.383). **Step D (전략 파라미터 구조 변경) 진입.** 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
+**Step C FAIL (2026-04-30, Issue #76)** — Top 50 / Top 100 유동성 서브셋 백테스트 실행 (`--loader=kis`, 2025-04-22 ~ 2026-04-21). 두 서브셋 모두 ADR-0019 세 게이트 전원 FAIL (Top 50: MDD -44.70%, 샤프 -6.68, 승률×손익비 0.377 / Top 100: MDD -50.13%, 샤프 -7.74, 승률×손익비 0.383). **Step D (전략 파라미터 구조 변경) 진입.**
+
+**Step D1 FAIL (2026-05-01)** — OR 윈도 스터디. `step_d1_grid` 48 조합 × Top 50 / Top 100 = 96 런 전원 ADR-0019 게이트 미통과. 최선 조합: Top 50 MDD -37.18% / Top 100 MDD -35.98%. Step C 대비 MDD 소폭 개선이나 PASS 기준 -15% 까지 여전히 21~23%p 격차. 상세: `docs/runbooks/step_d1_or_window_2026-05-01.md`.
+
+**Step D2 FAIL (2026-05-01)** — force_close_at 스터디. `step_d2_grid` 48 조합 × Top 50 / Top 100 = 96 런 전원 ADR-0019 게이트 미통과. 최선 조합 (`force_close_at=15:20, stop=2.5%, take=5.0%`): Top 50 MDD -35.02% / Top 100 MDD -37.56%. D1 vs D2 거의 동급 — `stop=2.5%/take=5.0%` 가 본질 개선 벡터. **D3/D4/E 결정 대기.** 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
 
 **Phase 3 착수 전제 통과** (2026-04-21). 실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK) 완료.
 
@@ -100,7 +104,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 ## 디렉토리 구조
 
-현재 존재하는 파일 (Phase 2 Step C 인프라 완료 기준):
+현재 존재하는 파일 (Phase 2 Step D2 백테스트 FAIL 기준):
 
 ```text
 stock-agent/
@@ -182,7 +186,7 @@ stock-agent/
 └── scripts/
     ├── healthcheck.py              # KIS 모의 잔고 조회 + 텔레그램 hello (실주문 없음)
     ├── backtest.py                 # 단일 런 백테스트 CLI
-    ├── sensitivity.py              # 파라미터 민감도 32 조합 그리드 (--resume 지정 시 조합 단위 incremental flush, freeze 내성)
+    ├── sensitivity.py              # 파라미터 민감도 그리드 CLI (--grid {default,step-d1,step-d2}, --resume 지정 시 조합 단위 incremental flush, freeze 내성)
     ├── backfill_minute_bars.py     # KIS 과거 분봉 캐시 일괄 적재 CLI
     ├── collect_spread_samples.py   # KIS 호가 스프레드 스냅샷 수집 CLI (Step B 인프라, JSONL 출력)
     ├── build_liquidity_ranking.py  # KOSPI 200 유동성 랭킹 산출 CLI (Step C 인프라, CSV 출력)

@@ -80,4 +80,4 @@ related: [ADR-0005]
 - 에이전트: `.claude/agents/unit-test-writer.md` (TDD 모드 계약 섹션)
 - 문서: [CLAUDE.md](../../CLAUDE.md) "TDD 순서 강제 (하드 규칙)" 섹션
 - 관련 ADR: [0005](./0005-unit-test-writer-enforcement.md) (확장 관계, 0005 폐기 아님)
-- 도입 PR: #TBD
+- 도입 PR: #15

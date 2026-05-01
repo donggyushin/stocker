@@ -404,6 +404,52 @@ pytest **245 → 324 → 384 → 464 → 477 → 539 → 542건 green** (기존 
 
 **Step C 결론: FAIL.** → Step D 진입.
 
+### Step D 진행 — 전략 파라미터 구조 변경 (Issue #77)
+
+#### Step D1 — OR 윈도 스터디 (2026-04-30 ~ 2026-05-01) — FAIL
+
+`src/stock_agent/backtest/sensitivity.py` 에 `step_d1_grid()` 함수 추가 + `scripts/sensitivity.py` 에 `--grid {default,step-d1}` 플래그 도입.
+
+- **`step_d1_grid()`** (`backtest/__init__.py` `__all__` 노출): `strategy.or_end` 3종 × `strategy.stop_loss_pct` 4종 × `strategy.take_profit_pct` 4종 = **48 조합**.
+  - `or_end`: `time(9, 15)` / `time(9, 30)` / `time(10, 0)` — 15분·30분·60분 윈도.
+  - `stop_loss_pct` / `take_profit_pct`: `default_grid()` 와 동일.
+  - `default_grid()` 동작 변경 없음 (회귀 0).
+- pytest **1408 → 1478 passed, 4 skipped** (신규 11건: `TestStepD1Grid` 8 + `TestGridFlag` 3 + 기타 추가분).
+
+**운영자 실행 결과 (2026-04-30 ~ 2026-05-01)**:
+
+- 48 조합 × Top 50 / Top 100 = 96 런 완료 (8 워커, KIS 캐시 hit 율 높음). 데이터 범위: 2025-04-22 ~ 2026-04-21, 시작 자본 1,000,000 KRW.
+- 최선 조합: Top 50 `or_end=10:00, stop=2.5%, take=5.0%` MDD **-37.18%** / Top 100 `or_end=09:15, stop=2.5%, take=5.0%` MDD **-35.98%**.
+- Step C 대비 MDD 개선 (Top 50 -44.70% → -37.18% / Top 100 -50.13% → -35.98%) 이나 게이트 한도 -15% 까지 21~23%p 격차.
+- 96/96 런 ADR-0019 세 게이트 전원 미통과.
+- 산출물: `data/sensitivity_step_d1_top50.{md,csv}`, `data/sensitivity_step_d1_top100.{md,csv}` (모두 `.gitignore`).
+- 상세: `docs/runbooks/step_d1_or_window_2026-05-01.md`.
+
+**Step D1 결론: FAIL.** ADR 작성 안 함 (채택 결정 부재). `step_d1_grid()` 코드 보존. → D2 진행.
+
+#### Step D2 — force_close_at 스터디 (2026-05-01) — FAIL
+
+`src/stock_agent/backtest/sensitivity.py` 에 `step_d2_grid()` 함수 추가 + `scripts/sensitivity.py` 에 `--grid step-d2` 추가.
+
+- **`step_d2_grid()`** (`backtest/__init__.py` `__all__` 노출): `strategy.force_close_at` 3종 × `strategy.stop_loss_pct` 4종 × `strategy.take_profit_pct` 4종 = **48 조합**.
+  - `force_close_at`: `time(14, 50)` / `time(15, 0)` / `time(15, 20)` — 동시호가 회피 / 현재 기본값 / 동시호가 시작 직전.
+  - `stop_loss_pct` / `take_profit_pct`: `default_grid()` 와 동일.
+  - `default_grid()` · `step_d1_grid()` 동작 변경 없음 (회귀 0).
+- **CLI 플래그**: `--grid {default,step-d1,step-d2}`. 기본값 `default`. 기존 인자 전부 호환.
+- pytest **1478 → 1487 passed, 4 skipped** (신규 9건: `test_sensitivity.py` `TestStepD2Grid` 9건 + `test_sensitivity_cli.py` `TestGridFlag` `step-d2` 분기 1건 포함). ruff/black/pyright 4종 PASS.
+
+**운영자 실행 결과 (2026-05-01)**:
+
+- 48 조합 × Top 50 / Top 100 = 96 런 완료 (Top 50 ~33분, Top 100 ~55분). 데이터 범위: 2025-04-22 ~ 2026-04-21, 시작 자본 1,000,000 KRW.
+- 최선 조합: Top 50 `force_close_at=15:20, stop=2.5%, take=5.0%` MDD **-35.02%**, 샤프 -3.89, 승률×손익비 0.441 / Top 100 동일 파라미터 MDD **-37.56%**, 샤프 -3.94, 승률×손익비 0.435.
+- `force_close_at=15:20` 이 두 서브셋 모두 가장 얕은 MDD (Top 50 평균 -42.93% / Top 100 평균 -47.19%). 14:50 vs 15:00 거의 동등 (~1bp 차이).
+- D1 vs D2 거의 동급 — `stop=2.5%/take=5.0%` 가 본질 개선 벡터. OR 윈도·force_close 시각은 ~1~3%p 부차적 효과.
+- 96/96 런 ADR-0019 세 게이트 전원 미통과.
+- 산출물: `data/sensitivity_step_d2_top50.{md,csv}`, `data/sensitivity_step_d2_top100.{md,csv}` (모두 `.gitignore`).
+- 상세: `docs/runbooks/step_d2_force_close_2026-05-01.md`.
+
+**Step D2 결론: FAIL.** ADR 작성 안 함 (채택 결정 부재). `step_d2_grid()` 코드 보존. → D3/D4/E 결정 대기.
+
 ---
 
 ## Phase 3 진행 요약 (2026-04-21 기준)
