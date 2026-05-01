@@ -46,12 +46,15 @@ PR1 — F1 DCA baseline (선행 의존성) ✓ 완료 (2026-05-02, PASS)
   ├ ADR-0022 게이트 판정: MDD -12.92% PASS / Sharpe 2.2683 PASS / DCA 알파 N/A → 종합 PASS
   └ baseline 수치: 총수익률 +51.50% mark-to-market (시작 자본 2,000,000 KRW, 069500, 13 lots)
   ↓
-PR2 — F2 Golden Cross
+PR2 — F2 Golden Cross ✓ 완료 (2026-05-02, PASS — 3 게이트, 단 caveat 적용)
   ├ src/stock_agent/strategy/golden_cross.py — GoldenCrossStrategy (200d SMA)
-  ├ tests/test_strategy_golden_cross.py
-  ├ scripts/backtest.py --strategy-type golden-cross
-  ├ docs/runbooks/step_f_golden_cross_2026-MM-DD.md
-  ├ DCA 대비 알파 비교 + 3 게이트 판정
+  ├ src/stock_agent/backtest/golden_cross.py — GoldenCrossBaselineConfig, compute_golden_cross_baseline
+  ├ tests/test_strategy_golden_cross.py (48건), tests/test_backtest_golden_cross.py (33건)
+  ├ scripts/backtest.py --strategy-type golden-cross (BacktestEngine 우회, compute_golden_cross_baseline 경로)
+  ├ docs/runbooks/step_f_golden_cross_2026-05-02.md
+  ├ ADR-0022 게이트 판정: MDD -20.52% PASS / Sharpe 2.2753 PASS / DCA 대비 알파 +130.86%p PASS
+  ├ 주요 caveat: trades=1 (통계 신뢰도 낮음), 데이터 plausibility 검증 필요 (+182.36% 절대 수치)
+  └ baseline 비교: 총수익률 +182.36% mark-to-market (시작 자본 2,000,000 KRW, 069500, 58주)
   ↓
 PR3 — F3 Cross-sectional 모멘텀
   ├ src/stock_agent/strategy/momentum.py — MomentumStrategy (12개월 returns ranking)

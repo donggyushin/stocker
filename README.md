@@ -84,7 +84,9 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **Step F 진입 (2026-05-01, ADR-0021·ADR-0022)** — 가설 풀 확장. 일중 데이트레이딩 가정 폐기 + 일/월 단위 전략 + DCA baseline 비교. ADR-0022 게이트 적용 (MDD > -25% · DCA 대비 양의 알파 · 연환산 샤프 > 0.3). 상세 진행 계획: [`docs/step_f_strategy_pool_plan.md`](./docs/step_f_strategy_pool_plan.md). 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
 
-**Step F PR1 (F1 DCA baseline) 완료 — PASS (2026-05-02)**. KODEX 200(069500) 월 정액 매수 DCA 전략 1년 백테스트. MDD -12.92% · 연환산 Sharpe 2.2683 · 총수익률 +51.50% mark-to-market. ADR-0022 게이트 1·3 PASS (게이트 2 N/A — 자기 자신 baseline). 후속 PR (F2 Golden Cross 등) 의 DCA 대비 알파 비교 기준 확정. 런북: `docs/runbooks/step_f_dca_baseline_2026-05-02.md`.
+**Step F PR1 (F1 DCA baseline) 완료 — PASS (2026-05-02)**. KODEX 200(069500) 월 정액 매수 DCA 전략 1년 백테스트. MDD -12.92% · 연환산 Sharpe 2.2683 · 총수익률 +51.50% mark-to-market. ADR-0022 게이트 1·3 PASS (게이트 2 N/A — 자기 자신 baseline). 후속 PR 의 DCA 대비 알파 비교 기준 확정. 런북: `docs/runbooks/step_f_dca_baseline_2026-05-02.md`.
+
+**Step F PR2 (F2 Golden Cross) 완료 — PASS (2026-05-02)**. KODEX 200(069500) 200일 SMA 추세 추종 전략 백테스트 (2024-06-01 ~ 2026-04-21). MDD -20.52% · 연환산 Sharpe 2.2753 · 총수익률 +182.36% mark-to-market. ADR-0022 게이트 3종 PASS (DCA 대비 알파 +130.86%p). 단, trades=1 (통계 신뢰도 낮음) + 069500 가격 급등 데이터 plausibility 검증 필요. 런북: `docs/runbooks/step_f_golden_cross_2026-05-02.md`.
 
 **Phase 3 착수 전제 통과** (2026-04-21). 실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK) 완료.
 
@@ -110,7 +112,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 ## 디렉토리 구조
 
-현재 존재하는 파일 (Phase 2 Step E PR4 Stage 2 완료 기준):
+현재 존재하는 파일 (Phase 2 Step F PR2 완료 기준):
 
 ```text
 stock-agent/
@@ -150,6 +152,8 @@ stock-agent/
 │   │   ├── vwap_mr.py         # VWAPMRStrategy + VWAPMRConfig (Step E PR2)
 │   │   ├── gap_reversal.py    # GapReversalStrategy + GapReversalConfig (Step E PR3)
 │   │   ├── factory.py         # build_strategy_factory + STRATEGY_CHOICES (Step E PR4)
+│   │   ├── dca.py             # DCAStrategy + DCAConfig (Step F PR1)
+│   │   ├── golden_cross.py    # GoldenCrossStrategy + GoldenCrossConfig (Step F PR2)
 │   │   └── CLAUDE.md          # 모듈 세부 문서
 │   ├── risk/
 │   │   ├── __init__.py        # RiskManager, RiskConfig, RiskDecision, PositionRecord, RejectReason, RiskManagerError export
@@ -163,6 +167,8 @@ stock-agent/
 │   │   ├── loader.py          # BarLoader Protocol + InMemoryBarLoader
 │   │   ├── sensitivity.py     # 파라미터 민감도 그리드
 │   │   ├── prev_close.py      # DailyBarPrevCloseProvider (Step E Stage 2 — GapReversalStrategy 전일 종가 주입)
+│   │   ├── dca.py             # DCABaselineConfig + compute_dca_baseline (Step F PR1)
+│   │   ├── golden_cross.py    # GoldenCrossBaselineConfig + compute_golden_cross_baseline (Step F PR2)
 │   │   └── CLAUDE.md          # 모듈 세부 문서
 │   ├── execution/
 │   │   ├── __init__.py        # Executor, ExecutorConfig, OrderSubmitter, BalanceProvider, BarSource, LiveOrderSubmitter, LiveBalanceProvider, DryRunOrderSubmitter, StepReport, ReconcileReport, EntryEvent, ExitEvent, ExecutorError export (13종)

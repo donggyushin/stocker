@@ -512,6 +512,20 @@ ADR-0019 자체는 폐기 X — 일중 가정 평가 사이클 사실 기록 보
 
 상세 진행 계획 (PR0~PR6 분할): `docs/step_f_strategy_pool_plan.md`.
 
+#### Step F PR1 — F1 DCA baseline 완료 — PASS (2026-05-02)
+
+`src/stock_agent/strategy/dca.py` (`DCAStrategy`, `DCAConfig`) + `src/stock_agent/backtest/dca.py` (`DCABaselineConfig`, `compute_dca_baseline`) + `scripts/backtest.py --strategy-type=dca --loader=daily` 라우팅. 테스트 79건 신규 (pytest 1670 → 1749 collected).
+
+결과: MDD -12.92% · Sharpe 2.2683 · 총수익률 +51.50% mark-to-market (시작 자본 2,000,000 KRW, KODEX 200 069500, 1년). ADR-0022 게이트 1·3 PASS (게이트 2 N/A). 런북: `docs/runbooks/step_f_dca_baseline_2026-05-02.md`.
+
+#### Step F PR2 — F2 Golden Cross 완료 — PASS (2026-05-02)
+
+`src/stock_agent/strategy/golden_cross.py` (`GoldenCrossStrategy`, `GoldenCrossConfig`) + `src/stock_agent/backtest/golden_cross.py` (`GoldenCrossBaselineConfig`, `compute_golden_cross_baseline`) + `scripts/backtest.py --strategy-type=golden-cross` 라우팅 (BacktestEngine 우회). 테스트 81건 신규 (pytest 1749 → 1830 collected).
+
+결과: MDD -20.52% · Sharpe 2.2753 · 총수익률 +182.36% mark-to-market (시작 자본 2,000,000 KRW, KODEX 200 069500, 2024-06-01 ~ 2026-04-21). DCA 대비 알파 +130.86%p. ADR-0022 게이트 3종 PASS. 런북: `docs/runbooks/step_f_golden_cross_2026-05-02.md`.
+
+주요 caveat: (1) trades=1 — 통계 신뢰도 낮음. (2) 069500 가격 2.93× 급등 — pykrx 수정주가 보정 여부 검증 필요. 절대 수익률 수치는 데이터 검증 후 재해석 권장.
+
 ---
 
 ## Phase 3 진행 요약 (2026-04-21 기준)
