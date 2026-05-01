@@ -78,6 +78,10 @@ YAML 로더, 실시간 분봉 소스를 한 자리에 모아 상위 레이어
   - **단일 스레드 전용 (ADR-0008)**: `sqlite3.Connection` 기본값 `check_same_thread=True` 유지. `_lock` 은 `_ensure_kis` 지연 초기화만 보호 — 다른 스레드에서 DB 호출 경로 진입 시 `sqlite3.ProgrammingError` 폭파. 백테스트 엔진 병렬화 요구 발생 시 별도 ADR 로 재평가 (H3 명문화, Issue #48).
   - **KIS 서버 보관 한도**: **최대 1년 분봉**. 2~3년 백테스트 요구는 본 어댑터로 해결 불가. Issue #5 후속으로 별도 데이터 소스(외부 유료 데이터, 직접 수집 등) 분리 평가 필요. Phase 2 PASS 검증은 CSV 어댑터(`minute_csv.py`)로 수행한다.
   - **`BarLoader` Protocol 준수**: `backtest/loader.py`의 `BarLoader` Protocol — `stream(start, end, symbols)` 계약 충족. 동일 인자 재호출 시 매번 새 Iterable 반환.
+
+### 추가 소비자 (`HistoricalDataStore` + `BusinessDayCalendar`)
+
+`backtest/prev_close.py` 의 `DailyBarPrevCloseProvider` 가 `HistoricalDataStore` 와 `BusinessDayCalendar` 를 동시 소비한다 (Step E Stage 2, 2026-05-01). `HistoricalDataStore.fetch_daily_ohlcv` 로 직전 영업일 일봉 close 를 조회하고, `BusinessDayCalendar.is_business_day` 로 영업일 후보 날짜를 탐색한다. `sqlite3.Connection` 은 pickle 불가이므로 이 provider 를 ProcessPool 워커에 전달하는 경로는 `scripts/sensitivity.py` 에서 구조적으로 차단된다 (gap-reversal + workers≥2 → `RuntimeError` exit 2).
   - **CLI 스위치**: `scripts/backtest.py`·`scripts/sensitivity.py`에 `--loader={csv,kis}` 옵션 추가 (default `"csv"`). `--csv-dir`는 `--loader=csv`일 때만 필수. `scripts/backfill_minute_bars.py` 에 `--per-page-timeout-s` (float, default `30.0`) + `--max-retries-per-day` (int, default `3`) 추가 (Issue #71) — 음수 → exit 2, `KisMinuteBarLoader(http_timeout_s=..., http_max_retries_per_day=...)` 로 전달.
   - **의존성**: stdlib + python-kis 2.1.6 + sqlite3. 추가 라이브러리 0 (`requests` 는 python-kis transitive dep).
   - **테스트**: `tests/test_kis_minute_bar_loader.py` 95건. KIS API 호출 목킹 (실 네트워크 접촉 0).

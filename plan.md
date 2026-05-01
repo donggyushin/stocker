@@ -450,6 +450,41 @@ pytest **245 → 324 → 384 → 464 → 477 → 539 → 542건 green** (기존 
 
 **Step D2 결론: FAIL.** ADR 작성 안 함 (채택 결정 부재). `step_d2_grid()` 코드 보존. → D3/D4/E 결정 대기.
 
+### Step E 진입 — 전략 교체 (Issue #78)
+
+A~D 전원 실패 전제. VWAP mean-reversion / gap reversal / pullback 후보 전략을 순차 평가한다.
+
+#### Step E PR1 — `BacktestConfig.strategy_factory` 주입 추상화 (2026-05-01)
+
+`BacktestConfig` 에 `strategy_factory: Callable[[], Strategy] | None` 필드 추가. `strategy_config` 와 mutually exclusive (`__post_init__` 검증 → `RuntimeError`). 엔진·sensitivity 루프가 팩토리 경로를 통해 ORB 이외 전략을 주입받을 수 있도록 추상화. 테스트 6건 신규.
+
+#### Step E PR2 — `VWAPMRStrategy` 구현 (2026-05-01)
+
+`src/stock_agent/strategy/vwap_mr.py` 신설. `VWAPMRConfig` + `VWAPMRStrategy` (VWAP mean-reversion, per-symbol 상태 머신). 백테스트 결과 대기. 테스트 35건 신규.
+
+#### Step E PR3 — `GapReversalStrategy` 구현 (2026-05-01)
+
+`src/stock_agent/strategy/gap_reversal.py` 신설. `GapReversalConfig` + `GapReversalStrategy` (갭 반작용 long-only). `PrevCloseProvider` 의존 주입. 백테스트 결과 대기. 테스트 34건 신규.
+
+#### Step E PR4 — Stage 1 CLI 확장 (2026-05-01)
+
+`src/stock_agent/strategy/factory.py` 신설: `STRATEGY_CHOICES` · `StrategyType` · `build_strategy_factory`. `scripts/backtest.py` · `scripts/sensitivity.py` 에 `--strategy-type {orb,vwap-mr,gap-reversal}` 인자 추가. `orb` 분기는 기존 경로 그대로(회귀 0). 테스트 54건 신규 (factory 33 + backtest CLI 11 + sensitivity CLI 10). 4종 정적 검사 PASS (pytest exit 0 · ruff · black · pyright `0 errors`).
+
+#### Step E PR4 — Stage 2 `prev_close_provider` 백테스트 통합 (2026-05-01)
+
+`src/stock_agent/backtest/prev_close.py` 신설. `DailyBarPrevCloseProvider(daily_store: HistoricalDataStore, calendar: BusinessDayCalendar, *, max_lookback_days: int = 14)` — `GapReversalStrategy.PrevCloseProvider` 시그니처를 만족하는 Callable. `session_date` 직전 영업일 일봉을 `daily_store.fetch_daily_ohlcv` 로 조회해 `close` 반환, 없으면 `None`. `close()` + 컨텍스트 매니저 지원. 입력 가드: symbol `^\d{6}$`, `max_lookback_days > 0`, `max_lookback_days` 초과 시 `None` + `logger.warning`.
+
+`scripts/backtest.py` `_run_pipeline` 갱신: `--strategy-type=gap-reversal` 시 `DailyBarPrevCloseProvider` 인스턴스 생성 + `try/finally` 로 `provider.close()` 보장.
+
+`scripts/sensitivity.py` `_run_pipeline` 갱신: 동일 provider 라이프사이클 + **gap-reversal + workers≥2 거부 가드** 신설 (`RuntimeError` exit 2 — `HistoricalDataStore(sqlite3 connection)` 는 pickle 불가하여 ProcessPool 워커에 전달 불가).
+
+테스트 신규 31건: `test_backtest_prev_close_provider.py` 18건 + `test_backtest_cli.py` `TestGapReversalPrevCloseProviderInjection` 5건 + `test_sensitivity_cli.py` `TestGapReversalPrevCloseProviderInjection` 8건. 삭제 1건: `TestStrategyTypeBaseConfigRouting::test_gap_reversal_parallel_strategy_factory_callable_GapReversalStrategy` (Stage 2 제약으로 불가능 조합). 4종 정적 검사 PASS (pytest 1651 collected · ruff · black · pyright `0 errors, 2 warnings`).
+
+**현재 잔여 단계**:
+- Stage 3: 운영자 백테스트 실행 (`--strategy-type vwap-mr` / `--strategy-type gap-reversal`).
+- Stage 4: 민감도 그리드 신설 (`step-e-vwap-mr` / `step-e-gap-reversal`).
+- Stage 5: 결과 기반 ADR 작성 + 채택/폐기 결정.
+
 ---
 
 ## Phase 3 진행 요약 (2026-04-21 기준)

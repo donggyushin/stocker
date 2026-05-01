@@ -616,3 +616,463 @@ class TestGridFlag:
         with pytest.raises(SystemExit) as exc_info:
             main(_GRID_BASE_ARGV + ["--symbols=005930", "--grid=foobar"])
         assert exc_info.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# --strategy-type 플래그 argparse 분기 (RED — sensitivity.py 미구현)
+# ---------------------------------------------------------------------------
+
+_STRATEGY_BASE = [
+    "--csv-dir=/tmp/dummy_csv",
+    "--from=2023-01-01",
+    "--to=2025-12-31",
+]
+
+
+class TestStrategyTypeFlag:
+    """--strategy-type 인자 파싱 계약.
+
+    sensitivity.py 에 --strategy-type 이 미구현 상태이므로
+    현재 모든 케이스는 RED (argparse SystemExit(2) 또는 AttributeError).
+    """
+
+    def test_기본값_orb(self):
+        """--strategy-type 미지정 시 args.strategy_type == 'orb'."""
+        args = _parse_args(_STRATEGY_BASE)
+        assert args.strategy_type == "orb"
+
+    def test_명시_vwap_mr(self):
+        """--strategy-type=vwap-mr → args.strategy_type == 'vwap-mr'."""
+        args = _parse_args(_STRATEGY_BASE + ["--strategy-type=vwap-mr"])
+        assert args.strategy_type == "vwap-mr"
+
+    def test_명시_gap_reversal(self):
+        """--strategy-type=gap-reversal → args.strategy_type == 'gap-reversal'."""
+        args = _parse_args(_STRATEGY_BASE + ["--strategy-type=gap-reversal"])
+        assert args.strategy_type == "gap-reversal"
+
+    def test_잘못된_값_SystemExit(self):
+        """--strategy-type=foobar → argparse choices 위반 → SystemExit(2)."""
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_args(_STRATEGY_BASE + ["--strategy-type=foobar"])
+        assert exc_info.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# base_config.strategy_factory 라우팅 (RED — _run_pipeline 분기 미구현)
+# ---------------------------------------------------------------------------
+
+from stock_agent.backtest import BacktestConfig, InMemoryBarLoader  # noqa: E402
+from stock_agent.strategy.gap_reversal import GapReversalStrategy  # noqa: E402
+from stock_agent.strategy.vwap_mr import VWAPMRStrategy  # noqa: E402
+
+_STRATEGY_ROUTING_BASE_ARGV = [
+    "--csv-dir=/tmp/dummy_csv",
+    "--from=2023-01-01",
+    "--to=2025-12-31",
+    "--symbols=005930",
+]
+
+
+class TestStrategyTypeBaseConfigRouting:
+    """--strategy-type 에 따라 _run_pipeline 이 base_config.strategy_factory 를
+    올바르게 주입하는지 검증한다.
+
+    run_sensitivity_combos / run_sensitivity_combos_parallel 을 monkeypatch 로
+    교체해 base_config kwarg 를 캡처한다. sensitivity.py 의 _run_pipeline 에
+    strategy_factory 분기가 없으면 strategy_factory 가 None 으로 캡처되어 FAIL.
+    """
+
+    def _setup_capture(self, monkeypatch) -> dict[str, BacktestConfig | None]:
+        """run_sensitivity_combos / run_sensitivity_combos_parallel 를 no-op 으로
+        교체하고 base_config kwarg 를 캡처한다.
+
+        captured["serial"] / captured["parallel"] 는 호출 전 None,
+        호출 후 전달된 BacktestConfig 인스턴스.
+        """
+        captured: dict[str, BacktestConfig | None] = {
+            "serial": None,
+            "parallel": None,
+        }
+        dummy_loader = InMemoryBarLoader([])
+
+        def _fake_serial(*args, **kwargs) -> tuple:
+            captured["serial"] = kwargs.get("base_config")
+            return ()
+
+        def _fake_parallel(*args, **kwargs) -> tuple:
+            captured["parallel"] = kwargs.get("base_config")
+            return ()
+
+        monkeypatch.setattr(sensitivity_cli, "_build_loader", lambda _a: dummy_loader)
+        monkeypatch.setattr(
+            sensitivity_cli,
+            "_build_loader_primitive",
+            lambda *a, **kw: dummy_loader,
+        )
+        monkeypatch.setattr(sensitivity_cli, "run_sensitivity_combos", _fake_serial)
+        monkeypatch.setattr(sensitivity_cli, "run_sensitivity_combos_parallel", _fake_parallel)
+        monkeypatch.setattr(sensitivity_cli, "merge_sensitivity_rows", lambda *a, **kw: ())
+        monkeypatch.setattr(sensitivity_cli, "render_markdown_table", lambda *a, **kw: "")
+        monkeypatch.setattr(sensitivity_cli, "write_csv", lambda *a, **kw: None)
+        return captured
+
+    # ------------------------------------------------------------------
+    # orb — strategy_factory 는 None (BacktestEngine 디폴트 경로)
+    # ------------------------------------------------------------------
+
+    def test_orb_serial_strategy_factory_None(self, monkeypatch):
+        """--strategy-type=orb --workers=1 → base_config.strategy_factory is None.
+
+        ORB 는 BacktestEngine 내부 디폴트 경로를 사용하므로 strategy_factory 미주입.
+        """
+        captured = self._setup_capture(monkeypatch)
+
+        result = main(_STRATEGY_ROUTING_BASE_ARGV + ["--strategy-type=orb", "--workers=1"])
+
+        assert result == 0, f"exit code 기대 0, 실제 {result}"
+        config = captured["serial"]
+        assert config is not None, "run_sensitivity_combos 가 호출되지 않음"
+        msg = f"orb 분기에서 strategy_factory 가 None 이어야 하나 {config.strategy_factory!r}"
+        assert config.strategy_factory is None, msg
+
+    def test_orb_parallel_strategy_factory_None(self, monkeypatch):
+        """--strategy-type=orb --workers=2 → parallel base_config.strategy_factory is None.
+
+        serial 경로는 호출되지 않아야 한다.
+        """
+        captured = self._setup_capture(monkeypatch)
+
+        result = main(_STRATEGY_ROUTING_BASE_ARGV + ["--strategy-type=orb", "--workers=2"])
+
+        assert result == 0, f"exit code 기대 0, 실제 {result}"
+        parallel_config = captured["parallel"]
+        assert parallel_config is not None, "run_sensitivity_combos_parallel 가 호출되지 않음"
+        assert parallel_config.strategy_factory is None, (
+            f"orb 병렬 분기에서 strategy_factory 는 None 이어야 하나 "
+            f"{parallel_config.strategy_factory!r}"
+        )
+        assert captured["serial"] is None, "serial 경로가 호출되면 안 됨"
+
+    # ------------------------------------------------------------------
+    # vwap-mr — strategy_factory 는 VWAPMRStrategy 를 반환하는 callable
+    # ------------------------------------------------------------------
+
+    def test_vwap_mr_serial_strategy_factory_callable_VWAPMRStrategy(self, monkeypatch):
+        """--strategy-type=vwap-mr --workers=1 →
+        base_config.strategy_factory() 가 VWAPMRStrategy 인스턴스를 반환한다.
+        """
+        captured = self._setup_capture(monkeypatch)
+
+        result = main(_STRATEGY_ROUTING_BASE_ARGV + ["--strategy-type=vwap-mr", "--workers=1"])
+
+        assert result == 0, f"exit code 기대 0, 실제 {result}"
+        config = captured["serial"]
+        assert config is not None, "run_sensitivity_combos 가 호출되지 않음"
+        assert callable(config.strategy_factory), (
+            f"vwap-mr 분기에서 strategy_factory 가 callable 이어야 하나 "
+            f"{type(config.strategy_factory)!r}"
+        )
+        instance = config.strategy_factory()
+        msg = f"strategy_factory() 반환값이 VWAPMRStrategy 이어야 하나 {type(instance)!r}"
+        assert isinstance(instance, VWAPMRStrategy), msg
+
+    def test_vwap_mr_parallel_strategy_factory_callable_VWAPMRStrategy(self, monkeypatch):
+        """--strategy-type=vwap-mr --workers=2 →
+        parallel base_config.strategy_factory() 가 VWAPMRStrategy 인스턴스를 반환한다.
+        """
+        captured = self._setup_capture(monkeypatch)
+
+        result = main(_STRATEGY_ROUTING_BASE_ARGV + ["--strategy-type=vwap-mr", "--workers=2"])
+
+        assert result == 0, f"exit code 기대 0, 실제 {result}"
+        config = captured["parallel"]
+        assert config is not None, "run_sensitivity_combos_parallel 가 호출되지 않음"
+        assert callable(config.strategy_factory), (
+            f"vwap-mr 병렬 분기에서 strategy_factory 가 callable 이어야 하나 "
+            f"{type(config.strategy_factory)!r}"
+        )
+        instance = config.strategy_factory()
+        msg = f"strategy_factory() 반환값이 VWAPMRStrategy 이어야 하나 {type(instance)!r}"
+        assert isinstance(instance, VWAPMRStrategy), msg
+
+    # ------------------------------------------------------------------
+    # gap-reversal — strategy_factory 는 GapReversalStrategy 를 반환하는 callable
+    # ------------------------------------------------------------------
+
+    def test_gap_reversal_serial_strategy_factory_callable_GapReversalStrategy(self, monkeypatch):
+        """--strategy-type=gap-reversal --workers=1 →
+        base_config.strategy_factory() 가 GapReversalStrategy 인스턴스를 반환한다.
+        """
+        captured = self._setup_capture(monkeypatch)
+
+        result = main(_STRATEGY_ROUTING_BASE_ARGV + ["--strategy-type=gap-reversal", "--workers=1"])
+
+        assert result == 0, f"exit code 기대 0, 실제 {result}"
+        config = captured["serial"]
+        assert config is not None, "run_sensitivity_combos 가 호출되지 않음"
+        assert callable(config.strategy_factory), (
+            f"gap-reversal 분기에서 strategy_factory 가 callable 이어야 하나 "
+            f"{type(config.strategy_factory)!r}"
+        )
+        instance = config.strategy_factory()
+        msg = f"strategy_factory() 반환값이 GapReversalStrategy 이어야 하나 {type(instance)!r}"
+        assert isinstance(instance, GapReversalStrategy), msg
+
+
+# ---------------------------------------------------------------------------
+# gap-reversal DailyBarPrevCloseProvider 주입 + 라이프사이클 (RED: Stage 2 미구현)
+# ---------------------------------------------------------------------------
+
+
+class TestGapReversalPrevCloseProviderInjection:
+    """--strategy-type=gap-reversal → DailyBarPrevCloseProvider 주입 + 라이프사이클.
+
+    Stage 2 구현 대상:
+    - scripts/sensitivity.py 의 _build_base_config (또는 _run_pipeline) 이
+      gap-reversal 분기에서 DailyBarPrevCloseProvider 를 인스턴스화하고
+      build_strategy_factory(prev_close_provider=...) 에 주입.
+    - 직렬(workers=1) 경로: try/finally 로 provider.close() 보장.
+    - 병렬(workers>=2) 경로: HistoricalDataStore sqlite3 connection 은 pickle 불가 →
+      RuntimeError (exit 2) 를 발생시킨다.
+    - orb / vwap-mr 분기는 provider 미주입 (회귀 0).
+
+    RED 기대:
+    - sensitivity_cli 모듈에 HistoricalDataStore / YamlBusinessDayCalendar /
+      DailyBarPrevCloseProvider 가 import 되지 않은 상태이므로
+      monkeypatch.setattr(raising=True) 시 AttributeError → RED.
+      raising=False 를 사용해 주입은 성공하지만 라우팅 미구현으로 provider 미주입 → FAIL.
+    """
+
+    _BASE = [
+        "--csv-dir=/tmp/dummy_csv",
+        "--from=2023-01-01",
+        "--to=2025-12-31",
+        "--symbols=005930",
+    ]
+
+    def _setup(self, monkeypatch, tmp_path):
+        """공통 픽스처 설정.
+
+        captured 딕셔너리:
+        - "factory_kwargs": build_strategy_factory 에 전달된 kwargs (spy 캡처)
+        - "store_close_count": _FakeStore.close() 호출 횟수
+        - "serial_called": run_sensitivity_combos 호출 여부
+        - "parallel_called": run_sensitivity_combos_parallel 호출 여부
+        """
+        from stock_agent.backtest import InMemoryBarLoader
+        from stock_agent.strategy.factory import build_strategy_factory as _real_factory
+
+        # store_close_calls 는 list[int] — dict[str, object] 의 object 타입
+        # 추론으로 인한 pyright ">=" 에러를 피하기 위해 별도 리스트로 추적한다.
+        store_close_calls: list[int] = []
+        captured: dict[str, object] = {
+            "factory_kwargs": None,
+            "serial_called": False,
+            "parallel_called": False,
+        }
+
+        dummy_loader = InMemoryBarLoader([])
+
+        # HistoricalDataStore fake — close() 호출 카운트 추적
+        class _FakeStore:
+            def __init__(self, *a, **kw) -> None:
+                pass
+
+            def close(self) -> None:
+                store_close_calls.append(1)
+
+            def fetch_daily_ohlcv(self, *a, **kw):
+                return []
+
+        # YamlBusinessDayCalendar fake
+        class _FakeCalendar:
+            def __init__(self, *a, **kw) -> None:
+                pass
+
+            def is_business_day(self, d) -> bool:
+                return False
+
+        # build_strategy_factory spy — 실제 팩토리에 위임하되 kwargs 캡처
+        def _spy_factory(*args, **kwargs):
+            captured["factory_kwargs"] = kwargs
+            return _real_factory(*args, **kwargs)
+
+        def _fake_serial(*args, **kwargs) -> tuple:
+            captured["serial_called"] = True
+            return ()
+
+        def _fake_parallel(*args, **kwargs) -> tuple:
+            captured["parallel_called"] = True
+            return ()
+
+        monkeypatch.setattr(sensitivity_cli, "_build_loader", lambda _a: dummy_loader)
+        monkeypatch.setattr(
+            sensitivity_cli, "_build_loader_primitive", lambda *a, **kw: dummy_loader
+        )
+        monkeypatch.setattr(sensitivity_cli, "run_sensitivity_combos", _fake_serial)
+        monkeypatch.setattr(sensitivity_cli, "run_sensitivity_combos_parallel", _fake_parallel)
+        monkeypatch.setattr(sensitivity_cli, "merge_sensitivity_rows", lambda *a, **kw: ())
+        monkeypatch.setattr(sensitivity_cli, "render_markdown_table", lambda *a, **kw: "")
+        monkeypatch.setattr(sensitivity_cli, "write_csv", lambda *a, **kw: None)
+
+        # Stage 2 미구현 상태: HistoricalDataStore / YamlBusinessDayCalendar /
+        # DailyBarPrevCloseProvider 가 sensitivity_cli 에 없으면 raising=True 시
+        # AttributeError → RED. raising=False 로 주입해도 라우팅 미구현이면 FAIL.
+        monkeypatch.setattr(sensitivity_cli, "HistoricalDataStore", _FakeStore, raising=False)
+        monkeypatch.setattr(
+            sensitivity_cli, "YamlBusinessDayCalendar", _FakeCalendar, raising=False
+        )
+        monkeypatch.setattr(sensitivity_cli, "build_strategy_factory", _spy_factory)
+
+        monkeypatch.chdir(tmp_path)
+        return captured, store_close_calls
+
+    # ------------------------------------------------------------------
+    # 직렬(workers=1) 경로 — provider 주입 + 라이프사이클
+    # ------------------------------------------------------------------
+
+    def test_gap_reversal_serial_provider_주입(self, monkeypatch, tmp_path):
+        """--workers=1 --strategy-type=gap-reversal → build_strategy_factory 호출 시
+        prev_close_provider 가 DailyBarPrevCloseProvider 인스턴스여야 한다.
+
+        RED 기대: factory_kwargs 가 None 또는 prev_close_provider 가
+        DailyBarPrevCloseProvider 가 아님 (stub 폴백 상태).
+        """
+        from stock_agent.backtest.prev_close import DailyBarPrevCloseProvider
+
+        captured, _close_calls = self._setup(monkeypatch, tmp_path)
+        result = main(self._BASE + ["--workers=1", "--strategy-type=gap-reversal"])
+
+        assert result == 0, f"exit code 기대 0, 실제 {result}"
+        kwargs = captured["factory_kwargs"]
+        assert kwargs is not None, (
+            "build_strategy_factory 가 호출되지 않음 — gap-reversal 분기에서 "
+            "build_strategy_factory(prev_close_provider=...) 호출이 필요하다"
+        )
+        provider = kwargs.get("prev_close_provider")  # type: ignore[union-attr]
+        assert isinstance(provider, DailyBarPrevCloseProvider), (
+            f"prev_close_provider 가 DailyBarPrevCloseProvider 인스턴스여야 하나 "
+            f"{type(provider)!r}. Stage 2: _run_pipeline 이 provider 를 생성 후 주입해야 한다."
+        )
+
+    def test_gap_reversal_serial_provider_close_after_run(self, monkeypatch, tmp_path):
+        """--workers=1 직렬 경로 run 후 provider.close() 가 호출되어야 한다.
+
+        DailyBarPrevCloseProvider.close() 는 HistoricalDataStore.close() 로
+        위임하므로 _FakeStore.close() 호출 횟수로 검증.
+
+        RED 기대: store_close_calls 가 빈 리스트 (provider 미생성 또는 close 미호출).
+        """
+        _captured, store_close_calls = self._setup(monkeypatch, tmp_path)
+        result = main(self._BASE + ["--workers=1", "--strategy-type=gap-reversal"])
+
+        assert result == 0, f"exit code 기대 0, 실제 {result}"
+        assert len(store_close_calls) >= 1, (
+            "provider.close() (→ HistoricalDataStore.close()) 가 호출되어야 한다. "
+            "Stage 2: try/finally 로 provider.close() 보장 필요."
+        )
+
+    # ------------------------------------------------------------------
+    # 병렬(workers>=2) 경로 — pickle 불가 → RuntimeError / exit 2
+    # ------------------------------------------------------------------
+
+    def test_gap_reversal_workers_2_RuntimeError_exit_2(self, monkeypatch, tmp_path):
+        """--workers=2 --strategy-type=gap-reversal → exit 2.
+
+        HistoricalDataStore 는 sqlite3 connection 을 포함하여 pickle 불가.
+        ProcessPoolExecutor 워커로 DailyBarPrevCloseProvider 를 직접 전달할 수 없으므로
+        RuntimeError (exit 2) 로 거부해야 한다.
+
+        RED 기대: 현재 라우팅 미구현 상태에서는 gap-reversal + workers=2 가
+        stub provider 로 진행되어 exit 0 → FAIL.
+        """
+        _captured, _close_calls = self._setup(monkeypatch, tmp_path)
+        result = main(self._BASE + ["--workers=2", "--strategy-type=gap-reversal"])
+
+        assert result == 2, (
+            f"exit code 기대 2 (pickle 불가 제약 위반), 실제 {result}. "
+            "Stage 2: gap-reversal + workers>=2 → RuntimeError exit 2 필요."
+        )
+
+    def test_gap_reversal_workers_3_RuntimeError_exit_2(self, monkeypatch, tmp_path):
+        """--workers=3 --strategy-type=gap-reversal → exit 2 (workers=2 와 동일 계약).
+
+        pickle 불가 제약은 workers 수와 무관하게 workers >= 2 전체에 적용.
+
+        RED 기대: exit 0 (라우팅 미구현 상태) → FAIL.
+        """
+        _captured, _close_calls = self._setup(monkeypatch, tmp_path)
+        result = main(self._BASE + ["--workers=3", "--strategy-type=gap-reversal"])
+
+        assert result == 2, f"exit code 기대 2 (pickle 불가 제약), 실제 {result}."
+
+    # ------------------------------------------------------------------
+    # 회귀 0 — orb / vwap-mr 분기 provider 미주입
+    # ------------------------------------------------------------------
+
+    def test_orb_serial_provider_미주입(self, monkeypatch, tmp_path):
+        """--workers=1 --strategy-type=orb → factory_kwargs 없음 또는
+        prev_close_provider 키 없음 (회귀 0).
+
+        orb 분기는 build_strategy_factory 를 호출하지 않거나
+        prev_close_provider 를 주입하지 않아야 한다.
+        """
+        from stock_agent.backtest.prev_close import DailyBarPrevCloseProvider
+
+        captured, _close_calls = self._setup(monkeypatch, tmp_path)
+        result = main(self._BASE + ["--workers=1", "--strategy-type=orb"])
+
+        assert result == 0, f"exit code 기대 0, 실제 {result}"
+        kwargs = captured["factory_kwargs"]
+        if kwargs is not None:
+            provider = kwargs.get("prev_close_provider")  # type: ignore[union-attr]
+            msg = f"orb 분기에서 DailyBarPrevCloseProvider 가 주입되면 안 됨: {provider!r}"
+            assert not isinstance(provider, DailyBarPrevCloseProvider), msg
+
+    def test_vwap_mr_serial_provider_미주입(self, monkeypatch, tmp_path):
+        """--workers=1 --strategy-type=vwap-mr → prev_close_provider 미주입 (회귀 0).
+
+        vwap-mr 은 prev_close_provider 에 의존하지 않는다.
+        """
+        from stock_agent.backtest.prev_close import DailyBarPrevCloseProvider
+
+        captured, _close_calls = self._setup(monkeypatch, tmp_path)
+        result = main(self._BASE + ["--workers=1", "--strategy-type=vwap-mr"])
+
+        assert result == 0, f"exit code 기대 0, 실제 {result}"
+        kwargs = captured["factory_kwargs"]
+        if kwargs is not None:
+            provider = kwargs.get("prev_close_provider")  # type: ignore[union-attr]
+            msg = f"vwap-mr 분기에서 DailyBarPrevCloseProvider 가 주입되면 안 됨: {provider!r}"
+            assert not isinstance(provider, DailyBarPrevCloseProvider), msg
+
+    # ------------------------------------------------------------------
+    # 병렬 회귀 0 — orb / vwap-mr + workers>=2 는 정상 (exit 0)
+    # ------------------------------------------------------------------
+
+    def test_orb_parallel_workers_2_정상(self, monkeypatch, tmp_path):
+        """--strategy-type=orb --workers=2 → exit 0 (회귀 보존).
+
+        orb 는 provider 없이 직렬/병렬 모두 정상 동작해야 한다.
+        """
+        _captured, _close_calls = self._setup(monkeypatch, tmp_path)
+        result = main(self._BASE + ["--workers=2", "--strategy-type=orb"])
+
+        assert result == 0, (
+            f"orb + workers=2 → exit 0 이어야 하나 {result}. "
+            "orb 분기의 병렬 동작은 Stage 2 의 영향을 받으면 안 된다 (회귀 0)."
+        )
+
+    def test_vwap_mr_parallel_workers_2_정상(self, monkeypatch, tmp_path):
+        """--strategy-type=vwap-mr --workers=2 → exit 0 (회귀 보존).
+
+        vwap-mr 은 provider 없이 직렬/병렬 모두 정상 동작해야 한다.
+        """
+        _captured, _close_calls = self._setup(monkeypatch, tmp_path)
+        result = main(self._BASE + ["--workers=2", "--strategy-type=vwap-mr"])
+
+        assert result == 0, (
+            f"vwap-mr + workers=2 → exit 0 이어야 하나 {result}. "
+            "vwap-mr 분기의 병렬 동작은 Stage 2 의 영향을 받으면 안 된다 (회귀 0)."
+        )
