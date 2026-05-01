@@ -56,6 +56,7 @@ from stock_agent.backtest import (
     BacktestResult,
     TradeRecord,
 )
+from stock_agent.backtest.dca import DCABaselineConfig, compute_dca_baseline
 from stock_agent.backtest.loader import BarLoader
 from stock_agent.backtest.prev_close import DailyBarPrevCloseProvider
 from stock_agent.config import get_settings
@@ -69,7 +70,13 @@ from stock_agent.data import (
     YamlBusinessDayCalendar,
     load_kospi200_universe,
 )
+from stock_agent.data.daily_bar_loader import DailyBarLoader
 from stock_agent.strategy.factory import STRATEGY_CHOICES, build_strategy_factory
+
+# `--strategy-type` argparse choices — factory 의 STRATEGY_CHOICES (orb/vwap-mr/
+# gap-reversal) + "dca". DCA 는 BacktestEngine 우회 경로(`compute_dca_baseline`)
+# 라 factory 에 들어가지 않는다.
+_CLI_STRATEGY_CHOICES: tuple[str, ...] = (*STRATEGY_CHOICES, "dca")
 
 # exit code 규약 (scripts/sensitivity.py 와 동일): 2 = 입력·설정 오류 (재시도
 # 무의미), 3 = I/O 오류 (재시도 가치 있음).
@@ -87,12 +94,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--loader",
-        choices=["csv", "kis"],
+        choices=["csv", "kis", "daily"],
         default="csv",
         help=(
             "분봉 소스. csv=MinuteCsvBarLoader(--csv-dir 필수), "
             "kis=KisMinuteBarLoader(실전 APP_KEY 3종 + IP 화이트리스트 필요, "
-            "KIS 서버 최대 1년 보관)."
+            "KIS 서버 최대 1년 보관), "
+            "daily=DailyBarLoader(`HistoricalDataStore` 일봉 → 09:00 KST MinuteBar). "
+            "Step F 일/월 단위 가설 (DCA·Golden Cross 등) 평가용."
         ),
     )
     parser.add_argument(
@@ -140,12 +149,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--strategy-type",
         type=str,
         default="orb",
-        choices=STRATEGY_CHOICES,
+        choices=_CLI_STRATEGY_CHOICES,
         help=(
-            "전략 선택 (ADR-0019 Step E). orb=ORBStrategy(기본), "
-            "vwap-mr=VWAPMRStrategy, gap-reversal=GapReversalStrategy. "
-            "gap-reversal 은 Stage 2 prev_close_provider 통합 전까지 stub provider "
-            "폴백 — 진입 0 (회귀 안전망)."
+            "전략 선택. orb=ORBStrategy(기본), vwap-mr=VWAPMRStrategy, "
+            "gap-reversal=GapReversalStrategy (ADR-0019 Step E). "
+            "dca=DCABaselineStrategy (ADR-0019 Step F PR1 — `--loader=daily` 권장). "
+            "dca 는 `BacktestEngine` 우회·`compute_dca_baseline` 경로."
+        ),
+    )
+    parser.add_argument(
+        "--monthly-investment",
+        type=int,
+        default=100_000,
+        help=(
+            "DCA 월 투자금 (KRW). `--strategy-type=dca` 분기에서만 사용. "
+            "`starting_capital_krw` 이하여야 한다."
         ),
     )
     parser.add_argument(
@@ -249,10 +267,17 @@ def _build_loader(args: argparse.Namespace) -> BarLoader:
     `kis` 모드는 `get_settings()` 호출로 `.env` 실전 키를 로드해
     `KisMinuteBarLoader` 를 반환한다 (실전 키 미주입 시 생성자에서
     `KisMinuteBarLoadError` fail-fast).
+
+    `daily` 모드는 `HistoricalDataStore` (기본 `data/stock_agent.db`) 일봉을
+    09:00 KST MinuteBar 로 래핑한 `DailyBarLoader` 를 반환한다. DB 미백필 상태
+    이면 `fetch_daily_ohlcv` 가 pykrx 네트워크 호출 — 결정론 보장을 위해
+    `scripts/backfill_daily_bars.py` 선행 권장.
     """
     if args.loader == "kis":
         settings = get_settings()
         return KisMinuteBarLoader(settings)
+    if args.loader == "daily":
+        return DailyBarLoader(HistoricalDataStore())
     # csv: --csv-dir 은 _parse_args 단계에서 conditional required 통과 후.
     assert args.csv_dir is not None, "csv 모드에서 csv_dir 는 _parse_args 가 강제한다"
     return MinuteCsvBarLoader(args.csv_dir)
@@ -264,7 +289,13 @@ def _run_pipeline(args: argparse.Namespace) -> None:
     엔진·로더 공개 API 만 호출. 경계를 single-purpose 로 분리해 `main()` 은
     예외 → exit code 매핑에 집중한다 (sensitivity 와 동일 기조). `KisMinuteBarLoader`
     는 SQLite 커넥션을 닫아야 하므로 `try/finally` 로 `close()` 호출.
+
+    `--strategy-type=dca` 분기는 BacktestEngine 우회 — `_run_dca_pipeline` 위임.
     """
+    if args.strategy_type == "dca":
+        _run_dca_pipeline(args)
+        return
+
     symbols = _resolve_symbols(args.symbols, args.universe_yaml)
     loader = _build_loader(args)
     prev_close_provider: DailyBarPrevCloseProvider | None = None
@@ -317,6 +348,191 @@ def _run_pipeline(args: argparse.Namespace) -> None:
             symbol_count=len(symbols),
         ),
     )
+
+
+def _run_dca_pipeline(args: argparse.Namespace) -> None:
+    """`--strategy-type=dca` 전용 파이프라인 — `compute_dca_baseline` 호출.
+
+    BacktestEngine 우회. `--symbols` 미지정 시 기본 target_symbol="069500" 단일.
+    `--symbols` 명시 시 첫 번째 심볼을 target_symbol 로 사용 (DCA 는 단일 종목).
+    """
+    target_symbol = _resolve_dca_target_symbol(args.symbols)
+    loader = _build_loader(args)
+
+    config = DCABaselineConfig(
+        starting_capital_krw=args.starting_capital,
+        monthly_investment_krw=args.monthly_investment,
+        target_symbol=target_symbol,
+    )
+
+    logger.info(
+        "dca.start loader={l} from={s} to={e} target={t} capital={c} monthly={m}",
+        l=args.loader,
+        s=args.start,
+        e=args.end,
+        t=target_symbol,
+        c=args.starting_capital,
+        m=args.monthly_investment,
+    )
+
+    try:
+        result = compute_dca_baseline(loader, config, args.start, args.end)
+
+        context = _ReportContext(
+            start=args.start,
+            end=args.end,
+            symbols=(target_symbol,),
+            starting_capital_krw=args.starting_capital,
+        )
+
+        args.output_markdown.parent.mkdir(parents=True, exist_ok=True)
+        args.output_csv.parent.mkdir(parents=True, exist_ok=True)
+        args.output_trades_csv.parent.mkdir(parents=True, exist_ok=True)
+
+        args.output_markdown.write_text(
+            _render_dca_markdown(
+                result,
+                context,
+                target_symbol=target_symbol,
+                monthly_investment_krw=args.monthly_investment,
+            ),
+            encoding="utf-8",
+        )
+        _write_metrics_csv(result.metrics, args.output_csv)
+        _write_trades_csv(result.trades, args.output_trades_csv)
+    finally:
+        close = getattr(loader, "close", None)
+        if callable(close):
+            close()
+
+    logger.info(
+        "dca.done trades={t} mdd={m} sharpe={s} verdict={v}",
+        t=len(result.trades),
+        m=_format_pct(result.metrics.max_drawdown_pct),
+        s=_format_decimal(result.metrics.sharpe_ratio, 4),
+        v=_dca_verdict_label(result.metrics, daily_equity_len=len(result.daily_equity)),
+    )
+
+
+def _resolve_dca_target_symbol(raw_symbols: str) -> str:
+    """`--symbols` 인자에서 DCA target_symbol 추출. 미지정 시 기본값 069500."""
+    parts: list[str] = [s.strip() for s in raw_symbols.split(",") if s.strip()]
+    if not parts:
+        return "069500"
+    first = parts[0]
+    if len(parts) > 1:
+        logger.warning(
+            "DCA 는 단일 심볼 — `--symbols={}` 중 첫 번째({})만 사용",
+            raw_symbols,
+            first,
+        )
+    return first
+
+
+# ADR-0022 Step F 게이트 — Step F 가설 풀 평가용 임계값.
+_DCA_MDD_THRESHOLD: Decimal = Decimal("-0.25")  # 게이트 1: MDD > -25%
+_DCA_SHARPE_THRESHOLD: Decimal = Decimal("0.3")  # 게이트 3: 연환산 Sharpe > 0.3
+_DCA_MIN_SESSIONS_FOR_PASS: int = 240  # ADR-0017 — 240 영업일 미만은 PASS 라벨 신뢰도 낮음.
+
+
+def _dca_verdict_label(metrics: BacktestMetrics, *, daily_equity_len: int) -> str:
+    """ADR-0022 게이트 1 + 게이트 3 동시 판정. 게이트 2 (DCA 대비 알파) 는 자기 자신 N/A.
+
+    게이트 1: `max_drawdown_pct > -0.25`.
+    게이트 3: `sharpe_ratio > 0.3` (240 영업일 이상 표본에서만 신뢰).
+
+    Args:
+        metrics: BacktestMetrics — `max_drawdown_pct`/`sharpe_ratio` 검사.
+        daily_equity_len: 영업일 수. 240 미만이면 caveat 라벨.
+
+    Returns:
+        "PASS" / "FAIL (게이트 1)" / "FAIL (게이트 3)" / "FAIL (게이트 1·3)" /
+        "PASS (참고용 — 표본 240 미만)" 형태.
+    """
+    gate1_pass = metrics.max_drawdown_pct > _DCA_MDD_THRESHOLD
+    gate3_pass = metrics.sharpe_ratio > _DCA_SHARPE_THRESHOLD
+    failed: list[str] = []
+    if not gate1_pass:
+        failed.append("게이트 1")
+    if not gate3_pass:
+        failed.append("게이트 3")
+    if failed:
+        return f"FAIL ({'·'.join(failed)})"
+    if daily_equity_len < _DCA_MIN_SESSIONS_FOR_PASS:
+        return "PASS (참고용 — 표본 240 미만)"
+    return "PASS"
+
+
+def _render_dca_markdown(
+    result: BacktestResult,
+    context: _ReportContext,
+    *,
+    target_symbol: str,
+    monthly_investment_krw: int,
+) -> str:
+    """DCA baseline 전용 Markdown 리포트 — ADR-0022 게이트 적용."""
+    metrics = result.metrics
+    verdict = _dca_verdict_label(metrics, daily_equity_len=len(result.daily_equity))
+    lines: list[str] = []
+
+    lines.append("# DCA Baseline 백테스트 리포트 (ADR-0019 Step F PR1)")
+    lines.append("")
+    lines.append(f"- 기간: `{context.start.isoformat()}` ~ `{context.end.isoformat()}`")
+    lines.append(f"- target_symbol: `{target_symbol}`")
+    lines.append(f"- 시작 자본: {context.starting_capital_krw:,} KRW")
+    lines.append(f"- 월 투자금: {monthly_investment_krw:,} KRW")
+    lines.append(f"- 매수 횟수 (lots): {len(result.trades)}")
+    lines.append("")
+    lines.append(f"## ADR-0022 게이트 판정: **{verdict}**")
+    lines.append("")
+    lines.append(
+        f"- 게이트 1 (MDD > {_format_pct(_DCA_MDD_THRESHOLD)}): "
+        f"`{_format_pct(metrics.max_drawdown_pct)}`"
+    )
+    lines.append("- 게이트 2 (DCA 대비 알파): **N/A** — 자기 자신이 baseline.")
+    lines.append(
+        f"- 게이트 3 (Sharpe > {_format_decimal(_DCA_SHARPE_THRESHOLD, 2)}): "
+        f"`{_format_decimal(metrics.sharpe_ratio, 4)}`"
+    )
+    lines.append("")
+    lines.append("## 메트릭")
+    lines.append("")
+    lines.append("| 항목 | 값 |")
+    lines.append("|---|---|")
+    lines.append(f"| 총수익률 (mark-to-market) | {_format_pct(metrics.total_return_pct)} |")
+    lines.append(f"| 최대 낙폭 (MDD) | {_format_pct(metrics.max_drawdown_pct)} |")
+    lines.append(f"| 샤프 비율 (연환산) | {_format_decimal(metrics.sharpe_ratio, 4)} |")
+    lines.append(f"| 승률 (lot 별 가상 청산) | {_format_pct(metrics.win_rate)} |")
+    lines.append(f"| 평균 손익비 | {_format_decimal(metrics.avg_pnl_ratio, 4)} |")
+    lines.append(f"| 순손익 (KRW, mark-to-market) | {metrics.net_pnl_krw:,} |")
+    lines.append("")
+    lines.append("## 일일 자본 요약")
+    lines.append("")
+    if result.daily_equity:
+        equities = [row.equity_krw for row in result.daily_equity]
+        first = result.daily_equity[0]
+        last = result.daily_equity[-1]
+        trough = min(result.daily_equity, key=lambda r: r.equity_krw)
+        lines.append(f"- 세션 수: {len(result.daily_equity)}")
+        lines.append(f"- 시작: `{first.session_date.isoformat()}` {first.equity_krw:,} KRW")
+        lines.append(f"- 종료: `{last.session_date.isoformat()}` {last.equity_krw:,} KRW")
+        lines.append(f"- 최저점: `{trough.session_date.isoformat()}` {trough.equity_krw:,} KRW")
+        lines.append(f"- 최고점 자본: {max(equities):,} KRW")
+    else:
+        lines.append("- 세션 없음 (입력 분봉이 비어있거나 날짜 필터 결과가 0건)")
+    lines.append("")
+    lines.append("## 주의")
+    lines.append("")
+    lines.append(
+        "- DCA 는 영구 보유 가정 — 본 리포트의 `total_return_pct` 는 mark-to-market "
+        "(슬리피지·세금 미반영). `TradeRecord.net_pnl_krw` 는 lot 별 가상 청산 비용 반영값 — "
+        "실제 청산 의도 없음."
+    )
+    lines.append(
+        "- 후속 PR (F2~F5) 의 알파 비교는 본 리포트의 `total_return_pct` 를 baseline 으로 사용."
+    )
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _render_markdown(result: BacktestResult, context: _ReportContext) -> str:

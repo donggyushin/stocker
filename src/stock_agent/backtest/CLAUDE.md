@@ -19,6 +19,10 @@ stock-agent 의 시뮬레이션 경계 모듈. `ORBStrategy` + `RiskManager` 를
 `generate_windows`, `run_walk_forward`,
 `DailyBarPrevCloseProvider`
 
+`dca.py` 공개 심볼 (`backtest/dca.py` — `__init__.py` 미재노출, 직접 import):
+
+`DCABaselineConfig`, `compute_dca_baseline`
+
 `RejectReason` 은 `stock_agent.risk` 의 Literal 을 재노출. `BacktestResult.rejected_counts` 의 키 타입이라 같은 패키지에서 접근 가능해야 소비자가 `risk` 패키지를 직접 import 하지 않는다.
 
 ## 현재 상태 (2026-04-20 기준)
@@ -246,6 +250,57 @@ uv run python scripts/sensitivity.py --loader=kis --from 2025-04-22 --to 2026-04
 관련 테스트: `tests/test_sensitivity_cli.py` (기존 + Step E PR4 `TestStrategyTypeFlag` 4 + `TestStrategyTypeBaseConfigRouting` 6 + Stage 2 `TestGapReversalPrevCloseProviderInjection` 8 신규 포함).
 
 exit code 규약: `0` 정상 / `2` 입력·설정 오류 (`MinuteCsvLoadError`, `RuntimeError`) / `3` I/O 오류 (`OSError`). 그 외 예외는 버그로 간주해 Python 기본 traceback 으로 전파. generic `except Exception` 폐기 — `_run_pipeline(args)` 로 파이프라인 분리 후 `main()` 은 예외 매핑만 담당.
+
+### `dca.py` — DCA Baseline 평가 함수 (Step F PR1)
+
+ADR-0019 Step F PR1 에서 도입. `DCAStrategy` 의 다중 lot 누적·mark-to-market 평가를 담당. `BacktestEngine` 을 우회해 별도 평가 함수로 구현.
+
+`backtest/__init__.py` 에 재노출하지 않음 — 소비자 `scripts/backtest.py` 가 직접 import.
+
+#### `DCABaselineConfig` (`@dataclass(frozen=True, slots=True)`)
+
+`BacktestConfig` 와 동일한 필드 구조 (`starting_capital_krw`, `commission_rate`, `slippage_rate`, `sell_tax_rate`) + `DCAConfig` 를 포함.
+
+`__post_init__` 검증 (위반 시 `RuntimeError`): 자본 양수, 비율 음수 금지.
+
+#### `compute_dca_baseline` 시그니처
+
+```python
+def compute_dca_baseline(
+    loader: BarLoader,
+    config: DCABaselineConfig,
+    start: date,
+    end: date,
+) -> BacktestResult:
+```
+
+**알고리즘** (다중 lot 누적·mark-to-market):
+1. `loader.stream(start, end, (config.dca_config.target_symbol,))` 로 일봉 스트림 수신.
+2. `DCAStrategy` 가 `EntrySignal` 을 반환하면 lot 매수 + 비용 처리.
+3. 루프 종료 시 전체 lot 가상 청산 (mark-to-market 기준 종가 체결).
+4. `BacktestResult` 반환 — `trades`, `daily_equity`, `metrics`, `rejected_counts`, `post_slippage_rejections`.
+
+**BacktestEngine 우회 사유**:
+- `BacktestEngine` 은 단일 lot 가정 + `force_close_at` 기반 청산 가정 전제 — DCA 다중 lot 누적 및 "계속 보유" 정책과 비호환.
+- `EntrySignal.stop_price=0 / take_price=0` 마커를 인식해 손익절 판정 건너뜀.
+
+**운영 주의**: `compute_dca_baseline` 의 총수익률은 mark-to-market 기준이며 슬리피지·세금은 lot 단위 가상 청산 시 반영. `BacktestEngine` 결과와 직접 비교 불가.
+
+#### 테스트 현황 (dca.py)
+
+pytest **32 케이스 green** (`tests/test_backtest_dca.py`). 외부 I/O 없음 — `InMemoryBarLoader` + 합성 일봉 fixture.
+
+| 그룹 | 내용 |
+|---|---|
+| Config 검증 | 자본 양수, 비율 음수 금지 |
+| 정상 실행 | 단일 lot·다중 lot·mark-to-market 수익률 검증 |
+| 비용 반영 | 수수료·슬리피지·매도세 lot 단위 적용 |
+| 빈 입력 | 신호 없음 → 빈 trades, 0 수익률 |
+| BacktestResult 계약 | metrics·daily_equity·rejected_counts 구조 |
+
+관련 테스트 파일: `tests/test_backtest_dca.py`.
+
+---
 
 ## 설계 원칙
 

@@ -4,7 +4,7 @@
 
 ## 프로젝트 한 줄 요약
 
-Python 기반 한국주식 **데이트레이딩** 자동매매 시스템. 한국투자증권 KIS Developers API + Opening Range Breakout(ORB) 전략 + 100~200만원 초기 자본. **paper 주문 + live 시세 하이브리드 키** 구조 (KIS paper 도메인에 시세 API 없음 — 시세는 별도 실전 APP_KEY 로 실전 도메인 호출). 현재 **Phase 1 PASS (코드·테스트 레벨). Phase 2 진행 중 — 백테스트 엔진·전략·리스크·CSV/KIS 분봉 어댑터·백필 CLI 까지 모든 코드 산출물 완료. 2026-04-24 1차 백테스트 FAIL + 복구 로드맵 (A 민감도 → B 비용 → C 유니버스 → D 파라미터 → E 전략 교체) 순차 게이팅. Step A~E 전원 FAIL (230+ 런 / 0 PASS) → Step F (가설 풀 확장, ADR-0022 게이트 적용) 진입 중. Phase 3 코드 산출물 (Executor·main.py APScheduler·monitor/notifier·storage/db·세션 재기동·broker 체결조회) 모두 완료 상태로 보존 — 단 Phase 2 수익률 확인 전까지 Phase 3 진입 금지.**
+Python 기반 한국주식 **데이트레이딩** 자동매매 시스템. 한국투자증권 KIS Developers API + Opening Range Breakout(ORB) 전략 + 100~200만원 초기 자본. **paper 주문 + live 시세 하이브리드 키** 구조 (KIS paper 도메인에 시세 API 없음 — 시세는 별도 실전 APP_KEY 로 실전 도메인 호출). 현재 **Phase 1 PASS (코드·테스트 레벨). Phase 2 진행 중 — 백테스트 엔진·전략·리스크·CSV/KIS 분봉 어댑터·백필 CLI 까지 모든 코드 산출물 완료. 2026-04-24 1차 백테스트 FAIL + 복구 로드맵 (A 민감도 → B 비용 → C 유니버스 → D 파라미터 → E 전략 교체) 순차 게이팅. Step A~E 전원 FAIL (230+ 런 / 0 PASS) → Step F (가설 풀 확장, ADR-0022 게이트 적용) 진입 중 — PR1 (F1 DCA baseline) 완료, PASS (MDD -12.92% / Sharpe 2.27 / 총수익률 +51.50% mark-to-market). Phase 3 코드 산출물 (Executor·main.py APScheduler·monitor/notifier·storage/db·세션 재기동·broker 체결조회) 모두 완료 상태로 보존 — 단 Phase 2 수익률 확인 전까지 Phase 3 진입 금지.**
 
 상세 설계는 `plan.md`를 참조한다. 외부 독자용 개요는 `README.md`.
 
@@ -216,9 +216,9 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
 
 관련 자산: [.claude/hooks/src-first-requires-tests.sh](.claude/hooks/src-first-requires-tests.sh), [.claude/hooks/doc-sync-check.sh](.claude/hooks/doc-sync-check.sh), [.claude/agents/unit-test-writer.md](.claude/agents/unit-test-writer.md) 의 "TDD 모드 계약" 섹션, [docs/adr/0010-tdd-order-enforcement.md](./docs/adr/0010-tdd-order-enforcement.md).
 
-## 현재 상태 (2026-05-01 기준)
+## 현재 상태 (2026-05-02 기준)
 
-**한 줄 진행도**: Phase 1 PASS · Phase 2 진행 중 (1차 백테스트 FAIL → ADR-0019 복구 로드맵). Phase 3 코드 산출물 완료 상태로 보존, 진입 금지.
+**한 줄 진행도**: Phase 1 PASS · Phase 2 진행 중 (1차 백테스트 FAIL → ADR-0019 복구 로드맵 Step F PR1 PASS). Phase 3 코드 산출물 완료 상태로 보존, 진입 금지.
 
 - **Phase 2 1차 백테스트 결과 (2026-04-24, 1년치 KIS 백필 + `--loader=kis`)**: MDD **-51.36%**, 총수익률 -50.05%, 샤프 -6.81, 승률 31.35%, 손익비 1.28, 기대값 ≈ -0.28R. Phase 2 PASS 기준 3.4 배 초과 미달.
 - **신규 Phase 2 PASS 게이트 (ADR-0019)**: (1) MDD > -15%, (2) 승률 × 손익비 > 1.0, (3) 연환산 샤프 > 0 — 세 조건 전부 충족 + walk-forward 통과 후에만 Phase 3 착수.
@@ -236,8 +236,9 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
     - Gap-Reversal Top 100: MDD -19.99% · 승×손익비 0.289 · 샤프 -6.27 — FAIL.
     - 코드 산출물(`VWAPMRStrategy`·`GapReversalStrategy`·`DailyBarPrevCloseProvider`·`backfill_daily_bars`) 보존. 런북: `docs/runbooks/step_e_vwap_mr_2026-05-01.md` · `docs/runbooks/step_e_gap_reversal_2026-05-01.md`.
   - **Step F** — 가설 풀 확장 (ADR-0021 결정, ADR-0022 게이트 적용). 진입 중. 게이트 재정의: MDD > -25% · DCA baseline 대비 양의 알파 · 연환산 샤프 > 0.3 (세 조건 동시). 상세 진행 계획: `docs/step_f_strategy_pool_plan.md`.
+    - **PR1 (F1 DCA baseline) 완료 — PASS (2026-05-02)**. MDD -12.92% · Sharpe 2.2683 · 총수익률 +51.50% mark-to-market (시작 자본 2,000,000 KRW, KODEX 200 069500, 1년). 후속 PR (F2 Golden Cross 등) 진행 대기. 런북: `docs/runbooks/step_f_dca_baseline_2026-05-02.md`.
 - **Phase 3 진입 금지 (ADR-0019)**: 게이트 통과 전까지 `main.py` 모의투자 무중단 운영 계획 전면 보류. `execution/`·`main.py`·`monitor/`·`storage/` 코드 산출물은 보존 — 복구 후 그대로 재사용.
-- **테스트 카운트**: pytest **1670 collected** (Step E PR4 Stage 3 기준 — Stage 2 1651 + Stage 3 신규 19건: `test_backfill_daily_bars_cli.py` TestParseArgs 5 + TestRunPipeline 12 + TestMainExitCode 2).
+- **테스트 카운트**: pytest **1749 collected** (Step F PR1 기준 — Step E PR4 Stage 3 1670 + Step F PR1 신규 79건: `test_strategy_dca.py` 31 + `test_daily_bar_loader.py` 16 + `test_backtest_dca.py` 32).
 - **운영자 close 대기 Issue**: #51 (Phase 2 PASS 판정 FAIL → 복구 로드맵으로 대체) · #52 (`KisMinuteBarLoader` 파싱 실패 대응, 운영자 `scripts/debug_kis_minute.py` 실행 후 댓글) · #63 (공휴일 캘린더 가드, 백필 재실행으로 `date_mismatch` 0 확인 후 댓글) · #71 (장시간 hang 방지, 2026-04-24 백필 완주 확인 — 운영자 댓글만 잔여).
 
 상세한 Phase 별 산출물·결정·테스트 카운트 변화·Issue 대응 이력은 [docs/phase-history.md](./docs/phase-history.md) 참조.
