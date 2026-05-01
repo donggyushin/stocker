@@ -12,6 +12,10 @@ from stock_agent.strategy.base import (
     Signal,
     Strategy,
 )
+from stock_agent.strategy.gap_reversal import (
+    GapReversalConfig,
+    GapReversalStrategy,
+)
 from stock_agent.strategy.orb import (
     ORBStrategy,
     StrategyConfig,
@@ -26,6 +30,8 @@ __all__ = [
     "EntrySignal",
     "ExitReason",
     "ExitSignal",
+    "GapReversalConfig",
+    "GapReversalStrategy",
     "ORBStrategy",
     "Signal",
     "Strategy",
