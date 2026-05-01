@@ -1,6 +1,6 @@
 # strategy — 전략 엔진
 
-stock-agent 의 전략 경계 모듈. `Strategy` Protocol + `ORBStrategy` / `VWAPMRStrategy` 구현체를 제공하고,
+stock-agent 의 전략 경계 모듈. `Strategy` Protocol + `ORBStrategy` / `VWAPMRStrategy` / `GapReversalStrategy` 구현체를 제공하고,
 분봉 DTO(`MinuteBar`) 와 시각 이벤트(`on_time`) 를 소비해 상위 레이어(backtest/execution)에 정규화된 시그널 DTO만 노출한다.
 
 > 이 파일은 root [CLAUDE.md](../../../CLAUDE.md) 의 하위 문서이다. 프로젝트 전반
@@ -8,11 +8,11 @@ stock-agent 의 전략 경계 모듈. `Strategy` Protocol + `ORBStrategy` / `VWA
 
 ## 공개 심볼 (`strategy/__init__.py`)
 
-`EntrySignal`, `ExitReason`, `ExitSignal`, `ORBStrategy`, `Signal`, `Strategy`, `StrategyConfig`, `StrategyError`, `VWAPMRConfig`, `VWAPMRStrategy`
+`EntrySignal`, `ExitReason`, `ExitSignal`, `GapReversalConfig`, `GapReversalStrategy`, `ORBStrategy`, `Signal`, `Strategy`, `StrategyConfig`, `StrategyError`, `VWAPMRConfig`, `VWAPMRStrategy`
 
 ## 현재 상태 (2026-05-01 기준)
 
-**Phase 2 진행 중. ORBStrategy 완료 (2026-04-20). VWAPMRStrategy 추가 (2026-05-01, Step E PR2 — ORB 폐기 후보 평가 첫 번째 전략, 백테스트 결과 대기 중).**
+**Phase 2 진행 중. ORBStrategy 완료 (2026-04-20). VWAPMRStrategy 추가 (2026-05-01, Step E PR2 — ORB 폐기 후보 평가 첫 번째 전략, 백테스트 결과 대기 중). GapReversalStrategy 추가 (2026-05-01, Step E PR3 — ORB 폐기 후보 평가 두 번째 전략, 백테스트 결과 대기 중).**
 
 ### `base.py` — Protocol + DTO + 상수
 
@@ -249,3 +249,72 @@ pytest **35 케이스 green** (`tests/test_strategy_vwap_mr.py`). 외부 목킹 
 | 입력 검증 | 3 |
 | Config 검증 | 3 |
 | Strategy Protocol 호환·기본값 등 | ~9 |
+
+---
+
+## `gap_reversal.py` — GapReversalStrategy
+
+ADR-0019 Step E 복구 로드맵 두 번째 전략 후보. `VWAPMRStrategy` 와 직교 가설 (평균 회귀 vs 갭 반작용). ORB 폐기 후보 평가 목적으로 도입 (PR3, 2026-05-01). 채택/폐기 결정은 백테스트 결과 후 별도 ADR 작성.
+
+### `GapReversalConfig` (`@dataclass(frozen=True, slots=True)`)
+
+| 필드 | 기본값 | 설명 |
+|---|---|---|
+| `session_start` | `time(9, 0)` | 세션 시작 시각 (포함) |
+| `entry_window_end` | `time(9, 30)` | 진입 윈도 종료 시각 (**미포함**) — 이 시각 이후 진입 거부 |
+| `force_close_at` | `time(15, 0)` | 강제청산 시각 및 신규 진입 금지 경계 (해당 시각 **이상**이면 진입 금지) |
+| `gap_threshold_pct` | `Decimal("0.02")` | 갭 판정 임계치 (2%) — `gap_pct ≤ -threshold` 충족 시 진입 |
+| `take_profit_pct` | `Decimal("0.015")` | 익절 비율 (1.5%) |
+| `stop_loss_pct` | `Decimal("0.01")` | 손절 비율 (1.0%) |
+
+`__post_init__` 검증 (위반 시 **`RuntimeError`** — `ORBStrategy` 와 동일 기조):
+- `gap_threshold_pct > 0`, `take_profit_pct > 0`, `stop_loss_pct > 0`
+- `session_start < entry_window_end < force_close_at`
+
+### `PrevCloseProvider` 타입 별칭
+
+```python
+PrevCloseProvider = Callable[[str, date], Decimal | None]
+```
+
+생성자 의존 주입. 세션 reset 시 1회 호출 — `None` 반환 시 당일 진입 포기. 백테스트 통합 시 `HistoricalDataStore.DailyBar` + `BusinessDayCalendar` (ADR-0018) 조합으로 주입 (후속 PR).
+
+### `GapReversalStrategy` — per-symbol 갭 반작용 상태 머신
+
+- `Strategy` Protocol 구현체 (`on_bar`, `on_time`, `config` 프로퍼티, `get_state`).
+- **long-only 정책**: KOSPI 200 + KIS 공매도 미지원 — 갭 하락 후 반등 매수만 검증. 갭 상승 시 진입 거부.
+
+#### 알고리즘 핵심
+
+1. 진입 윈도 (`session_start ≤ bar_t < entry_window_end`) 의 **첫 분봉**에서 갭 평가:
+   - `session_open = bar.open`
+   - `gap_pct = (open - prev_close) / prev_close`
+   - `gap_pct ≤ -gap_threshold_pct` → `EntrySignal` (entry=bar.close, stop/take 비율 적용)
+   - 그 외 → 진입 거부, `gap_evaluated=True` 가드로 당일 재평가 없음
+2. `prev_close_provider` 가 `None` 반환 시 → 당일 진입 포기.
+
+#### 상태 전이
+
+```text
+flat  ──(첫 분봉 gap_pct ≤ -gap_threshold_pct  &&  session_start ≤ bar_t < entry_window_end)──▶ long
+long  ──(bar.low ≤ stop_price)──▶ closed              [reason=stop_loss]   (stop 우선)
+long  ──(bar.high ≥ take_price)──▶ closed             [reason=take_profit]
+long  ──(on_time: now.time() ≥ force_close_at)──▶ closed  [reason=force_close]
+closed ──(새 session_date 진입)──▶ flat               (상태 리셋)
+```
+
+청산 우선순위: `stop_loss` → `take_profit`. 동일 분봉에서 동시 성립 시 `stop_loss` 우선 (슬리피지 과소평가 방지 — `ORBStrategy` / `VWAPMRStrategy` 와 동일 기조).
+
+#### 설계 특성
+
+- **1일 1심볼 1회 진입**: `closed` 또는 `gap_evaluated=True` 상태에서 재진입 시도 시 `logger.debug` 후 빈 리스트 반환.
+- **세션 경계 자동 리셋**: `bar.bar_time.date()` 변경 감지 시 갭 평가 플래그·포지션·`last_bar_time` 전부 초기화.
+- **`StrategyError` 재사용**: `from stock_agent.strategy.orb import StrategyError` — 별도 예외 클래스 신설 없음.
+- **강제청산 `on_time`**: `last_close` 우선, 없으면 `entry_price` 폴백 + `logger.warning`. 둘 다 `None` 이면 `StrategyError`.
+- **입력 검증 (`RuntimeError` 전파)**: symbol 6자리 숫자 (`^\d{6}$`), aware datetime 강제 (naive → 거부), 시간 역행 거부.
+
+### 테스트 현황 (GapReversalStrategy)
+
+pytest **34 케이스 green** (`tests/test_strategy_gap_reversal.py`). 외부 목킹 불필요 — 순수 로직.
+
+관련 테스트 파일: `tests/test_strategy_gap_reversal.py`.
