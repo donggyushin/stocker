@@ -14,9 +14,13 @@ stock-agent 의 전략 경계 모듈. `Strategy` Protocol + `ORBStrategy` / `VWA
 
 `STRATEGY_CHOICES`, `StrategyType`, `build_strategy_factory`
 
-## 현재 상태 (2026-05-01 기준)
+`dca.py` 공개 심볼 (`strategy/dca.py` — `__init__.py` 미재노출, 직접 import):
 
-**Phase 2 진행 중. ORBStrategy 완료 (2026-04-20). VWAPMRStrategy 추가 (2026-05-01, Step E PR2 — ORB 폐기 후보 평가 첫 번째 전략, 백테스트 결과 대기 중). GapReversalStrategy 추가 (2026-05-01, Step E PR3 — ORB 폐기 후보 평가 두 번째 전략, 백테스트 결과 대기 중). `factory.py` 추가 (2026-05-01, Step E PR4 Stage 1 — `build_strategy_factory` + `--strategy-type` CLI 통합).**
+`DCAConfig`, `DCAStrategy`
+
+## 현재 상태 (2026-05-02 기준)
+
+**Phase 2 진행 중. ORBStrategy 완료 (2026-04-20). VWAPMRStrategy 추가 (2026-05-01, Step E PR2). GapReversalStrategy 추가 (2026-05-01, Step E PR3). `factory.py` 추가 (2026-05-01, Step E PR4 Stage 1). DCAStrategy 추가 (2026-05-02, Step F PR1 — ADR-0022 게이트 PASS).**
 
 ### `base.py` — Protocol + DTO + 상수
 
@@ -376,3 +380,53 @@ def build_strategy_factory(
 pytest **33 케이스 green** (`tests/test_strategy_factory.py`). 외부 목킹 불필요 — 순수 팩토리 로직.
 
 관련 테스트 파일: `tests/test_strategy_factory.py`.
+
+---
+
+## `dca.py` — DCAStrategy (Step F PR1)
+
+ADR-0019 Step F 복구 로드맵 첫 번째 전략 후보. ADR-0022 게이트 비교 기준 (baseline) 산출 목적으로 도입 (PR1, 2026-05-02). ADR-0022 게이트 판정: PASS.
+
+`strategy/__init__.py` 에 재노출하지 않음 — 소비자 `compute_dca_baseline` (`backtest/dca.py`) 이 직접 import.
+
+### `DCAConfig` (`@dataclass(frozen=True, slots=True)`)
+
+| 필드 | 기본값 | 설명 |
+|---|---|---|
+| `monthly_investment_krw` | 필수 | 월 투자금 (KRW 정수, 양수 필수) |
+| `target_symbol` | `"069500"` | 매수 대상 종목코드 (6자리 숫자, KODEX 200 기본) |
+| `purchase_day` | `1` | 영업일 기준 N번째 분봉 도달 시 매수 (1~28, 기본 1) |
+
+`__post_init__` 검증 (위반 시 `RuntimeError` — 다른 모듈과 동일 기조):
+- `monthly_investment_krw > 0`
+- `target_symbol` 6자리 숫자 정규식 (`^\d{6}$`)
+- `1 <= purchase_day <= 28`
+
+### `DCAStrategy` — 월 정액 매수 전략
+
+- `Strategy` Protocol 구현체 (`on_bar`, `on_time`).
+- **의미론**: `on_bar` 에서 `target_symbol` 의 `purchase_day` 번째 분봉 도달 시 `EntrySignal(stop_price=Decimal("0"), take_price=Decimal("0"))` 반환 — 손익절 미사용 마커 (force_close 없음).
+- `on_time` 은 항상 빈 리스트 반환 — 강제청산 없음.
+- **1일 1회 진입**: 당일 진입 후 추가 시그널 없음.
+- **영업일 캘린더 의존 없음**: 진입 조건이 분봉 수신 자체이므로 캘린더 불필요.
+- **세션 경계 자동 리셋**: `bar.bar_time.date()` 변경 감지 시 당일 진입 플래그 초기화.
+- **입력 검증 (`RuntimeError` 전파)**: aware datetime 강제 (naive → 거부).
+
+### 설계 특성
+
+- `stop_price=Decimal("0")` / `take_price=Decimal("0")` 는 "손익절 미사용" 마커 — `compute_dca_baseline` 이 이 값을 인식해 손익절 판정을 건너뛴다. `BacktestEngine` 에 직접 주입하면 비정상 동작하므로 `compute_dca_baseline` 경유가 필수.
+- 다중 lot 누적·mark-to-market 평가는 `backtest/dca.py` 의 `compute_dca_baseline` 이 담당 (`BacktestEngine` 우회).
+
+### 테스트 현황 (DCAStrategy)
+
+pytest **31 케이스 green** (`tests/test_strategy_dca.py`). 외부 목킹 불필요 — 순수 로직.
+
+| 그룹 | 내용 |
+|---|---|
+| Config 검증 | 양수 투자금·심볼 정규식·purchase_day 1~28 범위 |
+| 진입 시그널 | purchase_day 번째 분봉에서 1회 진입, 이후 당일 추가 시그널 없음 |
+| 청산 시그널 | on_time 빈 리스트, on_bar 청산 시그널 없음 |
+| 세션 전환 | 날짜 변경 시 플래그 리셋, 새 세션 재진입 허용 |
+| 입력 검증 | naive datetime 거부 |
+
+관련 테스트 파일: `tests/test_strategy_dca.py`.

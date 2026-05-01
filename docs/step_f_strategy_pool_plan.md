@@ -36,12 +36,15 @@ PR0 (본 PR — Step E close + Step F open)
   ├ docs/step_e_followup_plan.md 삭제
   ├ root CLAUDE.md / README.md / docs/adr/README.md 동기화
   ↓
-PR1 — F1 DCA baseline (선행 의존성)
-  ├ src/stock_agent/strategy/dca.py — DCAStrategy (월 1회 정액 매수)
-  ├ tests/test_strategy_dca.py
-  ├ scripts/backtest.py --strategy-type dca 라우팅
-  ├ docs/runbooks/step_f_dca_baseline_2026-MM-DD.md
-  ├ ADR-0022 게이트 판정 (PASS 예상 — 시장 평균 양수 가정)
+PR1 — F1 DCA baseline (선행 의존성) ✓ 완료 (2026-05-02, PASS)
+  ├ src/stock_agent/strategy/dca.py — DCAStrategy, DCAConfig
+  ├ src/stock_agent/data/daily_bar_loader.py — DailyBarLoader, DailyBarSource
+  ├ src/stock_agent/backtest/dca.py — DCABaselineConfig, compute_dca_baseline
+  ├ tests/test_strategy_dca.py (31건), tests/test_daily_bar_loader.py (16건), tests/test_backtest_dca.py (32건)
+  ├ scripts/backtest.py --strategy-type=dca, --loader=daily, --monthly-investment 라우팅
+  ├ docs/runbooks/step_f_dca_baseline_2026-05-02.md
+  ├ ADR-0022 게이트 판정: MDD -12.92% PASS / Sharpe 2.2683 PASS / DCA 알파 N/A → 종합 PASS
+  └ baseline 수치: 총수익률 +51.50% mark-to-market (시작 자본 2,000,000 KRW, 069500, 13 lots)
   ↓
 PR2 — F2 Golden Cross
   ├ src/stock_agent/strategy/golden_cross.py — GoldenCrossStrategy (200d SMA)
@@ -265,13 +268,12 @@ PR6 (종합 + ADR-0023)
 
 ## 다음 세션 시작 가이드
 
-1. 본 파일 읽기 → 현재 위치 파악 (`PR1 미시작` 상태에서 시작).
-2. 가장 작은 단위 (PR1 F1 DCA) 부터 RED-first TDD 사이클 시작:
-   - `tests/test_strategy_dca.py` 작성 (unit-test-writer 위임)
+1. 본 파일 읽기 → 현재 위치 파악 (`PR1 완료, PASS` 상태에서 시작).
+2. PR2 (F2 Golden Cross) 부터 RED-first TDD 사이클 시작:
+   - `tests/test_strategy_golden_cross.py` 작성 (unit-test-writer 위임)
    - FAIL 확인
-   - `src/stock_agent/strategy/dca.py` 구현
+   - `src/stock_agent/strategy/golden_cross.py` 구현
    - GREEN 확인
-   - `BarLoader` 일봉 어댑터 신설 (필요 시)
-   - `scripts/backtest.py --strategy-type dca` 라우팅 추가
-   - 백테스트 실행 + runbook 작성 + ADR-0022 게이트 판정
-3. PR1 머지 후 PR2~PR5 병렬 진행 가능.
+   - `scripts/backtest.py --strategy-type golden-cross` 라우팅 추가
+   - 백테스트 실행 + runbook 작성 + ADR-0022 게이트 판정 (DCA baseline +51.50% 대비 알파 포함)
+3. PR2~PR5 병렬 진행 가능 (서로 의존 X). DCA baseline 비교 기준: **+51.50% mark-to-market** (2025-04-22 ~ 2026-04-21, 시작 자본 2,000,000 KRW, 069500).

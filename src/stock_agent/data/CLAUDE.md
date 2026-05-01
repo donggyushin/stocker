@@ -17,7 +17,11 @@ YAML 로더, 실시간 분봉 소스를 한 자리에 모아 상위 레이어
 `BusinessDayCalendar`, `HolidayCalendar`, `HolidayCalendarError`, `YamlBusinessDayCalendar`, `load_kospi_holidays`,
 `SpreadSample`, `SpreadSampleCollector`, `SpreadSampleCollectorError`
 
-## 현재 상태 (2026-04-26 기준)
+`daily_bar_loader.py` 공개 심볼 (`data/daily_bar_loader.py` — `__init__.py` 미재노출, 직접 import):
+
+`DailyBarLoader`, `DailyBarSource`, `KST`
+
+## 현재 상태 (2026-05-02 기준)
 
 - **`historical.py`** — Phase 1 세 번째 산출물(축소판, v3)
   - 공개 API 1종: `fetch_daily_ohlcv(symbol, start, end)` + 보조 `close()` / 컨텍스트 매니저.
@@ -125,6 +129,67 @@ YAML 로더, 실시간 분봉 소스를 한 자리에 모아 상위 레이어
   - **CLI**: `scripts/collect_spread_samples.py` 가 본 어댑터를 사용해 평일 장중 호가를 JSONL 로 누적. ADR-0019 Step B 진행용 인프라.
   - **비스코프 (의도적 defer)**: WebSocket 호가 스트림 (Phase 5 후보) · 10단계 호가 전체 (`bidp2..bidp10`, `askp2..askp10`) — Step B 검증 목적상 1단계로 충분 · SQLite 캐시 — JSONL 누적이 분석 단순.
   - **의존성**: stdlib + python-kis 2.1.6. 추가 라이브러리 0.
+
+## `daily_bar_loader.py` — DailyBarLoader (Step F PR1)
+
+ADR-0019 Step F PR1 에서 도입. `HistoricalDataStore` 의 일봉을 `BarLoader` Protocol 을 만족하는 형태로 래핑한다. `DCAStrategy` 의 백테스트 입력 소스로 사용 (`--loader=daily`).
+
+`data/__init__.py` 에 재노출하지 않음 — 소비자 `scripts/backtest.py` 가 직접 import.
+
+### 공개 심볼
+
+| 심볼 | 타입 | 설명 |
+|---|---|---|
+| `DailyBarSource` | Protocol | `fetch_daily_ohlcv(symbol, start, end) -> list[DailyBar]` 계약. 테스트 fake double 호환 목적으로 분리. |
+| `KST` | `timezone` | `timezone(timedelta(hours=9))` — `strategy/base.py` 의 `KST` 와 값 동일, 교차 import 회피 목적 로컬 선언. |
+| `DailyBarLoader` | class | `BarLoader` Protocol 구현체. |
+
+### `DailyBarLoader`
+
+```python
+class DailyBarLoader:
+    def __init__(
+        self,
+        source: DailyBarSource,
+    ) -> None: ...
+
+    def stream(
+        self,
+        start: date,
+        end: date,
+        symbols: tuple[str, ...],
+    ) -> Iterable[MinuteBar]: ...
+
+    def close(self) -> None: ...
+    def __enter__(self) -> "DailyBarLoader": ...
+    def __exit__(self, *exc: object) -> None: ...
+```
+
+**의미론**: `DailyBarSource.fetch_daily_ohlcv` 결과를 날짜별 09:00 KST `MinuteBar` 로 래핑해 반환. `BarLoader` Protocol 계약(시간 단조증가·경계 포함 날짜 필터·심볼 필터) 충족.
+
+**입력 가드**:
+- `start > end` → `RuntimeError`
+- `symbols` 빈 tuple → `RuntimeError`
+- `symbol` 6자리 숫자 정규식 위반 → `RuntimeError`
+
+**라이프사이클**: `close()` 는 `source` 에 `close()` 메서드가 있으면 위임. 컨텍스트 매니저 지원.
+
+**재호출 안전**: 동일 `(start, end, symbols)` 로 `stream` 을 여러 번 호출하면 매번 새 Iterable 반환 — `BarLoader` Protocol 계약 준수.
+
+### 테스트 현황 (DailyBarLoader)
+
+pytest **16 케이스 green** (`tests/test_daily_bar_loader.py`). 외부 I/O 없음 — `DailyBarSource` fake double 주입.
+
+| 그룹 | 내용 |
+|---|---|
+| 정상 stream | 단일/다중 심볼, 날짜 필터, 빈 결과 |
+| MinuteBar 래핑 | 09:00 KST bar_time, OHLC 값, symbol 필드 |
+| 입력 가드 | start>end, 빈 symbols, 심볼 포맷 |
+| 라이프사이클 | close 위임, 컨텍스트 매니저 |
+
+관련 테스트 파일: `tests/test_daily_bar_loader.py`.
+
+---
 
 ## 설계 원칙
 
