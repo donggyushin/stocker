@@ -17,6 +17,10 @@ from stock_agent.strategy.orb import (
     StrategyConfig,
     StrategyError,
 )
+from stock_agent.strategy.vwap_mr import (
+    VWAPMRConfig,
+    VWAPMRStrategy,
+)
 
 __all__ = [
     "EntrySignal",
@@ -27,4 +31,6 @@ __all__ = [
     "Strategy",
     "StrategyConfig",
     "StrategyError",
+    "VWAPMRConfig",
+    "VWAPMRStrategy",
 ]
