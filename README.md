@@ -78,7 +78,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **Step D1 FAIL (2026-05-01)** — OR 윈도 스터디. `step_d1_grid` 48 조합 × Top 50 / Top 100 = 96 런 전원 ADR-0019 게이트 미통과. 최선 조합: Top 50 MDD -37.18% / Top 100 MDD -35.98%. Step C 대비 MDD 소폭 개선이나 PASS 기준 -15% 까지 여전히 21~23%p 격차. 상세: `docs/runbooks/step_d1_or_window_2026-05-01.md`.
 
-**Step D2 코드 단계 완료** — force_close_at 스터디. `step_d2_grid` 3×4×4 = 48 조합 (`force_close_at` ∈ {14:50, 15:00, 15:20}). `scripts/sensitivity.py --grid step-d2` 로 백테스트 실행 후 채택/미채택 판정 예정. 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
+**Step D2 FAIL (2026-05-01)** — force_close_at 스터디. `step_d2_grid` 48 조합 × Top 50 / Top 100 = 96 런 전원 ADR-0019 게이트 미통과. 최선 조합 (`force_close_at=15:20, stop=2.5%, take=5.0%`): Top 50 MDD -35.02% / Top 100 MDD -37.56%. D1 vs D2 거의 동급 — `stop=2.5%/take=5.0%` 가 본질 개선 벡터. **D3/D4/E 결정 대기.** 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
 
 **Phase 3 착수 전제 통과** (2026-04-21). 실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK) 완료.
 
@@ -104,7 +104,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 ## 디렉토리 구조
 
-현재 존재하는 파일 (Phase 2 Step D2 코드 단계 완료 기준):
+현재 존재하는 파일 (Phase 2 Step D2 백테스트 FAIL 기준):
 
 ```text
 stock-agent/
