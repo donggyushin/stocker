@@ -62,11 +62,6 @@ def _bar(
     )
 
 
-def _now(h: int, m: int, *, date_: date = _DATE) -> datetime:
-    """KST aware datetime 헬퍼."""
-    return datetime(date_.year, date_.month, date_.day, h, m, tzinfo=KST)
-
-
 def _default_engine(
     capital: int = 1_000_000,
     strategy_config: StrategyConfig | None = None,
@@ -448,6 +443,131 @@ class TestBacktestConfig:
         """slippage_rate >= 1 → RuntimeError."""
         with pytest.raises(RuntimeError, match="slippage_rate"):
             BacktestConfig(starting_capital_krw=1_000_000, slippage_rate=Decimal("1"))
+
+    # ------------------------------------------------------------------
+    # strategy_factory 필드 — RED 케이스 (strategy_factory 미구현 상태에서 FAIL)
+    # ------------------------------------------------------------------
+
+    def test_strategy_factory_default_none(self):
+        """BacktestConfig 기본 생성 시 strategy_factory 는 None 이어야 한다.
+
+        RED: strategy_factory 필드가 아직 없어 AttributeError 로 FAIL.
+        """
+        cfg = BacktestConfig(starting_capital_krw=1_000_000)
+        assert cfg.strategy_factory is None  # type: ignore[attr-defined]
+
+    def test_strategy_factory_and_config_mutually_exclusive(self):
+        """strategy_factory 와 strategy_config 동시 지정 시 RuntimeError.
+
+        RED: strategy_factory 필드 부재로 TypeError('unexpected keyword argument') 발생
+        → pytest.raises(RuntimeError) 가 충족되지 않아 FAIL.
+        """
+        with pytest.raises(RuntimeError, match="strategy_factory"):
+            BacktestConfig(
+                starting_capital_krw=1_000_000,
+                strategy_factory=lambda: None,  # type: ignore[call-arg]
+                strategy_config=StrategyConfig(),
+            )
+
+    def test_strategy_factory_alone_ok(self):
+        """strategy_factory 만 단독 지정 시 예외 없이 생성된다.
+
+        RED: strategy_factory 필드 부재로 TypeError 로 FAIL.
+        """
+        from stock_agent.strategy import StrategyConfig as _SC  # noqa: N814
+
+        cfg = BacktestConfig(
+            starting_capital_krw=1_000_000,
+            strategy_factory=lambda: __import__(  # type: ignore[call-arg]
+                "stock_agent.strategy", fromlist=["ORBStrategy"]
+            ).ORBStrategy(_SC()),
+        )
+        assert cfg.strategy_factory is not None  # type: ignore[attr-defined]
+
+
+class TestEngineStrategyFactory:
+    """BacktestEngine.run() 에서 strategy_factory 가 올바르게 사용되는지 검증.
+
+    RED 케이스 — strategy_factory 분기가 engine.py 에 미구현 상태이므로
+    모두 FAIL 이어야 한다.
+    """
+
+    def test_strategy_factory_invoked_at_run(self):
+        """factory callable 이 run() 시 정확히 1회 호출된다.
+
+        RED: BacktestConfig 에 strategy_factory 필드 없음 → TypeError 로 FAIL.
+        """
+        from stock_agent.strategy import ORBStrategy
+        from stock_agent.strategy import StrategyConfig as _SC  # noqa: N814
+
+        call_count: list[int] = [0]
+
+        def _factory() -> ORBStrategy:
+            call_count[0] += 1
+            return ORBStrategy(_SC())
+
+        cfg = BacktestConfig(
+            starting_capital_krw=1_000_000,
+            strategy_factory=_factory,  # type: ignore[call-arg]
+        )
+        engine = BacktestEngine(cfg)
+        engine.run([])
+        assert call_count[0] == 1, f"factory 호출 횟수 기대=1, 실제={call_count[0]}"
+
+    def test_strategy_factory_default_uses_orb(self):
+        """factory=None + strategy_config=None 이면 기존 ORBStrategy 디폴트 사용.
+
+        기존 동작 회귀 — 빈 스트림에서도 정상 run() 이 완료돼야 한다.
+        현재 엔진은 이미 이 경로를 지원하므로, strategy_factory 필드 추가 후에도
+        이 케이스는 GREEN 이어야 한다.
+
+        RED 단계에서는 strategy_factory 필드가 없어 test_strategy_factory_default_none
+        이 FAIL 하지만, 이 케이스 자체는 기존 코드로 통과한다 — 의도적으로 분리.
+        """
+        from stock_agent.strategy import ORBStrategy
+
+        cfg = BacktestConfig(starting_capital_krw=1_000_000)
+        engine = BacktestEngine(cfg)
+        result = engine.run([])
+        # 기존 동작: ORBStrategy 를 사용하는 빈 스트림 → 메트릭 0, 예외 없음
+        assert result.trades == ()
+        assert result.metrics.total_return_pct == Decimal("0")
+        # strategy_factory 필드 확인은 별도 케이스 — 여기선 engine 동작만 검증
+        _ = ORBStrategy  # 타입 참조만 (미사용 경고 억제)
+
+    def test_strategy_factory_custom_strategy_runs(self):
+        """factory 가 _FakeStrategy 반환 시 monkeypatch 없이 run() 정상 완료.
+
+        RED: BacktestConfig 에 strategy_factory 필드 없음 → TypeError 로 FAIL.
+        """
+        from stock_agent.strategy import EntrySignal as _ES  # noqa: N814
+        from stock_agent.strategy import ExitSignal as _XS  # noqa: N814
+        from stock_agent.strategy import StrategyConfig as _SC  # noqa: N814
+
+        class _StubStrategy:
+            """Strategy Protocol 을 최소로 구현한 더미. force_close_at 노출 필수."""
+
+            def __init__(self) -> None:
+                self._config = _SC()
+
+            @property
+            def config(self) -> _SC:
+                return self._config
+
+            def on_bar(self, _: object) -> list[object]:
+                return []
+
+            def on_time(self, _: object) -> list[object]:
+                return []
+
+        cfg = BacktestConfig(
+            starting_capital_krw=1_000_000,
+            strategy_factory=_StubStrategy,  # type: ignore[call-arg]
+        )
+        engine = BacktestEngine(cfg)
+        result = engine.run([])
+        assert result.trades == ()
+        _ = _ES, _XS  # noqa: F841
 
 
 class TestEngineEmptyStream:
@@ -1037,7 +1157,6 @@ class TestEngineSafetyNet:
         stub ORBStrategy: 첫 on_bar 에서 즉시 ExitSignal 반환,
         EntrySignal 없음 → active 에 없고 phantom_longs 에도 없음 → 안전망 발동.
         """
-        from stock_agent.strategy import EntrySignal as _EntrySignal  # noqa: F401
         from stock_agent.strategy import ExitSignal as _ExitSignal
         from stock_agent.strategy import StrategyConfig as _StrategyConfig
 
@@ -1064,7 +1183,7 @@ class TestEngineSafetyNet:
                     ]
                 return []
 
-            def on_time(self, now):
+            def on_time(self, _):
                 return []
 
         monkeypatch.setattr("stock_agent.backtest.engine.ORBStrategy", _FakeStrategy)
@@ -1113,7 +1232,7 @@ class TestEngineSafetyNet:
                     ]
                 return []
 
-            def on_time(self, now):
+            def on_time(self, _):
                 # force_close ExitSignal 미생성 → active 잔존 → 안전망 트리거
                 return []
 

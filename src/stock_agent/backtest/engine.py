@@ -77,7 +77,7 @@ Phantom long 처리 (중요한 설계 결정)
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
@@ -98,6 +98,7 @@ from stock_agent.strategy import (
     ExitSignal,
     ORBStrategy,
     Signal,
+    Strategy,
     StrategyConfig,
 )
 
@@ -128,6 +129,7 @@ class BacktestConfig:
     sell_tax_rate: Decimal = _DEFAULT_SELL_TAX_RATE
     slippage_rate: Decimal = _DEFAULT_SLIPPAGE_RATE
     strategy_config: StrategyConfig | None = None
+    strategy_factory: Callable[[], Strategy] | None = None
     risk_config: RiskConfig | None = None
 
     def __post_init__(self) -> None:
@@ -144,6 +146,11 @@ class BacktestConfig:
         if self.slippage_rate < 0 or self.slippage_rate >= 1:
             raise RuntimeError(
                 f"slippage_rate 는 [0, 1) 범위여야 합니다 (got={self.slippage_rate})"
+            )
+        if self.strategy_factory is not None and self.strategy_config is not None:
+            raise RuntimeError(
+                "strategy_factory 와 strategy_config 는 동시 지정 불가 — "
+                "팩토리 사용 시 Config 는 팩토리 클로저 내부에서 결정"
             )
 
 
@@ -273,9 +280,14 @@ class BacktestEngine:
 
     def run(self, bars: Iterable[MinuteBar]) -> BacktestResult:
         cfg = self._config
-        strategy = ORBStrategy(cfg.strategy_config)
+        strategy: Strategy = (
+            cfg.strategy_factory()
+            if cfg.strategy_factory is not None
+            else ORBStrategy(cfg.strategy_config)
+        )
         risk_manager = RiskManager(cfg.risk_config or RiskConfig())
-        force_close_at: time = strategy.config.force_close_at
+        # 모든 전략은 .config.force_close_at 노출 의무 — implicit 계약 (PR1).
+        force_close_at: time = strategy.config.force_close_at  # type: ignore[attr-defined]
 
         cash: int = cfg.starting_capital_krw
         active: dict[str, _ActiveLot] = {}
@@ -505,7 +517,7 @@ class BacktestEngine:
 
     def _close_session(
         self,
-        strategy: ORBStrategy,
+        strategy: Strategy,
         risk_manager: RiskManager,
         active: dict[str, _ActiveLot],
         phantom_longs: set[str],
