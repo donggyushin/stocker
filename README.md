@@ -80,7 +80,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **Step D2 FAIL (2026-05-01)** — force_close_at 스터디. `step_d2_grid` 48 조합 × Top 50 / Top 100 = 96 런 전원 ADR-0019 게이트 미통과. 최선 조합 (`force_close_at=15:20, stop=2.5%, take=5.0%`): Top 50 MDD -35.02% / Top 100 MDD -37.56%. D1 vs D2 거의 동급 — `stop=2.5%/take=5.0%` 가 본질 개선 벡터.
 
-**Step E 진입 (2026-05-01)** — 전략 교체. PR1~PR4 코드 산출물 완료: `VWAPMRStrategy`(PR2) · `GapReversalStrategy`(PR3) · `strategy/factory.py` + `--strategy-type {orb,vwap-mr,gap-reversal}` CLI 옵션(PR4 Stage 1). **PR4 Stage 2 완료**: `backtest/prev_close.py` 신설 — `DailyBarPrevCloseProvider` 로 `--strategy-type gap-reversal` 이 이제 실 동작 가능 (일봉 캐시 `data/stock_agent.db` 미백필 시 pykrx 네트워크 호출 발생 — 사전 백필 권장). `scripts/sensitivity.py` 에서 `--strategy-type gap-reversal + --workers >= 2` 조합은 pickle 제약으로 거부됨 (`--workers 1` 사용). 운영자 백테스트 실행(Stage 3) 및 결과 기반 ADR 작성(Stage 5)은 후속 단계. 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
+**Step E 진입 (2026-05-01)** — 전략 교체. PR1~PR4 코드 산출물 완료: `VWAPMRStrategy`(PR2) · `GapReversalStrategy`(PR3) · `strategy/factory.py` + `--strategy-type {orb,vwap-mr,gap-reversal}` CLI 옵션(PR4 Stage 1). **PR4 Stage 2 완료**: `backtest/prev_close.py` 신설 — `DailyBarPrevCloseProvider` 로 `--strategy-type gap-reversal` 이 이제 실 동작 가능 (일봉 캐시 `data/stock_agent.db` 미백필 시 pykrx 네트워크 호출 발생). **PR4 Stage 3 완료**: `scripts/backfill_daily_bars.py` 신설 — pykrx 일봉 캐시 일괄 백필 CLI. gap-reversal 백테스트 결정론 보장을 위한 사전 백필 도구 (Stage 3 선결 조건). `scripts/sensitivity.py` 에서 `--strategy-type gap-reversal + --workers >= 2` 조합은 pickle 제약으로 거부됨 (`--workers 1` 사용). 운영자 백테스트 실행(Stage 3) 및 결과 기반 ADR 작성(Stage 5)은 후속 단계. 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
 
 **Phase 3 착수 전제 통과** (2026-04-21). 실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK) 완료.
 
@@ -194,6 +194,7 @@ stock-agent/
     ├── backtest.py                 # 단일 런 백테스트 CLI
     ├── sensitivity.py              # 파라미터 민감도 그리드 CLI (--grid {default,step-d1,step-d2}, --resume 지정 시 조합 단위 incremental flush, freeze 내성)
     ├── backfill_minute_bars.py     # KIS 과거 분봉 캐시 일괄 적재 CLI
+    ├── backfill_daily_bars.py      # pykrx 일봉 캐시 일괄 백필 CLI (Step E Stage 3 선결 — gap-reversal 결정론 보장)
     ├── collect_spread_samples.py   # KIS 호가 스프레드 스냅샷 수집 CLI (Step B 인프라, JSONL 출력)
     ├── build_liquidity_ranking.py  # KOSPI 200 유동성 랭킹 산출 CLI (Step C 인프라, CSV 출력)
     └── build_universe_subset.py    # 유동성 랭킹 CSV → KOSPI 200 서브셋 YAML 생성 (Step C 보조)
@@ -262,6 +263,26 @@ cp .env.example .env
 #   KIS_LIVE_ACCOUNT_NO = 실전 계좌번호 (XXXXXXXX-XX) — paper 계좌번호와 다름
 #   # 실전 앱 발급 후 KIS Developers 포털 → 앱 관리 → 허용 IP 목록에 현재 공인 IP 등록 필수
 ```
+
+### 백테스트용 일봉 백필 (Step E Stage 3 선결)
+
+`--strategy-type gap-reversal` 백테스트는 `DailyBarPrevCloseProvider` 가 `data/stock_agent.db` 일봉 캐시를 조회한다. 미백필 상태이면 백테스트 중 pykrx 네트워크 호출이 반복되어 결정론이 깨진다. **운영자가 1회 선행 실행**해야 한다.
+
+```bash
+# Top 100 유니버스 전체 1년치 일봉 백필 (Top 50 은 부분집합이라 한 번에 처리됨)
+uv run python scripts/backfill_daily_bars.py \
+    --from 2025-04-01 --to 2026-04-21 \
+    --universe-yaml config/universe_top100.yaml
+
+# 특정 심볼만 백필
+uv run python scripts/backfill_daily_bars.py \
+    --from 2025-04-01 --to 2026-04-21 \
+    --symbols 005930 000660
+
+# exit code: 0 정상 / 1 일부 심볼 HistoricalDataError / 2 입력·설정 오류 / 3 I/O 오류
+```
+
+pykrx 1.2.7 이상은 `KRX_ID` / `KRX_PW` 환경변수가 필요하다 (`~/.config/stocker/.env` 에 기입).
 
 ### 백테스트용 분봉 백필
 

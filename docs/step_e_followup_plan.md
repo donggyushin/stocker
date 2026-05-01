@@ -24,7 +24,15 @@
 4. AI 가 ADR-0019 세 게이트 (MDD>-15% · 승률×손익비>1.0 · 샤프>0) 판정 + `docs/runbooks/step_e_<후보>_<날짜>.md` 작성.
 5. 결과에 따라 Stage 4 진입 (한 후보라도 PASS) 또는 Stage 5 폐기 ADR 직행 (둘 다 FAIL).
 
-**Stage 3 첫 명령** (운영자 실행):
+**Stage 3 사전 준비** (운영자, 1회):
+```bash
+# 일봉 캐시 백필 — gap-reversal 결정론 보장 선결 조건 (Stage 3 신규)
+uv run python scripts/backfill_daily_bars.py \
+  --from 2025-04-01 --to 2026-04-21 \
+  --universe-yaml config/universe_top100.yaml
+```
+
+**Stage 3 첫 명령** (운영자 실행, 일봉 백필 완료 후):
 ```bash
 uv run python scripts/backtest.py --loader=kis --from 2025-04-22 --to 2026-04-21 \
   --universe-yaml config/universe_top50.yaml --strategy-type vwap-mr \
@@ -174,7 +182,13 @@ uv run python scripts/backtest.py --loader=kis --from 2026-04-21 --to 2026-04-21
 
 **선결 조건 체크리스트 (AI 가 운영자에게 확인)**:
 
-1. `data/stock_agent.db` 1 년치 일봉 캐시 백필 — **gap-reversal 의 prev_close lookup 에 필수**. 미백필 시 pykrx 네트워크 호출 반복 발생. 부재 시 운영자에게 백필 절차 안내 (`HistoricalDataStore.fetch_daily_ohlcv` 가 호출되며 자동 백필되지만 결정론적 백테스트에 좋지 않음).
+1. `data/stock_agent.db` 1 년치 일봉 캐시 백필 — **gap-reversal 의 prev_close lookup 에 필수**. 미백필 시 pykrx 네트워크 호출 반복 발생 + 결정론 미보장. `scripts/backfill_daily_bars.py` (Stage 3 신규) 로 사전 백필:
+   ```bash
+   uv run python scripts/backfill_daily_bars.py \
+     --from 2025-04-01 --to 2026-04-21 \
+     --universe-yaml config/universe_top100.yaml
+   ```
+   (Top 50 은 Top 100 의 부분집합 — 한 번에 처리됨. pykrx 1.2.7+ 는 `KRX_ID`/`KRX_PW` env 필수.)
 2. `data/minute_bars.db` 1 년치 KIS 분봉 캐시 — `scripts/backfill_minute_bars.py` 로 사전 수집. 부재 시 백테스트 중 KIS API 호출 누적 + 레이트 리밋 위험. 권장 명령: `uv run python scripts/backfill_minute_bars.py --from 2025-04-22 --to 2026-04-21 --universe-yaml config/universe_top100.yaml`.
 3. `config/universe_top50.yaml` · `config/universe_top100.yaml` 존재 — 이미 git 추적 (커밋 781ec54).
 4. `config/holidays.yaml` 갱신 — 2025·2026 한국 휴장일 32 일 수록 (Step C 시점 기준). 추가 임시공휴일 발생 여부 운영자 확인.
