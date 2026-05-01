@@ -824,3 +824,391 @@ class TestParseArgsUniverseYaml:
         """--universe-yaml=/abs/path.yaml → isinstance(args.universe_yaml, Path) True."""
         args = _parse_args(self._BASE + ["--universe-yaml=/abs/path.yaml"])
         assert isinstance(args.universe_yaml, Path)
+
+
+# ---------------------------------------------------------------------------
+# 11. _parse_args — --strategy-type 옵션 (RED: 미구현)
+# ---------------------------------------------------------------------------
+
+
+class TestStrategyTypeFlag:
+    """--strategy-type argparse choices 검증 (RED).
+
+    scripts/backtest.py 가 --strategy-type 을 미구현한 상태에서
+    AttributeError(args.strategy_type) 또는 SystemExit(잘못된 값) 로 FAIL 한다.
+    """
+
+    _BASE = ["--csv-dir=/tmp/dummy", "--from=2023-01-01", "--to=2025-12-31"]
+
+    def test_기본값_orb(self):
+        """--strategy-type 미지정 → args.strategy_type == 'orb'."""
+        args = _parse_args(self._BASE)
+        # 미구현 시 AttributeError 로 FAIL
+        assert args.strategy_type == "orb"
+
+    def test_명시_vwap_mr(self):
+        """--strategy-type=vwap-mr → args.strategy_type == 'vwap-mr'."""
+        args = _parse_args(self._BASE + ["--strategy-type=vwap-mr"])
+        assert args.strategy_type == "vwap-mr"
+
+    def test_명시_gap_reversal(self):
+        """--strategy-type=gap-reversal → args.strategy_type == 'gap-reversal'."""
+        args = _parse_args(self._BASE + ["--strategy-type=gap-reversal"])
+        assert args.strategy_type == "gap-reversal"
+
+    def test_잘못된_값_SystemExit(self):
+        """--strategy-type=foobar → argparse choices 위반 → SystemExit(2)."""
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_args(self._BASE + ["--strategy-type=foobar"])
+        assert exc_info.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# 12. _run_pipeline — strategy_type 별 BacktestConfig.strategy_factory 라우팅
+#     (RED: 미구현)
+# ---------------------------------------------------------------------------
+
+
+class TestStrategyTypeRouting:
+    """_run_pipeline 이 strategy_type 에 따라 BacktestConfig.strategy_factory 를
+    적절히 채우는지 검증 (RED).
+
+    BacktestEngine 을 monkeypatch 로 교체해 생성자 인자(config)를 캡처한다.
+    외부 네트워크·KIS·DB·실파일 접촉 없음 — 모든 의존 monkeypatch 처리.
+    """
+
+    _BASE = ["--csv-dir=/tmp/dummy", "--from=2023-01-01", "--to=2025-12-31"]
+
+    def _setup(self, monkeypatch, tmp_path):
+        """공통 픽스처 설정 — captured['config'] 에 BacktestConfig 를 저장한다."""
+        from stock_agent.backtest import (
+            BacktestConfig,
+            BacktestMetrics,
+            BacktestResult,
+            InMemoryBarLoader,
+        )
+
+        captured: dict[str, BacktestConfig | None] = {"config": None}
+
+        dummy_metrics = BacktestMetrics(
+            total_return_pct=Decimal("0"),
+            max_drawdown_pct=Decimal("0"),
+            sharpe_ratio=Decimal("0"),
+            win_rate=Decimal("0"),
+            avg_pnl_ratio=Decimal("0"),
+            trades_per_day=Decimal("0"),
+            net_pnl_krw=0,
+        )
+        dummy_result = BacktestResult(
+            trades=(),
+            daily_equity=(),
+            metrics=dummy_metrics,
+            rejected_counts={},
+            post_slippage_rejections=0,
+        )
+        dummy_loader = InMemoryBarLoader([])
+
+        class _FakeEngine:
+            def __init__(self, config: BacktestConfig) -> None:
+                captured["config"] = config
+
+            def run(self, _bars):
+                return dummy_result
+
+        monkeypatch.setattr(backtest_cli, "BacktestEngine", _FakeEngine)
+        monkeypatch.setattr(backtest_cli, "_build_loader", lambda _args: dummy_loader)
+        monkeypatch.setattr(backtest_cli, "_resolve_symbols", lambda *a, **kw: ("005930",))
+        # output 파일이 tmp_path 에 생성되도록 작업 디렉토리 변경
+        monkeypatch.chdir(tmp_path)
+        return captured
+
+    def test_orb_분기_strategy_factory_미주입(self, monkeypatch, tmp_path):
+        """--strategy-type=orb → BacktestConfig.strategy_factory is None.
+
+        orb 분기는 기존 BacktestEngine 기본 경로를 그대로 사용해야 한다
+        (회귀 0 보장 조건).
+        """
+        captured = self._setup(monkeypatch, tmp_path)
+        args = _parse_args(self._BASE + ["--strategy-type=orb"])
+        backtest_cli._run_pipeline(args)
+        config = captured["config"]
+        assert config is not None, "_FakeEngine.__init__ 가 호출되어야 함"
+        assert config.strategy_factory is None
+
+    def test_vwap_mr_분기_strategy_factory_callable(self, monkeypatch, tmp_path):
+        """--strategy-type=vwap-mr → BacktestConfig.strategy_factory 가 callable."""
+        captured = self._setup(monkeypatch, tmp_path)
+        args = _parse_args(self._BASE + ["--strategy-type=vwap-mr"])
+        backtest_cli._run_pipeline(args)
+        config = captured["config"]
+        assert config is not None
+        assert callable(config.strategy_factory), "strategy_factory 가 callable 이어야 함"
+
+    def test_vwap_mr_분기_factory_호출_결과_VWAPMRStrategy(self, monkeypatch, tmp_path):
+        """--strategy-type=vwap-mr → strategy_factory() 결과가 VWAPMRStrategy 인스턴스."""
+        from stock_agent.strategy.vwap_mr import VWAPMRStrategy
+
+        captured = self._setup(monkeypatch, tmp_path)
+        args = _parse_args(self._BASE + ["--strategy-type=vwap-mr"])
+        backtest_cli._run_pipeline(args)
+        config = captured["config"]
+        assert config is not None and callable(config.strategy_factory)
+        instance = config.strategy_factory()
+        assert isinstance(instance, VWAPMRStrategy)
+
+    def test_gap_reversal_분기_strategy_factory_callable(self, monkeypatch, tmp_path):
+        """--strategy-type=gap-reversal → BacktestConfig.strategy_factory 가 callable."""
+        captured = self._setup(monkeypatch, tmp_path)
+        args = _parse_args(self._BASE + ["--strategy-type=gap-reversal"])
+        backtest_cli._run_pipeline(args)
+        config = captured["config"]
+        assert config is not None
+        assert callable(config.strategy_factory), "strategy_factory 가 callable 이어야 함"
+
+    def test_gap_reversal_분기_factory_호출_결과_GapReversalStrategy(self, monkeypatch, tmp_path):
+        """--strategy-type=gap-reversal → strategy_factory() 결과가 GapReversalStrategy."""
+        from stock_agent.strategy.gap_reversal import GapReversalStrategy
+
+        captured = self._setup(monkeypatch, tmp_path)
+        args = _parse_args(self._BASE + ["--strategy-type=gap-reversal"])
+        backtest_cli._run_pipeline(args)
+        config = captured["config"]
+        assert config is not None and callable(config.strategy_factory)
+        instance = config.strategy_factory()
+        assert isinstance(instance, GapReversalStrategy)
+
+
+# ---------------------------------------------------------------------------
+# 14. _run_pipeline — gap-reversal DailyBarPrevCloseProvider 주입 (RED: Stage 2 미구현)
+# ---------------------------------------------------------------------------
+
+
+class TestGapReversalPrevCloseProviderInjection:
+    """--strategy-type=gap-reversal → DailyBarPrevCloseProvider 주입 + 라이프사이클.
+
+    Stage 2 구현 대상:
+    - scripts/backtest.py 의 _build_backtest_config (또는 _run_pipeline) 이
+      gap-reversal 분기에서 DailyBarPrevCloseProvider 를 인스턴스화하고
+      build_strategy_factory(prev_close_provider=...) 에 주입.
+    - provider.close() 가 try/finally 로 보장되어야 한다.
+    - orb / vwap-mr 분기는 provider 미주입 (회귀 0).
+
+    RED 기대:
+    - backtest_cli 모듈에 HistoricalDataStore / YamlBusinessDayCalendar /
+      DailyBarPrevCloseProvider 가 import 되지 않은 상태이므로
+      monkeypatch.setattr 시 AttributeError 또는 라우팅 미구현으로 FAIL.
+    """
+
+    _BASE = ["--csv-dir=/tmp/dummy", "--from=2023-01-01", "--to=2025-12-31"]
+
+    def _setup(self, monkeypatch, tmp_path):
+        """공통 픽스처 설정.
+
+        captured 딕셔너리:
+        - "factory_kwargs": build_strategy_factory 에 전달된 kwargs (spy 캡처)
+        - "store_close_count": _FakeStore.close() 호출 횟수
+        """
+        from stock_agent.backtest import (
+            BacktestConfig,
+            BacktestMetrics,
+            BacktestResult,
+            InMemoryBarLoader,
+        )
+        from stock_agent.strategy.factory import build_strategy_factory as _real_factory
+
+        # store_close_count 는 list[int] 로 추적 — dict[str, object] 의 object 타입
+        # 추론을 피해 pyright >= 연산자 에러를 해소한다.
+        factory_kwargs_box: list[dict | None] = [None]
+        store_close_calls: list[int] = []
+
+        captured: dict[str, object] = {
+            "factory_kwargs": None,
+        }
+
+        dummy_metrics = BacktestMetrics(
+            total_return_pct=Decimal("0"),
+            max_drawdown_pct=Decimal("0"),
+            sharpe_ratio=Decimal("0"),
+            win_rate=Decimal("0"),
+            avg_pnl_ratio=Decimal("0"),
+            trades_per_day=Decimal("0"),
+            net_pnl_krw=0,
+        )
+        dummy_result = BacktestResult(
+            trades=(),
+            daily_equity=(),
+            metrics=dummy_metrics,
+            rejected_counts={},
+            post_slippage_rejections=0,
+        )
+        dummy_loader = InMemoryBarLoader([])
+
+        # HistoricalDataStore fake — close() 호출 카운트 추적
+        class _FakeStore:
+            def __init__(self, *a, **kw) -> None:
+                pass
+
+            def close(self) -> None:
+                store_close_calls.append(1)
+
+            def fetch_daily_ohlcv(self, *a, **kw):
+                return []
+
+        # YamlBusinessDayCalendar fake
+        class _FakeCalendar:
+            def __init__(self, *a, **kw) -> None:
+                pass
+
+            def is_business_day(self, d) -> bool:
+                return False
+
+        # build_strategy_factory spy — 실제 팩토리에 위임하되 kwargs 캡처
+        def _spy_factory(*args, **kwargs):
+            captured["factory_kwargs"] = kwargs
+            factory_kwargs_box[0] = kwargs
+            return _real_factory(*args, **kwargs)
+
+        # BacktestEngine fake
+        class _FakeEngine:
+            def __init__(self, config: BacktestConfig) -> None:
+                pass
+
+            def run(self, _bars):
+                return dummy_result
+
+        monkeypatch.setattr(backtest_cli, "BacktestEngine", _FakeEngine)
+        monkeypatch.setattr(backtest_cli, "_build_loader", lambda _args: dummy_loader)
+        monkeypatch.setattr(backtest_cli, "_resolve_symbols", lambda *a, **kw: ("005930",))
+        # Stage 2 미구현 상태: HistoricalDataStore / YamlBusinessDayCalendar /
+        # DailyBarPrevCloseProvider 가 backtest_cli 에 없으면 아래 setattr 에서
+        # AttributeError 가 발생해 RED 확인 가능.
+        monkeypatch.setattr(backtest_cli, "HistoricalDataStore", _FakeStore, raising=False)
+        monkeypatch.setattr(backtest_cli, "YamlBusinessDayCalendar", _FakeCalendar, raising=False)
+        monkeypatch.setattr(backtest_cli, "build_strategy_factory", _spy_factory)
+
+        monkeypatch.chdir(tmp_path)
+        # store_close_calls 는 list[int] — pyright 가 ">=" 비교 시 object 로 추론하는
+        # dict[str, object] 패턴을 피하기 위해 별도 반환한다.
+        return captured, store_close_calls
+
+    def test_gap_reversal_prev_close_provider_주입(self, monkeypatch, tmp_path):
+        """--strategy-type=gap-reversal → build_strategy_factory 호출 시
+        prev_close_provider 가 DailyBarPrevCloseProvider 인스턴스여야 한다.
+
+        RED 기대: factory_kwargs 가 None (라우팅 미구현) 또는
+        prev_close_provider 가 DailyBarPrevCloseProvider 가 아님 (stub 폴백).
+        """
+        from stock_agent.backtest.prev_close import DailyBarPrevCloseProvider
+
+        captured, _close_calls = self._setup(monkeypatch, tmp_path)
+        args = _parse_args(self._BASE + ["--strategy-type=gap-reversal"])
+        backtest_cli._run_pipeline(args)
+
+        kwargs = captured["factory_kwargs"]
+        assert kwargs is not None, (
+            "build_strategy_factory 가 호출되지 않음 — gap-reversal 분기에서 "
+            "build_strategy_factory 호출이 필요하다"
+        )
+        provider = kwargs.get("prev_close_provider")  # type: ignore[union-attr]
+        assert isinstance(provider, DailyBarPrevCloseProvider), (
+            f"prev_close_provider 가 DailyBarPrevCloseProvider 인스턴스여야 하나 "
+            f"{type(provider)!r}. Stage 2: _run_pipeline 이 provider 를 생성 후 주입해야 한다."
+        )
+
+    def test_gap_reversal_provider_close_after_run(self, monkeypatch, tmp_path):
+        """engine.run 정상 완료 후 provider.close() 가 호출되어야 한다.
+
+        DailyBarPrevCloseProvider.close() 는 HistoricalDataStore.close() 로
+        위임하므로, _FakeStore.close() 호출 횟수로 검증.
+
+        RED 기대: store_close_calls 가 빈 리스트 (provider 미생성 또는 close 미호출).
+        """
+        _captured, store_close_calls = self._setup(monkeypatch, tmp_path)
+        args = _parse_args(self._BASE + ["--strategy-type=gap-reversal"])
+        backtest_cli._run_pipeline(args)
+        assert len(store_close_calls) >= 1, (
+            "provider.close() (→ HistoricalDataStore.close()) 가 호출되어야 한다. "
+            "Stage 2: try/finally 로 provider.close() 보장 필요."
+        )
+
+    def test_gap_reversal_engine_raises_provider_close_여전히_호출(self, monkeypatch, tmp_path):
+        """engine.run 이 RuntimeError 를 raise 해도 finally 로 provider.close() 가
+        호출되어야 한다.
+
+        RED 기대: store_close_calls 가 빈 리스트 또는 RuntimeError 가 전파되지 않음.
+        """
+        from stock_agent.backtest import BacktestConfig
+
+        _captured, store_close_calls = self._setup(monkeypatch, tmp_path)
+
+        # BacktestEngine.run 이 RuntimeError 를 일으키는 새 fake 로 재패치
+        class _ErrorEngine:
+            def __init__(self, config: BacktestConfig) -> None:
+                pass
+
+            def run(self, _bars):
+                raise RuntimeError("테스트용 엔진 오류")
+
+        monkeypatch.setattr(backtest_cli, "BacktestEngine", _ErrorEngine)
+
+        args = _parse_args(self._BASE + ["--strategy-type=gap-reversal"])
+        with pytest.raises(RuntimeError, match="테스트용 엔진 오류"):
+            backtest_cli._run_pipeline(args)
+
+        msg = "engine.run 예외 시에도 provider.close() 가 finally 로 호출되어야 한다."
+        assert len(store_close_calls) >= 1, msg
+
+    def test_orb_분기_provider_미주입(self, monkeypatch, tmp_path):
+        """--strategy-type=orb → factory_kwargs 없음 또는 prev_close_provider 키 없음.
+
+        orb 분기는 build_strategy_factory 를 호출하지 않거나,
+        호출하더라도 prev_close_provider 를 주입하지 않아야 한다 (회귀 0).
+        """
+        captured, _close_calls = self._setup(monkeypatch, tmp_path)
+        args = _parse_args(self._BASE + ["--strategy-type=orb"])
+        backtest_cli._run_pipeline(args)
+
+        kwargs = captured["factory_kwargs"]
+        # orb 분기는 build_strategy_factory 를 호출하지 않음 (None 유지)
+        # 또는 호출해도 prev_close_provider=None
+        if kwargs is not None:
+            provider = kwargs.get("prev_close_provider")  # type: ignore[union-attr]
+            msg = f"orb 분기에서 prev_close_provider 가 주입되면 안 됨: {provider!r}"
+            assert provider is None, msg
+
+    def test_vwap_mr_분기_provider_미주입(self, monkeypatch, tmp_path):
+        """--strategy-type=vwap-mr → build_strategy_factory 호출되지만
+        prev_close_provider 가 주입되지 않아야 한다 (회귀 0).
+        """
+        from stock_agent.backtest.prev_close import DailyBarPrevCloseProvider
+
+        captured, _close_calls = self._setup(monkeypatch, tmp_path)
+        args = _parse_args(self._BASE + ["--strategy-type=vwap-mr"])
+        backtest_cli._run_pipeline(args)
+
+        kwargs = captured["factory_kwargs"]
+        if kwargs is not None:
+            provider = kwargs.get("prev_close_provider")  # type: ignore[union-attr]
+            msg = f"vwap-mr 분기에서 DailyBarPrevCloseProvider 가 주입되면 안 됨: {provider!r}"
+            assert not isinstance(provider, DailyBarPrevCloseProvider), msg
+
+
+class TestStrategyTypeMainExitCode:
+    """main() 이 --strategy-type 지정 시에도 exit 0 을 반환하는지 검증 (RED).
+
+    _run_pipeline 을 monkeypatch 로 대체해 exit code 경로만 확인한다.
+    """
+
+    _BASE = ["--csv-dir=/tmp/dummy", "--from=2023-01-01", "--to=2025-12-31"]
+
+    def test_vwap_mr_정상_종료_exit_0(self, monkeypatch):
+        """--strategy-type=vwap-mr → main() exit 0."""
+        monkeypatch.setattr(backtest_cli, "_run_pipeline", lambda _: None)
+        result = main(self._BASE + ["--strategy-type=vwap-mr"])
+        assert result == 0
+
+    def test_gap_reversal_정상_종료_exit_0(self, monkeypatch):
+        """--strategy-type=gap-reversal → main() exit 0."""
+        monkeypatch.setattr(backtest_cli, "_run_pipeline", lambda _: None)
+        result = main(self._BASE + ["--strategy-type=gap-reversal"])
+        assert result == 0

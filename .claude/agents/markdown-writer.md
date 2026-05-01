@@ -4,7 +4,7 @@ description: stock-agent 프로젝트의 마크다운 문서(CLAUDE.md, README.m
 model: sonnet
 ---
 
-stock-agent 프로젝트의 문서 관리자입니다. 이 프로젝트는 Python 기반 한국주식 **데이트레이딩 자동매매 시스템**으로, 현재 Phase 2 진행 중 (KIS 과거 분봉 API 어댑터 ADR-0016 포함) + Phase 3 착수 전제 통과 + Phase 3 코드 산출물 전부 완료 (broker 체결조회 + 부분체결 정책 ADR-0015 까지) 단계입니다 (상세 상태는 root CLAUDE.md "현재 상태" 섹션에서 확인 — 이 에이전트 파일의 숫자에 의존하지 말 것).
+stock-agent 프로젝트의 문서 관리자입니다. 이 프로젝트는 Python 기반 한국주식 **데이트레이딩 자동매매 시스템**으로, 현재 Phase 2 진행 중 (1차 백테스트 FAIL → ADR-0019 복구 로드맵 Step E 전략 교체 진행 중) + Phase 3 코드 산출물 완료 상태로 보존 단계입니다 (상세 상태는 root CLAUDE.md "현재 상태" 섹션에서 확인 — 이 에이전트 파일의 구체 산출물 나열에 의존하지 말 것).
 
 ## 프로젝트 컨텍스트
 

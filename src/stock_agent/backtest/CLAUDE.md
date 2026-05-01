@@ -16,7 +16,8 @@ stock-agent 의 시뮬레이션 경계 모듈. `ORBStrategy` + `RiskManager` 를
 `render_markdown_table`, `write_csv`, `default_grid`, `step_d1_grid`,
 `append_sensitivity_row`, `load_completed_combos`,
 `WalkForwardWindow`, `WalkForwardResult`, `WalkForwardMetrics`,
-`generate_windows`, `run_walk_forward`
+`generate_windows`, `run_walk_forward`,
+`DailyBarPrevCloseProvider`
 
 `RejectReason` 은 `stock_agent.risk` 의 Literal 을 재노출. `BacktestResult.rejected_counts` 의 키 타입이라 같은 패키지에서 접근 가능해야 소비자가 `risk` 패키지를 직접 import 하지 않는다.
 
@@ -216,6 +217,34 @@ uv run python scripts/sensitivity.py \
 
 `--grid {default,step-d1,step-d2}` — 기본값 `default` (32 조합). `step-d1` 선택 시 `step_d1_grid()` (48 조합), `step-d2` 선택 시 `step_d2_grid()` (48 조합). 잘못된 값은 argparse `choices` 위반 → exit 2. `--symbols` 미지정 시 `load_kospi200_universe()` 전체 사용. `--loader=csv` 사용 시 `--csv-dir` 필수. `--resume` 첫 실행 시 파일 미존재 → 경고 없이 전체 실행 (투명). plan.md PASS 기준(낙폭 절대값 15% 미만 = `MDD > -15%`) 판정은 이 스크립트 범위 밖 — 운영자가 출력 테이블을 육안 검토해 결정.
 
+`--strategy-type {orb,vwap-mr,gap-reversal}` (Step E PR4, default=`orb`): `orb` 는 `BacktestConfig(strategy_factory=None)` — 회귀 0. 그 외는 `build_strategy_factory(strategy_type)` 주입.
+
+**호환성 한계 1 (그리드)**: `vwap-mr`·`gap-reversal` 은 Stage 4 에서 전용 그리드(`step-e-vwap-mr`/`step-e-gap-reversal`) 도입 전까지 기존 `default`·`step-d1`·`step-d2` 그리드와 결합 불가 — `strategy_config` 와 `strategy_factory` 동시 세팅 → `BacktestConfig` mutually exclusive 위반 → `RuntimeError` exit 2.
+
+**호환성 한계 2 (병렬, Stage 2 신설)**: `gap-reversal` + `--workers >= 2` → `RuntimeError` exit 2. `DailyBarPrevCloseProvider` 내부의 `HistoricalDataStore(sqlite3.Connection)` 는 pickle 불가하여 ProcessPool 워커에 전달할 수 없다. `vwap-mr`·`orb` 의 직렬·병렬은 회귀 없음.
+
+올바른 사용:
+
+```bash
+# ORB 전략 + 기존 그리드 (정상)
+uv run python scripts/sensitivity.py --loader=kis --from 2025-04-22 --to 2026-04-21 \
+  --strategy-type orb --grid step-d1 --workers 8 \
+  --output-markdown data/sensitivity_d1.md --output-csv data/sensitivity_d1.csv
+
+# VWAP MR 전략 — 전용 그리드 없는 단독 실행 (Stage 4 전까지 그리드 미지정)
+uv run python scripts/sensitivity.py --loader=kis --from 2025-04-22 --to 2026-04-21 \
+  --strategy-type vwap-mr \
+  --output-markdown data/sensitivity_vwap_mr.md --output-csv data/sensitivity_vwap_mr.csv
+
+# Gap Reversal 전략 — 직렬 전용 (--workers=1 또는 생략, Stage 2 이후 실 동작)
+uv run python scripts/sensitivity.py --loader=kis --from 2025-04-22 --to 2026-04-21 \
+  --strategy-type gap-reversal --workers 1 \
+  --output-markdown data/sensitivity_gap_reversal.md \
+  --output-csv data/sensitivity_gap_reversal.csv
+```
+
+관련 테스트: `tests/test_sensitivity_cli.py` (기존 + Step E PR4 `TestStrategyTypeFlag` 4 + `TestStrategyTypeBaseConfigRouting` 6 + Stage 2 `TestGapReversalPrevCloseProviderInjection` 8 신규 포함).
+
 exit code 규약: `0` 정상 / `2` 입력·설정 오류 (`MinuteCsvLoadError`, `RuntimeError`) / `3` I/O 오류 (`OSError`). 그 외 예외는 버그로 간주해 Python 기본 traceback 으로 전파. generic `except Exception` 폐기 — `_run_pipeline(args)` 로 파이프라인 분리 후 `main()` 은 예외 매핑만 담당.
 
 ## 설계 원칙
@@ -239,7 +268,7 @@ exit code 규약: `0` 정상 / `2` 입력·설정 오류 (`MinuteCsvLoadError`, 
 - **`scripts/sensitivity.py`** (완료 2026-04-20): `MinuteCsvBarLoader` + `default_grid()` + `run_sensitivity` 조합으로 32 조합 실행 → Markdown·CSV 리포트. 사용법은 위 `sensitivity.py` 섹션의 CLI 블록 참조.
 - **`scripts/backtest.py`** (완료 2026-04-20): `MinuteCsvBarLoader` + `BacktestEngine` 1회 실행 → Markdown 리포트·메트릭 CSV·체결 CSV 3종 산출. 공개 인자: `--csv-dir` (required), `--from`/`--to` (required, `date.fromisoformat`), `--symbols` (default 유니버스 전체), `--starting-capital` (default 1,000,000), `--output-markdown`/`--output-csv`/`--output-trades-csv`. PASS 판정: `max_drawdown_pct > Decimal("-0.15")` (낙폭 절대값 15% 미만) 이면 리포트에 PASS 라벨 기록, 아니면 FAIL. 경계 `-0.15` 정확값은 FAIL(strict greater). **exit code 에는 반영 안 함** — 운영자 수동 검토 보존, CI 자동 pass/fail 금지. exit code 규약: `0` 정상 / `2` `MinuteCsvLoadError`·`UniverseLoadError`·`RuntimeError` / `3` `OSError` (sensitivity.py 규약에 `UniverseLoadError` 추가). 외부 네트워크·KIS 접촉 0, 의존성 추가 0.
 
-  ```
+  ```bash
   uv run python scripts/backtest.py \
     --csv-dir data/minute_csv \
     --from 2023-01-01 --to 2025-12-31 \
@@ -249,7 +278,76 @@ exit code 규약: `0` 정상 / `2` 입력·설정 오류 (`MinuteCsvLoadError`, 
     --output-trades-csv data/backtest_trades.csv
   ```
 
-  plan.md PASS 기준 충족은 2~3년 실데이터 CSV 확보 이후 운영자가 수동 확인한다. 관련 테스트: `tests/test_backtest_cli.py` 65건.
+  `--strategy-type {orb,vwap-mr,gap-reversal}` (Step E PR4, default=`orb`): `orb` 는 `BacktestConfig(strategy_factory=None)` 경로 — 회귀 0. 그 외는 `build_strategy_factory(strategy_type)` 를 `BacktestConfig.strategy_factory` 에 주입.
+
+  ```bash
+  # VWAP mean-reversion 전략으로 단일 런 백테스트 (Step E 후보 평가)
+  uv run python scripts/backtest.py \
+    --loader=kis \
+    --from 2025-04-22 --to 2026-04-21 \
+    --starting-capital 1000000 \
+    --strategy-type vwap-mr \
+    --output-markdown data/backtest_vwap_mr.md
+  ```
+
+  **주의**: `gap-reversal` 전략은 Stage 2 완료 전까지 `prev_close_provider` stub(항상 None) 으로 동작하므로 진입 신호 0 — 유효한 백테스트 결과를 얻으려면 Stage 2 통합 후 실행.
+
+  plan.md PASS 기준 충족은 2~3년 실데이터 CSV 확보 이후 운영자가 수동 확인한다. 관련 테스트: `tests/test_backtest_cli.py` (65건 + Step E PR4 `TestStrategyTypeFlag` 4 + `TestStrategyTypeRouting` 5 + `TestStrategyTypeMainExitCode` 2 = **76건**).
+
+### `prev_close.py` — 전일 종가 제공자 (Step E Stage 2)
+
+`GapReversalStrategy.PrevCloseProvider` 시그니처(`Callable[[str, date], Decimal | None]`)를 만족하는 구현체.
+`scripts/backtest.py`·`scripts/sensitivity.py` 의 `--strategy-type=gap-reversal` 경로에서 생성자 주입으로 사용한다.
+
+#### `DailyBarPrevCloseProvider`
+
+```python
+class DailyBarPrevCloseProvider:
+    def __init__(
+        self,
+        daily_store: HistoricalDataStore,
+        calendar: BusinessDayCalendar,
+        *,
+        max_lookback_days: int = 14,
+    ) -> None: ...
+
+    def __call__(self, symbol: str, session_date: date) -> Decimal | None: ...
+    def close(self) -> None: ...          # daily_store.close() 위임
+    def __enter__(self) -> "DailyBarPrevCloseProvider": ...
+    def __exit__(self, *exc: object) -> None: ...
+```
+
+**동작**:
+1. `session_date - 1일` 부터 역방향으로 `calendar.is_business_day(d)` 가 True 인 첫 날짜를 탐색.
+2. 해당 날짜의 `daily_store.fetch_daily_ohlcv(symbol, d, d)` 를 호출해 `DailyBar.close` 반환.
+3. 결과 없거나 `max_lookback_days` 초과 시 `None` + `logger.warning`.
+
+**입력 가드 (생성자)**: symbol `^\d{6}$` (호출 시 검증), `max_lookback_days > 0` (위반 시 `RuntimeError`).
+
+**단일 책임**: 이 모듈은 `GapReversalStrategy.PrevCloseProvider` 계약을 만족시키는 것만 담당한다.
+`daily_store` 의 생성·닫기는 호출자(script `_run_pipeline`) 가 `try/finally` 로 관리한다.
+
+**운영 권장**: `data/stock_agent.db` 일봉 캐시가 충분히 백필되어 있어야 한다. 미백필 상태이면 `fetch_daily_ohlcv` 가 pykrx 네트워크를 호출한다 — 장외 시간·VPN 환경에서 지연 발생 가능.
+
+**ProcessPool 비호환**: `sqlite3.Connection` 은 pickle 불가하므로 `scripts/sensitivity.py` 에서 `--strategy-type=gap-reversal` + `--workers >= 2` 조합은 `RuntimeError` (exit 2) 로 거부된다. 올바른 사용:
+
+```bash
+# gap-reversal 단일 런 백테스트 (Stage 2 이후 실 동작)
+uv run python scripts/backtest.py \
+  --loader=kis --from 2025-04-22 --to 2026-04-21 \
+  --strategy-type gap-reversal \
+  --starting-capital 1000000 \
+  --output-markdown data/backtest_gap_reversal.md
+
+# gap-reversal 민감도 — 직렬 전용 (--workers=1 또는 생략)
+uv run python scripts/sensitivity.py \
+  --loader=kis --from 2025-04-22 --to 2026-04-21 \
+  --strategy-type gap-reversal --workers 1 \
+  --output-markdown data/sensitivity_gap_reversal.md \
+  --output-csv data/sensitivity_gap_reversal.csv
+```
+
+관련 테스트: `tests/test_backtest_prev_close_provider.py` 18건 (정상 룩업·None 분기·입력 가드·라이프사이클·store 호출 검증), `tests/test_backtest_cli.py` `TestGapReversalPrevCloseProviderInjection` 5건, `tests/test_sensitivity_cli.py` `TestGapReversalPrevCloseProviderInjection` 8건.
 
 ### `walk_forward.py` — walk-forward validation 스켈레톤 (Issue #67)
 

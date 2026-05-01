@@ -58,15 +58,19 @@ from stock_agent.backtest import (
     write_csv,
 )
 from stock_agent.backtest.loader import BarLoader
+from stock_agent.backtest.prev_close import DailyBarPrevCloseProvider
 from stock_agent.config import get_settings
 from stock_agent.data import (
+    HistoricalDataStore,
     KisMinuteBarLoader,
     KisMinuteBarLoadError,
     MinuteCsvBarLoader,
     MinuteCsvLoadError,
     UniverseLoadError,
+    YamlBusinessDayCalendar,
     load_kospi200_universe,
 )
+from stock_agent.strategy.factory import STRATEGY_CHOICES, build_strategy_factory
 
 # exit code 규약: 2 = 입력·설정 오류 (재시도 무의미), 3 = I/O 오류 (재시도 가치 있음).
 _EXIT_INPUT_ERROR = 2
@@ -143,6 +147,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="시작 자본 (KRW).",
     )
     parser.add_argument(
+        "--strategy-type",
+        type=str,
+        default="orb",
+        choices=STRATEGY_CHOICES,
+        help=(
+            "전략 선택 (ADR-0019 Step E). orb=ORBStrategy(기본 그리드 호환), "
+            "vwap-mr=VWAPMRStrategy, gap-reversal=GapReversalStrategy. "
+            "vwap-mr/gap-reversal 은 base_config 에 strategy_factory 주입 — "
+            "Step E 후속 PR (Stage 4) 에서 vwap_mr/gap_reversal 그리드 추가 예정. "
+            "현재 default/step-d1/step-d2 그리드는 ORB 전용 strategy.* 축이라 "
+            "비-ORB 와 결합 시 mutually exclusive 위반으로 실패한다."
+        ),
+    )
+    parser.add_argument(
         "--output-markdown",
         type=Path,
         default=Path("data/sensitivity_report.md"),
@@ -206,6 +224,48 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.loader == "csv" and args.csv_dir is None:
         parser.error("--loader=csv 에는 --csv-dir 이 필요합니다.")
     return args
+
+
+def _build_base_config(
+    args: argparse.Namespace,
+    *,
+    prev_close_provider: DailyBarPrevCloseProvider | None = None,
+) -> BacktestConfig:
+    """`--strategy-type` 분기 — base `BacktestConfig` 생성.
+
+    `orb` 분기는 `strategy_factory` 미주입 (BacktestEngine ORBStrategy 디폴트
+    경로 — 회귀 0). 그 외 분기는 `build_strategy_factory(strategy_type)` 를
+    `strategy_factory` 로 주입. 매 조합 `_apply_combo` 호출 시 base 의
+    `strategy_factory` 는 `dataclasses.replace` 로 그대로 전파된다. `gap-reversal`
+    은 호출자가 `prev_close_provider` 를 함께 전달 (없으면 stub 폴백).
+
+    주의 (Stage 1~2 단계):
+    - default/step-d1/step-d2 그리드는 `strategy.*` 축이 있어 비-ORB 분기와
+      결합하면 `_apply_combo` 가 strategy_config 와 strategy_factory 를 동시
+      세팅 → mutually exclusive 위반. Stage 4 에서 step-e-* 그리드 도입 시 해소.
+    """
+    if args.strategy_type == "orb":
+        return BacktestConfig(starting_capital_krw=args.starting_capital)
+    return BacktestConfig(
+        starting_capital_krw=args.starting_capital,
+        strategy_factory=build_strategy_factory(
+            args.strategy_type,
+            prev_close_provider=prev_close_provider,
+        ),
+    )
+
+
+def _build_prev_close_provider() -> DailyBarPrevCloseProvider:
+    """`gap-reversal` 분기용 `DailyBarPrevCloseProvider` 인스턴스화.
+
+    `HistoricalDataStore` (기본 `data/stock_agent.db`) + `YamlBusinessDayCalendar`
+    (기본 `config/holidays.yaml`) 조합. 호출자가 `try/finally` 로
+    `provider.close()` 보장. **메인 프로세스 전용** — `HistoricalDataStore` 의
+    sqlite3 connection 은 pickle 불가하여 ProcessPool 워커 전달 불가.
+    """
+    daily_store = HistoricalDataStore()
+    calendar = YamlBusinessDayCalendar()
+    return DailyBarPrevCloseProvider(daily_store, calendar)
 
 
 def _select_grid(name: str):
@@ -306,7 +366,17 @@ def _run_pipeline(args: argparse.Namespace) -> None:
     """
     symbols = _resolve_symbols(args.symbols, args.universe_yaml)
     workers = _resolve_workers(args.workers)
-    base_config = BacktestConfig(starting_capital_krw=args.starting_capital)
+    if args.strategy_type == "gap-reversal" and workers >= 2:
+        raise RuntimeError(
+            "--strategy-type=gap-reversal 은 --workers >= 2 와 결합 불가 — "
+            "DailyBarPrevCloseProvider 의 HistoricalDataStore (sqlite3 connection) "
+            "는 pickle 불가하여 ProcessPool 워커에 전달할 수 없다. "
+            "직렬 경로(--workers=1) 로 실행하거나 다른 strategy-type 을 선택하라."
+        )
+    prev_close_provider: DailyBarPrevCloseProvider | None = None
+    if args.strategy_type == "gap-reversal":
+        prev_close_provider = _build_prev_close_provider()
+    base_config = _build_base_config(args, prev_close_provider=prev_close_provider)
     grid = _select_grid(args.grid)
 
     existing_rows: tuple[SensitivityRow, ...] = ()
@@ -334,74 +404,78 @@ def _run_pipeline(args: argparse.Namespace) -> None:
         w=workers,
     )
 
-    # output_csv 디렉터리 미리 생성 — incremental flush 가 첫 호출에서 디렉터리
-    # 부재로 실패하지 않도록 엔진 실행 전에 보장.
-    args.output_csv.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        # output_csv 디렉터리 미리 생성 — incremental flush 가 첫 호출에서 디렉터리
+        # 부재로 실패하지 않도록 엔진 실행 전에 보장.
+        args.output_csv.parent.mkdir(parents=True, exist_ok=True)
 
-    # `--resume` 지정 시에만 incremental flush 콜백 주입 (Issue #82).
-    on_row_callback: Callable[[SensitivityRow], None] | None = None
-    if args.resume is not None:
+        # `--resume` 지정 시에만 incremental flush 콜백 주입 (Issue #82).
+        on_row_callback: Callable[[SensitivityRow], None] | None = None
+        if args.resume is not None:
 
-        def _flush(row: SensitivityRow) -> None:
-            append_sensitivity_row(row, args.output_csv, grid)
+            def _flush(row: SensitivityRow) -> None:
+                append_sensitivity_row(row, args.output_csv, grid)
 
-        on_row_callback = _flush
+            on_row_callback = _flush
 
-    new_rows: tuple[SensitivityRow, ...] = ()
-    if remaining_combos:
-        if workers == 1:
-            loader = _build_loader(args)
-            try:
-                new_rows = run_sensitivity_combos(
-                    loader=loader,
+        new_rows: tuple[SensitivityRow, ...] = ()
+        if remaining_combos:
+            if workers == 1:
+                loader = _build_loader(args)
+                try:
+                    new_rows = run_sensitivity_combos(
+                        loader=loader,
+                        start=args.start,
+                        end=args.end,
+                        symbols=symbols,
+                        base_config=base_config,
+                        combos=remaining_combos,
+                        on_row=on_row_callback,
+                    )
+                finally:
+                    close = getattr(loader, "close", None)
+                    if callable(close):
+                        close()
+            else:
+                loader_factory = functools.partial(
+                    _build_loader_primitive,
+                    args.loader,
+                    args.csv_dir,
+                )
+                new_rows = run_sensitivity_combos_parallel(
+                    loader_factory=loader_factory,
                     start=args.start,
                     end=args.end,
                     symbols=symbols,
                     base_config=base_config,
                     combos=remaining_combos,
+                    max_workers=workers,
                     on_row=on_row_callback,
                 )
-            finally:
-                close = getattr(loader, "close", None)
-                if callable(close):
-                    close()
         else:
-            loader_factory = functools.partial(
-                _build_loader_primitive,
-                args.loader,
-                args.csv_dir,
-            )
-            new_rows = run_sensitivity_combos_parallel(
-                loader_factory=loader_factory,
-                start=args.start,
-                end=args.end,
-                symbols=symbols,
-                base_config=base_config,
-                combos=remaining_combos,
-                max_workers=workers,
-                on_row=on_row_callback,
-            )
-    else:
-        logger.info("sensitivity.skip_engine — 이미 완료된 조합으로 재렌더만 수행")
+            logger.info("sensitivity.skip_engine — 이미 완료된 조합으로 재렌더만 수행")
 
-    merged_rows = merge_sensitivity_rows(existing_rows, new_rows, grid)
+        merged_rows = merge_sensitivity_rows(existing_rows, new_rows, grid)
 
-    args.output_markdown.parent.mkdir(parents=True, exist_ok=True)
-    markdown = render_markdown_table(
-        merged_rows,
-        sort_by=args.sort_by,
-        descending=not args.ascending,
-    )
-    args.output_markdown.write_text(markdown, encoding="utf-8")
-    # 마지막 1회 fully render — incremental flush 의 최종본 (정렬·서식 일관성
-    # 보강). 동일 컨텐츠라도 멱등.
-    write_csv(merged_rows, args.output_csv)
-    logger.info(
-        "sensitivity.done rows={n} markdown={m} csv={c}",
-        n=len(merged_rows),
-        m=args.output_markdown,
-        c=args.output_csv,
-    )
+        args.output_markdown.parent.mkdir(parents=True, exist_ok=True)
+        markdown = render_markdown_table(
+            merged_rows,
+            sort_by=args.sort_by,
+            descending=not args.ascending,
+        )
+        args.output_markdown.write_text(markdown, encoding="utf-8")
+        # 마지막 1회 fully render — incremental flush 의 최종본 (정렬·서식 일관성
+        # 보강). 동일 컨텐츠라도 멱등.
+        write_csv(merged_rows, args.output_csv)
+        logger.info(
+            "sensitivity.done rows={n} markdown={m} csv={c}",
+            n=len(merged_rows),
+            m=args.output_markdown,
+            c=args.output_csv,
+        )
+    finally:
+        if prev_close_provider is not None:
+            prev_close_provider.close()
 
 
 def main(argv: list[str] | None = None) -> int:

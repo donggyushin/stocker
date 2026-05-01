@@ -78,7 +78,9 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **Step D1 FAIL (2026-05-01)** — OR 윈도 스터디. `step_d1_grid` 48 조합 × Top 50 / Top 100 = 96 런 전원 ADR-0019 게이트 미통과. 최선 조합: Top 50 MDD -37.18% / Top 100 MDD -35.98%. Step C 대비 MDD 소폭 개선이나 PASS 기준 -15% 까지 여전히 21~23%p 격차. 상세: `docs/runbooks/step_d1_or_window_2026-05-01.md`.
 
-**Step D2 FAIL (2026-05-01)** — force_close_at 스터디. `step_d2_grid` 48 조합 × Top 50 / Top 100 = 96 런 전원 ADR-0019 게이트 미통과. 최선 조합 (`force_close_at=15:20, stop=2.5%, take=5.0%`): Top 50 MDD -35.02% / Top 100 MDD -37.56%. D1 vs D2 거의 동급 — `stop=2.5%/take=5.0%` 가 본질 개선 벡터. **D3/D4/E 결정 대기.** 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
+**Step D2 FAIL (2026-05-01)** — force_close_at 스터디. `step_d2_grid` 48 조합 × Top 50 / Top 100 = 96 런 전원 ADR-0019 게이트 미통과. 최선 조합 (`force_close_at=15:20, stop=2.5%, take=5.0%`): Top 50 MDD -35.02% / Top 100 MDD -37.56%. D1 vs D2 거의 동급 — `stop=2.5%/take=5.0%` 가 본질 개선 벡터.
+
+**Step E 진입 (2026-05-01)** — 전략 교체. PR1~PR4 코드 산출물 완료: `VWAPMRStrategy`(PR2) · `GapReversalStrategy`(PR3) · `strategy/factory.py` + `--strategy-type {orb,vwap-mr,gap-reversal}` CLI 옵션(PR4 Stage 1). **PR4 Stage 2 완료**: `backtest/prev_close.py` 신설 — `DailyBarPrevCloseProvider` 로 `--strategy-type gap-reversal` 이 이제 실 동작 가능 (일봉 캐시 `data/stock_agent.db` 미백필 시 pykrx 네트워크 호출 발생 — 사전 백필 권장). `scripts/sensitivity.py` 에서 `--strategy-type gap-reversal + --workers >= 2` 조합은 pickle 제약으로 거부됨 (`--workers 1` 사용). 운영자 백테스트 실행(Stage 3) 및 결과 기반 ADR 작성(Stage 5)은 후속 단계. 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
 
 **Phase 3 착수 전제 통과** (2026-04-21). 실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK) 완료.
 
@@ -104,7 +106,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 ## 디렉토리 구조
 
-현재 존재하는 파일 (Phase 2 Step D2 백테스트 FAIL 기준):
+현재 존재하는 파일 (Phase 2 Step E PR4 Stage 2 완료 기준):
 
 ```text
 stock-agent/
@@ -138,9 +140,12 @@ stock-agent/
 │       ├── spread_samples.py  # KIS 호가 스프레드 스냅샷 수집기 (SpreadSampleCollector, Step B 인프라)
 │       └── CLAUDE.md          # 모듈 세부 문서
 │   ├── strategy/
-│   │   ├── __init__.py        # EntrySignal, ExitReason, ExitSignal, ORBStrategy, Signal, Strategy, StrategyConfig, StrategyError export
+│   │   ├── __init__.py        # EntrySignal, ExitReason, ExitSignal, GapReversalConfig, GapReversalStrategy, ORBStrategy, Signal, Strategy, StrategyConfig, StrategyError, VWAPMRConfig, VWAPMRStrategy export
 │   │   ├── base.py            # Strategy Protocol, EntrySignal/ExitSignal DTO, ExitReason Literal, KST 상수
 │   │   ├── orb.py             # ORBStrategy 상태 머신 + StrategyConfig (frozen dataclass)
+│   │   ├── vwap_mr.py         # VWAPMRStrategy + VWAPMRConfig (Step E PR2)
+│   │   ├── gap_reversal.py    # GapReversalStrategy + GapReversalConfig (Step E PR3)
+│   │   ├── factory.py         # build_strategy_factory + STRATEGY_CHOICES (Step E PR4)
 │   │   └── CLAUDE.md          # 모듈 세부 문서
 │   ├── risk/
 │   │   ├── __init__.py        # RiskManager, RiskConfig, RiskDecision, PositionRecord, RejectReason, RiskManagerError export
@@ -153,6 +158,7 @@ stock-agent/
 │   │   ├── metrics.py         # 총수익률·MDD·샤프·승률·평균손익비·일평균거래수
 │   │   ├── loader.py          # BarLoader Protocol + InMemoryBarLoader
 │   │   ├── sensitivity.py     # 파라미터 민감도 그리드
+│   │   ├── prev_close.py      # DailyBarPrevCloseProvider (Step E Stage 2 — GapReversalStrategy 전일 종가 주입)
 │   │   └── CLAUDE.md          # 모듈 세부 문서
 │   ├── execution/
 │   │   ├── __init__.py        # Executor, ExecutorConfig, OrderSubmitter, BalanceProvider, BarSource, LiveOrderSubmitter, LiveBalanceProvider, DryRunOrderSubmitter, StepReport, ReconcileReport, EntryEvent, ExitEvent, ExecutorError export (13종)

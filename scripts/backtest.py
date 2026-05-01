@@ -57,15 +57,19 @@ from stock_agent.backtest import (
     TradeRecord,
 )
 from stock_agent.backtest.loader import BarLoader
+from stock_agent.backtest.prev_close import DailyBarPrevCloseProvider
 from stock_agent.config import get_settings
 from stock_agent.data import (
+    HistoricalDataStore,
     KisMinuteBarLoader,
     KisMinuteBarLoadError,
     MinuteCsvBarLoader,
     MinuteCsvLoadError,
     UniverseLoadError,
+    YamlBusinessDayCalendar,
     load_kospi200_universe,
 )
+from stock_agent.strategy.factory import STRATEGY_CHOICES, build_strategy_factory
 
 # exit code 규약 (scripts/sensitivity.py 와 동일): 2 = 입력·설정 오류 (재시도
 # 무의미), 3 = I/O 오류 (재시도 가치 있음).
@@ -133,6 +137,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="시작 자본 (KRW).",
     )
     parser.add_argument(
+        "--strategy-type",
+        type=str,
+        default="orb",
+        choices=STRATEGY_CHOICES,
+        help=(
+            "전략 선택 (ADR-0019 Step E). orb=ORBStrategy(기본), "
+            "vwap-mr=VWAPMRStrategy, gap-reversal=GapReversalStrategy. "
+            "gap-reversal 은 Stage 2 prev_close_provider 통합 전까지 stub provider "
+            "폴백 — 진입 0 (회귀 안전망)."
+        ),
+    )
+    parser.add_argument(
         "--output-markdown",
         type=Path,
         default=Path("data/backtest_report.md"),
@@ -192,6 +208,41 @@ class _ReportContext:
     starting_capital_krw: int
 
 
+def _build_backtest_config(
+    args: argparse.Namespace,
+    *,
+    prev_close_provider: DailyBarPrevCloseProvider | None = None,
+) -> BacktestConfig:
+    """`--strategy-type` 분기 — `BacktestConfig` 생성.
+
+    `orb` 분기는 `strategy_factory` 미주입 (BacktestEngine 의 ORBStrategy 디폴트
+    경로 사용 — 회귀 0 보장). 그 외 분기는 `build_strategy_factory(strategy_type)`
+    를 주입해 매 세션 새 인스턴스를 보장한다. `gap-reversal` 은 `prev_close_provider`
+    를 함께 전달 (없으면 stub 폴백).
+    """
+    if args.strategy_type == "orb":
+        return BacktestConfig(starting_capital_krw=args.starting_capital)
+    return BacktestConfig(
+        starting_capital_krw=args.starting_capital,
+        strategy_factory=build_strategy_factory(
+            args.strategy_type,
+            prev_close_provider=prev_close_provider,
+        ),
+    )
+
+
+def _build_prev_close_provider() -> DailyBarPrevCloseProvider:
+    """`gap-reversal` 분기용 `DailyBarPrevCloseProvider` 인스턴스화.
+
+    `HistoricalDataStore` (기본 `data/stock_agent.db`) + `YamlBusinessDayCalendar`
+    (기본 `config/holidays.yaml`) 조합. 호출자가 `try/finally` 로
+    `provider.close()` 보장.
+    """
+    daily_store = HistoricalDataStore()
+    calendar = YamlBusinessDayCalendar()
+    return DailyBarPrevCloseProvider(daily_store, calendar)
+
+
 def _build_loader(args: argparse.Namespace) -> BarLoader:
     """`--loader` 분기로 `BarLoader` 구현체를 생성한다.
 
@@ -216,7 +267,10 @@ def _run_pipeline(args: argparse.Namespace) -> None:
     """
     symbols = _resolve_symbols(args.symbols, args.universe_yaml)
     loader = _build_loader(args)
-    config = BacktestConfig(starting_capital_krw=args.starting_capital)
+    prev_close_provider: DailyBarPrevCloseProvider | None = None
+    if args.strategy_type == "gap-reversal":
+        prev_close_provider = _build_prev_close_provider()
+    config = _build_backtest_config(args, prev_close_provider=prev_close_provider)
     engine = BacktestEngine(config)
 
     logger.info(
@@ -245,6 +299,8 @@ def _run_pipeline(args: argparse.Namespace) -> None:
         _write_metrics_csv(result.metrics, args.output_csv)
         _write_trades_csv(result.trades, args.output_trades_csv)
     finally:
+        if prev_close_provider is not None:
+            prev_close_provider.close()
         close = getattr(loader, "close", None)
         if callable(close):
             close()
