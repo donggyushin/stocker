@@ -21,6 +21,7 @@ YAML 로더, 실시간 분봉 소스를 한 자리에 모아 상위 레이어
 
 - **`historical.py`** — Phase 1 세 번째 산출물(축소판, v3)
   - 공개 API 1종: `fetch_daily_ohlcv(symbol, start, end)` + 보조 `close()` / 컨텍스트 매니저.
+  - **백필 CLI**: `scripts/backfill_daily_bars.py` (Step E Stage 3 선결) — universe 또는 `--symbols` 전체 심볼에 `fetch_daily_ohlcv` 를 1회씩 호출해 SQLite 캐시를 채운다. 캐시 적중 시 pykrx 재호출 생략 (idempotent). gap-reversal 백테스트 결정론 보장 목적.
   - 정규화 DTO: `DailyBar` (`@dataclass(frozen=True, slots=True)`, `Decimal` OHLC + `int` `volume` + `date` `trade_date`). 거래대금(`value`) 은 포함하지 않는다 — pykrx `get_market_ohlcv` 가 단일 종목 모드에서 거래대금을 돌려주지 않아, 0 으로 채우면 "데이터 없음" 과 "실제 0" 을 구별할 수 없는 무결성 위험이 있기 때문.
   - SQLite 단일 파일 캐시 (기본 `data/stock_agent.db`, 테스트는 `":memory:"` 또는 `tmp_path`).
     - 스키마 v3: `daily_bars(symbol, trade_date, open, high, low, close, volume)` + `schema_version`.

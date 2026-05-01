@@ -327,7 +327,7 @@ class DailyBarPrevCloseProvider:
 **단일 책임**: 이 모듈은 `GapReversalStrategy.PrevCloseProvider` 계약을 만족시키는 것만 담당한다.
 `daily_store` 의 생성·닫기는 호출자(script `_run_pipeline`) 가 `try/finally` 로 관리한다.
 
-**운영 권장**: `data/stock_agent.db` 일봉 캐시가 충분히 백필되어 있어야 한다. 미백필 상태이면 `fetch_daily_ohlcv` 가 pykrx 네트워크를 호출한다 — 장외 시간·VPN 환경에서 지연 발생 가능.
+**운영 권장**: `data/stock_agent.db` 일봉 캐시가 충분히 백필되어 있어야 한다. 미백필 상태이면 `fetch_daily_ohlcv` 가 pykrx 네트워크를 호출한다 — 장외 시간·VPN 환경에서 지연 발생 가능 + 결정론 미보장. **Step E Stage 3 신규**: `scripts/backfill_daily_bars.py` 로 백테스트 실행 전 1회 선행 백필을 권장한다 (exit code 0/1/2/3, idempotent).
 
 **ProcessPool 비호환**: `sqlite3.Connection` 은 pickle 불가하므로 `scripts/sensitivity.py` 에서 `--strategy-type=gap-reversal` + `--workers >= 2` 조합은 `RuntimeError` (exit 2) 로 거부된다. 올바른 사용:
 
