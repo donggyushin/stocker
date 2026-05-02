@@ -65,11 +65,14 @@ PR3 — F3 Cross-sectional 모멘텀 ✓ 완료 (2026-05-02, FAIL — 게이트 
   ├ ADR-0022 게이트 판정: MDD -7.70% PASS / Sharpe 0.9910 PASS / DCA 대비 알파 -36.96%p FAIL → 종합 FAIL
   └ 결과: 총수익률 +11.22% mark-to-market (시작 자본 2,000,000 KRW, 101종목, 2025-04-01 ~ 2026-04-21)
   ↓
-PR4 — F4 저변동성 (옵션, 보너스)
-  ├ src/stock_agent/strategy/low_volatility.py — LowVolStrategy
-  ├ tests/test_strategy_low_volatility.py
-  ├ scripts/backtest.py --strategy-type low-vol
-  ├ docs/runbooks/step_f_low_volatility_2026-MM-DD.md
+PR4 — F4 저변동성 ✓ 완료 (2026-05-02, FAIL — 게이트 2)
+  ├ src/stock_agent/strategy/low_volatility.py — LowVolStrategy, LowVolConfig
+  ├ src/stock_agent/backtest/low_volatility.py — LowVolBaselineConfig, compute_low_volatility_baseline
+  ├ tests/test_strategy_low_volatility.py (47건), tests/test_backtest_low_volatility.py (38건)
+  ├ scripts/backtest.py --strategy-type low-vol (--lookback-days / --rebalance-month-interval 신설)
+  ├ docs/runbooks/step_f_low_volatility_2026-05-02.md
+  ├ ADR-0022 게이트 판정: MDD -9.62% PASS / Sharpe 1.1713 PASS / DCA 대비 알파 -32.31%p FAIL → 종합 FAIL
+  └ 결과: 총수익률 +15.87% mark-to-market (시작 자본 2,000,000 KRW, 101종목, 2025-04-01 ~ 2026-04-21)
   ↓
 PR5 — F5 RSI 평균회귀 (옵션, 보너스)
   ├ src/stock_agent/strategy/rsi_mr.py — RSIMRStrategy
@@ -274,12 +277,12 @@ PR6 (종합 + ADR-0023)
 
 ## 다음 세션 시작 가이드
 
-1. 본 파일 읽기 → 현재 위치 파악 (`PR1 완료, PASS` 상태에서 시작).
-2. PR2 (F2 Golden Cross) 부터 RED-first TDD 사이클 시작:
-   - `tests/test_strategy_golden_cross.py` 작성 (unit-test-writer 위임)
+1. 본 파일 읽기 → 현재 위치 파악 (`PR4 완료, FAIL` 상태에서 시작).
+2. PR5 (F5 RSI 평균회귀) RED-first TDD 사이클 시작 (옵션, 보너스):
+   - `tests/test_strategy_rsi_mr.py` 작성 (unit-test-writer 위임)
    - FAIL 확인
-   - `src/stock_agent/strategy/golden_cross.py` 구현
+   - `src/stock_agent/strategy/rsi_mr.py` 구현
    - GREEN 확인
-   - `scripts/backtest.py --strategy-type golden-cross` 라우팅 추가
+   - `scripts/backtest.py --strategy-type rsi-mr` 라우팅 추가
    - 백테스트 실행 + runbook 작성 + ADR-0022 게이트 판정 (DCA baseline +51.50% 대비 알파 포함)
-3. PR2~PR5 병렬 진행 가능 (서로 의존 X). DCA baseline 비교 기준: **+51.50% mark-to-market** (2025-04-22 ~ 2026-04-21, 시작 자본 2,000,000 KRW, 069500).
+3. PR5 완료 후 또는 PR5 건너뛰고 PR6 (종합 판정 + ADR-0023) 진입 가능. DCA baseline 비교 기준: **+51.50% mark-to-market** (2025-04-22 ~ 2026-04-21, 시작 자본 2,000,000 KRW, 069500). 현재 Step F 결과: PR1 PASS · PR2 PASS (caveat) · PR3 FAIL · PR4 FAIL.

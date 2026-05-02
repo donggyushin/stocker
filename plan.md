@@ -534,6 +534,12 @@ ADR-0019 자체는 폐기 X — 일중 가정 평가 사이클 사실 기록 보
 
 주요 caveat: (1) 유니버스 부분집합 (199 종목 중 101 — 캐시 부족). (2) lookback 단축 (12개월 학술 표준 → 6개월). (3) 2025-04 ~ 2026-04 KOSPI 200 강세장 구간 — 인덱스 베타(+48.18%)가 cross-sectional 알파를 압도. (4) Strategy-backtest drift: entry skip 시 MomentumStrategy holdings 와 실 lot 불일치 — 후속 보강 필요.
 
+#### Step F PR4 — F4 Low Volatility 완료 — FAIL (2026-05-02)
+
+`src/stock_agent/strategy/low_volatility.py` (`LowVolStrategy`, `LowVolConfig`) + `src/stock_agent/backtest/low_volatility.py` (`LowVolBaselineConfig`, `compute_low_volatility_baseline`) + `scripts/backtest.py --strategy-type=low-vol` 라우팅 (`--lookback-days` (default 60) · `--rebalance-month-interval` (default 3) CLI 인자 신설). 테스트 114건 신규 (pytest 1941 → 2055 collected).
+
+결과: MDD -9.62% · Sharpe 1.1713 · 총수익률 +15.87% mark-to-market (시작 자본 2,000,000 KRW, KOSPI 200 캐시 101종목, 2025-04-01 ~ 2026-04-21, lookback_days=60, top-N 10, rebalance_month_interval=3). ADR-0022 게이트 1(MDD > -25%) PASS · 게이트 3(Sharpe > 0.3) PASS · 게이트 2(DCA 대비 알파 +15.87% - +48.18% = **-32.31%p**) **FAIL** → 종합 FAIL. 런북: `docs/runbooks/step_f_low_volatility_2026-05-02.md`.
+
 ---
 
 ## Phase 3 진행 요약 (2026-04-21 기준)

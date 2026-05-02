@@ -90,6 +90,8 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **Step F PR3 (F3 Cross-sectional 모멘텀) 완료 — FAIL (2026-05-02)**. KOSPI 200 캐시 101종목 대상 cross-sectional 모멘텀 전략 백테스트 (2025-04-01 ~ 2026-04-21, lookback 6개월, top-N 10). MDD -7.70% · 연환산 Sharpe 0.9910 · 총수익률 +11.22% mark-to-market. ADR-0022 게이트 1·3 PASS, 게이트 2(DCA 대비 알파 +11.22% - +48.18% = **-36.96%p**) FAIL → 종합 FAIL. 주요 caveat: 유니버스 부분집합(101/199) + lookback 단축(12개월 표준 → 6개월) + KOSPI 강세장 인덱스 베타 압도. 런북: `docs/runbooks/step_f_momentum_2026-05-02.md`.
 
+**Step F PR4 (F4 Low Volatility) 완료 — FAIL (2026-05-02)**. KOSPI 200 캐시 101종목 대상 저변동성 전략 백테스트 (2025-04-01 ~ 2026-04-21, lookback_days=60, top-N 10, rebalance_month_interval=3). MDD -9.62% · 연환산 Sharpe 1.1713 · 총수익률 +15.87% mark-to-market. ADR-0022 게이트 1·3 PASS, 게이트 2(DCA 대비 알파 +15.87% - +48.18% = **-32.31%p**) FAIL → 종합 FAIL. 런북: `docs/runbooks/step_f_low_volatility_2026-05-02.md`.
+
 **Phase 3 착수 전제 통과** (2026-04-21). 실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK) 완료.
 
 **Phase 3 첫 산출물 — Executor (코드·테스트 레벨) 완료** (2026-04-21). `execution/` 패키지 신설 — `Executor` + Protocol 3종(`OrderSubmitter`/`BalanceProvider`/`BarSource`) + 어댑터 3종(`LiveOrderSubmitter`/`LiveBalanceProvider`/`DryRunOrderSubmitter`) + `StepReport`/`ReconcileReport` DTO. pytest **605건 green**.
