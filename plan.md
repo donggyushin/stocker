@@ -540,6 +540,14 @@ ADR-0019 자체는 폐기 X — 일중 가정 평가 사이클 사실 기록 보
 
 결과: MDD -9.62% · Sharpe 1.1713 · 총수익률 +15.87% mark-to-market (시작 자본 2,000,000 KRW, KOSPI 200 캐시 101종목, 2025-04-01 ~ 2026-04-21, lookback_days=60, top-N 10, rebalance_month_interval=3). ADR-0022 게이트 1(MDD > -25%) PASS · 게이트 3(Sharpe > 0.3) PASS · 게이트 2(DCA 대비 알파 +15.87% - +48.18% = **-32.31%p**) **FAIL** → 종합 FAIL. 런북: `docs/runbooks/step_f_low_volatility_2026-05-02.md`.
 
+#### Step F PR5 — F5 RSI 평균회귀 완료 — PASS (2026-05-02)
+
+`src/stock_agent/strategy/rsi_mr.py` (`RSIMRStrategy`, `RSIMRConfig`) + `src/stock_agent/backtest/rsi_mr.py` (`RSIMRBaselineConfig`, `compute_rsi_mr_baseline`) + `scripts/backtest.py --strategy-type=rsi-mr` 라우팅 (`--rsi-period` · `--oversold-threshold` · `--overbought-threshold` · `--stop-loss-pct` · `--max-positions` CLI 인자 신설). 테스트 85건 신규 (`test_strategy_rsi_mr.py` 45건 + `test_backtest_rsi_mr.py` 40건, pytest 2055 → 2140 collected).
+
+설계 특이점: RSI 계산은 simple average gain/loss 방식 (Wilder smoothing 미사용). 동일 세션 내 청산 후 재진입 차단 (RSI 즉시 회복 시 무한 루프 방지). `EntrySignal.take_price=Decimal("0")` 마커 — 고정 익절 미사용, RSI 회귀로만 take_profit 청산. multi-symbol per-bar 시그널 (LowVol/Momentum 의 시점 트리거와 다름 — 매일 신호 산출).
+
+결과: MDD -6.40% · Sharpe 2.4723 · 총수익률 +56.31% mark-to-market (시작 자본 2,000,000 KRW → 종료 3,126,256 KRW, KOSPI 200 캐시 101종목, 2025-04-01 ~ 2026-04-21, RSI 14, 과매도 30, 과매수 70). ADR-0022 게이트 1(MDD -6.40% > -25%) **PASS** · 게이트 3(Sharpe 2.4723 > 0.3) **PASS** · 게이트 2(DCA 대비 알파 +56.31% - +48.18% = **+8.13%p**) **PASS** → 종합 **PASS**. trades=175 (entry+exit pair) — Step F 전체에서 통계적으로 가장 신뢰도 높은 알파 확인. 청산 사유: stop_loss 113 (64.6%) / take_profit 58 (33.1%) / force_close 4 (2.3%). 승률 34.29% + 평균 손익비 4.3799 — 평균회귀 전형 패턴. 런북: `docs/runbooks/step_f_rsi_mr_2026-05-02.md`.
+
 ---
 
 ## Phase 3 진행 요약 (2026-04-21 기준)
