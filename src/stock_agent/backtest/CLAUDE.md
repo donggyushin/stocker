@@ -16,7 +16,7 @@ stock-agent 의 시뮬레이션 경계 모듈. `ORBStrategy` + `RiskManager` 를
 `render_markdown_table`, `write_csv`, `default_grid`, `step_d1_grid`,
 `append_sensitivity_row`, `load_completed_combos`,
 `WalkForwardWindow`, `WalkForwardResult`, `WalkForwardMetrics`,
-`generate_windows`, `run_walk_forward`,
+`generate_windows`, `run_walk_forward`, `run_rsi_mr_walk_forward`,
 `DailyBarPrevCloseProvider`
 
 `dca.py` 공개 심볼 (`backtest/dca.py` — `__init__.py` 미재노출, 직접 import):
@@ -592,9 +592,9 @@ uv run python scripts/sensitivity.py \
 
 관련 테스트: `tests/test_backtest_prev_close_provider.py` 18건 (정상 룩업·None 분기·입력 가드·라이프사이클·store 호출 검증), `tests/test_backtest_cli.py` `TestGapReversalPrevCloseProviderInjection` 5건, `tests/test_sensitivity_cli.py` `TestGapReversalPrevCloseProviderInjection` 8건.
 
-### `walk_forward.py` — walk-forward validation 스켈레톤 (Issue #67)
+### `walk_forward.py` — walk-forward validation (C2 본 구현, 2026-05-02)
 
-Phase 5 본 구현 대비 **스켈레톤만** 선행 도입 (2026-04-23). DTO + Protocol 사전 고정으로 후속 PR 이 API 변경 0 으로 구현을 채워넣는다.
+Issue #67 skeleton stub 에서 본 구현으로 전환 (2026-05-02). DTO 는 그대로 유지하며 `generate_windows` + `run_rsi_mr_walk_forward` 가 추가되었다. `run_walk_forward(BacktestConfig, ...)` 는 NotImplementedError 유지 — Phase 5 별도.
 
 공개 심볼 5종 (전부 `backtest/__init__.py` 재노출):
 
@@ -603,18 +603,19 @@ Phase 5 본 구현 대비 **스켈레톤만** 선행 도입 (2026-04-23). DTO + 
 | `WalkForwardWindow(train_from, train_to, test_from, test_to)` | frozen dataclass. `__post_init__` 가드 3종: `train_from <= train_to`·`test_from <= test_to`·`train_to < test_from` (중첩 금지). 위반 시 `RuntimeError`. |
 | `WalkForwardMetrics(train_avg_return_pct, test_avg_return_pct, degradation_pct, pass_threshold, is_pass)` | frozen dataclass. `pass_threshold < 0` → `RuntimeError`. |
 | `WalkForwardResult(windows, per_window_metrics, aggregate_metrics)` | frozen dataclass. 빈 windows / 길이 불일치 → `RuntimeError`. `per_window_metrics` 는 test 구간 `BacktestMetrics` 튜플. |
-| `generate_windows(total_from, total_to, *, train_months=6, test_months=2, step_months=1)` | **스텁** — `NotImplementedError("Phase 5 구현 대기")`. |
-| `run_walk_forward(loader, config, windows)` | **스텁** — `NotImplementedError("Phase 5 구현 대기")`. |
+| `generate_windows(total_from, total_to, *, train_months, test_months, step_months)` | **본 구현** (Issue #67 skeleton stub 대체). `_add_months` helper 로 월 단위 날짜 계산, day clamp (말일 처리). i 순회로 `(train_from, train_to, test_from, test_to)` window 생성. `test_to > total_to` 이면 순회 종료. |
+| `run_rsi_mr_walk_forward(loader, config, windows, *, pass_threshold)` | **신규** — `RSIMRBaselineConfig` + windows 목록을 받아 각 window 의 test 구간에 `compute_rsi_mr_baseline` 위임. `WalkForwardResult` 반환. `pass_threshold` 기본값 0.3 (ADR-0024). |
+| `run_walk_forward(loader, config, windows)` | **NotImplementedError 유지** — `BacktestConfig` 기반 범용 walk-forward 는 본 PR 범위 밖, Phase 5 별도 구현. |
 
-`pass_threshold` 기본값은 호출자 주입 (현재 스텁은 값 하드코딩 없음). Phase 5 본 구현 PR 에서 `docs/adr/NNNN-walk-forward-pass-threshold.md` 로 결정 기록 예정 — Issue #67 제안: `degradation_pct <= 0.3` (train→test 악화 30% 이하 PASS).
+`pass_threshold` 기본값 **0.3** — `degradation_pct <= 0.3` (train→test 악화 30% 이하 PASS). ADR-0024 결정.
 
-관련 테스트: `tests/test_walk_forward.py` 18건 (DTO 가드 계약 + 스텁 `NotImplementedError` 계약).
+관련 테스트: `tests/test_walk_forward.py` (DTO 가드 계약 15건 포함) + `tests/test_walk_forward_rsi_mr.py` 10건 (TestRunRsiMrWalkForward). 총 walk_forward 관련 테스트 41건.
 
 ## 범위 제외 (의도적 defer — 후속 PR)
 
 - **실데이터 어댑터**: KIS 과거 분봉 API 통합. `BarLoader` Protocol + `MinuteCsvBarLoader` + `scripts/backtest.py` CLI 는 완료, KIS API 는 30일 롤링 제약으로 별도 PR.
 - **HTML/노트북 리포트**: `BacktestResult` → 시각화 (Streamlit/Jupyter — Phase 5 후보).
-- **Walk-forward 검증 본 구현**: 과적합 방어 (Phase 5). 스켈레톤(`walk_forward.py`) 만 선행 도입 (Issue #67) — `generate_windows`·`run_walk_forward` 는 `NotImplementedError`. 민감도 그리드는 sanity check 이지 walk-forward 를 대체하지 않는다.
+- **Walk-forward 범용 구현 (`run_walk_forward`)**: `BacktestConfig` 기반 범용 walk-forward 는 Phase 5. `generate_windows` + `run_rsi_mr_walk_forward` 는 C2 에서 본 구현 완료 (ADR-0024). 민감도 그리드는 sanity check 이지 walk-forward 를 대체하지 않는다.
 - **호가 단위 라운딩**: 현재 `Decimal` 원시 그대로 — KRX 호가 단위 반영은 Phase 3 executor 책임 영역과 합쳐 재설계.
 - **부분 체결 시뮬레이션**: 현재 시그널 1건 = 전량 체결. 부분 체결은 Phase 5.
 - **공매도(short) 포지션**: 한국 공매도 제한으로 long-only — Phase 5 까지 보류.

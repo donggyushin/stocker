@@ -53,6 +53,7 @@ ADR 가 **불필요** 한 변경:
 | [0021](./0021-step-e-vwap-gap-failed.md) | Step E VWAP-MR · Gap-Reversal 두 후보 폐기 + Step F 가설 풀 확장으로 전환 | 승인됨 | 2026-05-01 |
 | [0022](./0022-step-f-gate-redefinition.md) | Step F 게이트 재정의 — 일중 가정 폐기, 일/월 단위 + DCA baseline 상대 비교 | 승인됨 | 2026-05-01 |
 | [0023](./0023-rsi-mr-strategy-adoption-conditional.md) | F5 RSI 평균회귀 1차 채택 (조건부) — Step F 시나리오 A 판정 | 승인됨 | 2026-05-02 |
+| [0024](./0024-walk-forward-pass-threshold.md) | Walk-forward pass-threshold = 0.3 결정 (C2 검증 기준) | 승인됨 | 2026-05-02 |
 
 ## 관련 문서
 

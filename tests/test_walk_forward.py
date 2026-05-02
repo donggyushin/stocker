@@ -250,29 +250,237 @@ class TestWalkForwardResult:
 
 
 # ---------------------------------------------------------------------------
-# D. generate_windows 스텁 — NotImplementedError
+# D. generate_windows 본 구현 검증
 # ---------------------------------------------------------------------------
 
 
-class TestGenerateWindowsStub:
-    def test_호출_시_NotImplementedError(self):
-        """임의 인자로 호출 → NotImplementedError."""
-        with pytest.raises(NotImplementedError):
+class TestGenerateWindows:
+    """generate_windows 본 구현 계약 검증.
+
+    알고리즘:
+    - i=0,1,2,... 순회하며 train_from = _add_months(total_from, i*step_months)
+    - train_to = _add_months(train_from, train_months) - 1day
+    - test_from = train_to + 1day
+    - test_to = _add_months(test_from, test_months) - 1day
+    - test_to <= total_to 이면 emit, 아니면 중단
+    - 어떤 window 도 fit 못하면 RuntimeError (silent skip 금지)
+    """
+
+    # --- 정상 분할 ---
+
+    def test_24m_train12_test6_step6_2windows(self):
+        """total 24m, train=12, test=6, step=6 → 2 windows."""
+        windows = generate_windows(
+            total_from=date(2024, 4, 1),
+            total_to=date(2026, 3, 31),
+            train_months=12,
+            test_months=6,
+            step_months=6,
+        )
+        assert len(windows) == 2
+        # W0
+        assert windows[0].train_from == date(2024, 4, 1)
+        assert windows[0].train_to == date(2025, 3, 31)
+        assert windows[0].test_from == date(2025, 4, 1)
+        assert windows[0].test_to == date(2025, 9, 30)
+        # W1
+        assert windows[1].train_from == date(2024, 10, 1)
+        assert windows[1].train_to == date(2025, 9, 30)
+        assert windows[1].test_from == date(2025, 10, 1)
+        assert windows[1].test_to == date(2026, 3, 31)
+
+    def test_24m_train12_test6_step3_3windows(self):
+        """total 24m, train=12, test=6, step=3 → 3 windows.
+
+        W0: train [2024-04-01, 2025-03-31], test [2025-04-01, 2025-09-30]
+        W1: train [2024-07-01, 2025-06-30], test [2025-07-01, 2025-12-31]
+        W2: train [2024-10-01, 2025-09-30], test [2025-10-01, 2026-03-31]
+        W3 후보: test_to=2026-06-30 > total_to=2026-03-31 → 거부
+        """
+        windows = generate_windows(
+            total_from=date(2024, 4, 1),
+            total_to=date(2026, 3, 31),
+            train_months=12,
+            test_months=6,
+            step_months=3,
+        )
+        assert len(windows) == 3
+        # W0
+        assert windows[0].train_from == date(2024, 4, 1)
+        assert windows[0].train_to == date(2025, 3, 31)
+        assert windows[0].test_from == date(2025, 4, 1)
+        assert windows[0].test_to == date(2025, 9, 30)
+        # W1
+        assert windows[1].train_from == date(2024, 7, 1)
+        assert windows[1].train_to == date(2025, 6, 30)
+        assert windows[1].test_from == date(2025, 7, 1)
+        assert windows[1].test_to == date(2025, 12, 31)
+        # W2
+        assert windows[2].train_from == date(2024, 10, 1)
+        assert windows[2].train_to == date(2025, 9, 30)
+        assert windows[2].test_from == date(2025, 10, 1)
+        assert windows[2].test_to == date(2026, 3, 31)
+
+    def test_default_kwargs(self):
+        """train=6, test=2, step=1 기본값으로 호출 — 결과 1개 이상 보장."""
+        windows = generate_windows(
+            total_from=date(2024, 1, 1),
+            total_to=date(2025, 6, 30),
+        )
+        assert len(windows) >= 1
+
+    def test_단일_window_정확히_fit(self):
+        """total 18m, train=12, test=6, step=12 → 정확히 1 window."""
+        windows = generate_windows(
+            total_from=date(2024, 1, 1),
+            total_to=date(2025, 6, 30),
+            train_months=12,
+            test_months=6,
+            step_months=12,
+        )
+        assert len(windows) == 1
+
+    # --- 경계 ---
+
+    def test_test_to_exact_match_total_to(self):
+        """test_to == total_to 인 마지막 window 가 포함됨 (경계 inclusive)."""
+        windows = generate_windows(
+            total_from=date(2024, 1, 1),
+            total_to=date(2025, 6, 30),
+            train_months=12,
+            test_months=6,
+            step_months=12,
+        )
+        # 마지막 window 의 test_to 는 total_to 와 같거나 이전이어야 함
+        assert windows[-1].test_to <= date(2025, 6, 30)
+
+    def test_test_to_초과_window_제외(self):
+        """test_to > total_to 인 후속 window 는 emit 안 함."""
+        # total 8m, train=6, test=2, step=1
+        # i=0: test_to = 2024-08-31 (fit), i=1: test_to = 2024-09-30 > 2024-08-31 (미포함)
+        windows = generate_windows(
+            total_from=date(2024, 1, 1),
+            total_to=date(2024, 8, 31),
+            train_months=6,
+            test_months=2,
+            step_months=1,
+        )
+        for w in windows:
+            assert w.test_to <= date(2024, 8, 31)
+
+    # --- 가드 (RuntimeError) ---
+
+    def test_total_from_gt_total_to_RuntimeError(self):
+        """total_from > total_to → RuntimeError."""
+        with pytest.raises(RuntimeError):
             generate_windows(
-                total_from=date(2023, 1, 2),
-                total_to=date(2024, 12, 31),
-                train_months=6,
+                total_from=date(2025, 1, 1),
+                total_to=date(2024, 1, 1),
+            )
+
+    def test_train_months_zero_RuntimeError(self):
+        """train_months=0 → RuntimeError."""
+        with pytest.raises(RuntimeError):
+            generate_windows(
+                total_from=date(2024, 1, 1),
+                total_to=date(2025, 12, 31),
+                train_months=0,
                 test_months=2,
                 step_months=1,
             )
 
-    def test_예외_메시지_Phase5_포함(self):
-        """NotImplementedError 메시지에 'Phase 5' 가 포함된다."""
-        with pytest.raises(NotImplementedError, match="Phase 5"):
+    def test_train_months_negative_RuntimeError(self):
+        """train_months=-1 → RuntimeError."""
+        with pytest.raises(RuntimeError):
             generate_windows(
-                total_from=date(2023, 1, 2),
-                total_to=date(2024, 12, 31),
+                total_from=date(2024, 1, 1),
+                total_to=date(2025, 12, 31),
+                train_months=-1,
+                test_months=2,
+                step_months=1,
             )
+
+    def test_test_months_zero_RuntimeError(self):
+        """test_months=0 → RuntimeError."""
+        with pytest.raises(RuntimeError):
+            generate_windows(
+                total_from=date(2024, 1, 1),
+                total_to=date(2025, 12, 31),
+                train_months=6,
+                test_months=0,
+                step_months=1,
+            )
+
+    def test_test_months_negative_RuntimeError(self):
+        """test_months=-1 → RuntimeError."""
+        with pytest.raises(RuntimeError):
+            generate_windows(
+                total_from=date(2024, 1, 1),
+                total_to=date(2025, 12, 31),
+                train_months=6,
+                test_months=-1,
+                step_months=1,
+            )
+
+    def test_step_months_zero_RuntimeError(self):
+        """step_months=0 → RuntimeError."""
+        with pytest.raises(RuntimeError):
+            generate_windows(
+                total_from=date(2024, 1, 1),
+                total_to=date(2025, 12, 31),
+                train_months=6,
+                test_months=2,
+                step_months=0,
+            )
+
+    def test_step_months_negative_RuntimeError(self):
+        """step_months=-1 → RuntimeError."""
+        with pytest.raises(RuntimeError):
+            generate_windows(
+                total_from=date(2024, 1, 1),
+                total_to=date(2025, 12, 31),
+                train_months=6,
+                test_months=2,
+                step_months=-1,
+            )
+
+    def test_total_span_부족_RuntimeError(self):
+        """total 6m, train=12, test=6 → 어떤 window 도 fit 불가 → RuntimeError."""
+        with pytest.raises(RuntimeError):
+            generate_windows(
+                total_from=date(2024, 1, 1),
+                total_to=date(2024, 6, 30),
+                train_months=12,
+                test_months=6,
+                step_months=1,
+            )
+
+    # --- 월말 처리 ---
+
+    def test_month_end_clamp_31일(self):
+        """total_from=2024-01-31, train_months=1 → train_to/test_from/test_to 경계 검증.
+
+        알고리즘:
+        - train_from = 2024-01-31
+        - _add_months(2024-01-31, 1) = 2024-02-29 (윤년 clamp)
+        - train_to = 2024-02-29 - 1day = 2024-02-28
+        - test_from = train_to + 1day = 2024-02-29
+        - _add_months(2024-02-29, 1) = 2024-03-29
+        - test_to = 2024-03-29 - 1day = 2024-03-28
+        """
+        windows = generate_windows(
+            total_from=date(2024, 1, 31),
+            total_to=date(2025, 12, 31),
+            train_months=1,
+            test_months=1,
+            step_months=12,
+        )
+        assert len(windows) >= 1
+        # train_from=2024-01-31, train_months=1 → next=2024-02-29, train_to=2024-02-28
+        assert windows[0].train_from == date(2024, 1, 31)
+        assert windows[0].train_to == date(2024, 2, 28)
+        assert windows[0].test_from == date(2024, 2, 29)
+        assert windows[0].test_to == date(2024, 3, 28)
 
 
 # ---------------------------------------------------------------------------
