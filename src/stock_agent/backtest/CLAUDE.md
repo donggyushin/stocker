@@ -27,6 +27,10 @@ stock-agent 의 시뮬레이션 경계 모듈. `ORBStrategy` + `RiskManager` 를
 
 `GoldenCrossBaselineConfig`, `compute_golden_cross_baseline`
 
+`momentum.py` 공개 심볼 (`backtest/momentum.py` — `__init__.py` 미재노출, 직접 import):
+
+`MomentumBaselineConfig`, `compute_momentum_baseline`
+
 `RejectReason` 은 `stock_agent.risk` 의 Literal 을 재노출. `BacktestResult.rejected_counts` 의 키 타입이라 같은 패키지에서 접근 가능해야 소비자가 `risk` 패키지를 직접 import 하지 않는다.
 
 ## 현재 상태 (2026-04-20 기준)
@@ -353,6 +357,68 @@ pytest **33 케이스 green** (`tests/test_backtest_golden_cross.py`). 외부 I/
 | BacktestResult 계약 | metrics·daily_equity·rejected_counts 구조 |
 
 관련 테스트 파일: `tests/test_backtest_golden_cross.py`.
+
+---
+
+### `momentum.py` — Momentum Baseline 평가 함수 (Step F PR3)
+
+ADR-0019 Step F PR3 에서 도입. `MomentumStrategy` 의 다중 lot 동시 보유·mark-to-market 평가를 담당. `BacktestEngine` 을 우회해 별도 평가 함수로 구현.
+
+`backtest/__init__.py` 에 재노출하지 않음 — 소비자 `scripts/backtest.py` 가 직접 import.
+
+#### `MomentumBaselineConfig` (`@dataclass(frozen=True, slots=True)`)
+
+`DCABaselineConfig` / `GoldenCrossBaselineConfig` 와 동일한 필드 구조 (`starting_capital_krw`, `commission_rate`, `slippage_rate`, `sell_tax_rate`) + `MomentumConfig` 포함.
+
+`__post_init__` 검증 (위반 시 `RuntimeError`): 자본 양수, 비율 음수 금지.
+
+#### `compute_momentum_baseline` 시그니처
+
+```python
+def compute_momentum_baseline(
+    loader: BarLoader,
+    config: MomentumBaselineConfig,
+    start: date,
+    end: date,
+) -> BacktestResult:
+```
+
+universe 는 `MomentumBaselineConfig.universe` (필수 필드) 로 주입 — `compute_momentum_baseline` 가 내부에서 `loader.stream(start, end, config.universe)` 호출.
+
+**알고리즘** (다중 lot 동시 보유·mark-to-market):
+1. `loader.stream(start, end, config.universe)` 로 일봉 multi-symbol 스트림 수신.
+2. `MomentumStrategy` 가 리밸런싱 시점에 `ExitSignal` + `EntrySignal` 을 다중 emit.
+3. 청산 시 lot 매도 + 비용 처리. 진입 시 lot 매수 + 비용 처리.
+4. 루프 종료 시 잔존 lot 가상 청산 (mark-to-market 기준 종가 체결).
+5. `BacktestResult` 반환.
+
+**BacktestEngine 우회 사유**: `BacktestEngine` 은 단일 lot + force_close_at 청산 가정 전제 — 다중 lot 동시 보유 + 월별 리밸런싱 정책과 비호환.
+
+**ADR-0022 게이트 판정 (2026-05-02)**: 게이트 1(MDD -7.70% > -25%) PASS · 게이트 3(Sharpe 0.9910 > 0.3) PASS · 게이트 2(DCA 대비 알파 -36.96%p) **FAIL** → 종합 FAIL.
+
+**운영 주의**: `compute_momentum_baseline` 의 총수익률은 mark-to-market 기준. `BacktestEngine` 결과와 직접 비교 불가. Strategy-backtest drift caveat: entry skip 시 `MomentumStrategy` holdings 와 실 lot 불일치 가능 — 후속 보강 필요.
+
+#### 테스트 현황 (momentum.py)
+
+pytest **38 케이스 green** (`tests/test_backtest_momentum.py`). 외부 I/O 없음 — `InMemoryBarLoader` + 합성 일봉 fixture.
+
+| 그룹 | 내용 |
+|---|---|
+| Config 검증 | 자본 양수, 비율 음수 금지 |
+| 빈 스트림 | 신호 없음 → 빈 trades, 0 수익률 |
+| lookback 부족 | lookback 미달 시 리밸런싱 스킵 |
+| 단일 리밸런싱 | 리밸런싱 1회 진입·청산 검증 |
+| 복수 리밸런싱 | 2회 이상 리밸런싱 lot 갱신 |
+| 가상 청산 (mark-to-market) | 루프 종료 후 잔존 lot 청산 |
+| 비용 반영 | 수수료·슬리피지·매도세 lot 단위 적용 |
+| 현금 배분 | 자본 / top-N 균등 배분 |
+| BacktestResult 계약 | metrics·daily_equity·rejected_counts 구조 |
+| start/end 가드 | 빈 심볼·날짜 역전 등 |
+| daily equity mtm | 보유 중 mark-to-market 일별 자본 |
+| universe 처리 | non-universe 종목 무시 |
+| metrics | 총수익률·MDD·Sharpe 계산 정확성 |
+
+관련 테스트 파일: `tests/test_backtest_momentum.py`.
 
 ---
 
