@@ -82,7 +82,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **Step E FAIL (2026-05-01, ADR-0021)** — PR1~PR4 코드 산출물 완료 후 4 런 실행. VWAP-MR(Top 50 MDD -49.09% / Top 100 MDD -50.11%) · Gap-Reversal(Top 50 MDD -10.19% / Top 100 MDD -19.99%) 전 4 런 ADR-0019 세 게이트 동시 통과 0. VWAP-MR · Gap-Reversal 두 후보 폐기. 코드 산출물 보존.
 
-**Step F 진입 (2026-05-01, ADR-0021·ADR-0022)** — 가설 풀 확장. 일중 데이트레이딩 가정 폐기 + 일/월 단위 전략 + DCA baseline 비교. ADR-0022 게이트 적용 (MDD > -25% · DCA 대비 양의 알파 · 연환산 샤프 > 0.3). 상세 진행 계획: [`docs/step_f_strategy_pool_plan.md`](./docs/step_f_strategy_pool_plan.md). 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
+**Step F 진입 (2026-05-01, ADR-0021·ADR-0022)** — 가설 풀 확장. 일중 데이트레이딩 가정 폐기 + 일/월 단위 전략 + DCA baseline 비교. ADR-0022 게이트 적용 (MDD > -25% · DCA 대비 양의 알파 · 연환산 샤프 > 0.3). PR6 종합 판정 후 정본은 [`docs/runbooks/step_f_summary_2026-05-02.md`](./docs/runbooks/step_f_summary_2026-05-02.md) + [`docs/adr/0023-rsi-mr-strategy-adoption-conditional.md`](./docs/adr/0023-rsi-mr-strategy-adoption-conditional.md). 상세 설계와 각 Phase의 PASS 기준, 비용·위험 분석은 [`plan.md`](./plan.md)에 있습니다.
 
 **Step F PR1 (F1 DCA baseline) 완료 — PASS (2026-05-02)**. KODEX 200(069500) 월 정액 매수 DCA 전략 1년 백테스트. MDD -12.92% · 연환산 Sharpe 2.2683 · 총수익률 +51.50% mark-to-market. ADR-0022 게이트 1·3 PASS (게이트 2 N/A — 자기 자신 baseline). 후속 PR 의 DCA 대비 알파 비교 기준 확정. 런북: `docs/runbooks/step_f_dca_baseline_2026-05-02.md`.
 
@@ -93,6 +93,8 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 **Step F PR4 (F4 Low Volatility) 완료 — FAIL (2026-05-02)**. KOSPI 200 캐시 101종목 대상 저변동성 전략 백테스트 (2025-04-01 ~ 2026-04-21, lookback_days=60, top-N 10, rebalance_month_interval=3). MDD -9.62% · 연환산 Sharpe 1.1713 · 총수익률 +15.87% mark-to-market. ADR-0022 게이트 1·3 PASS, 게이트 2(DCA 대비 알파 +15.87% - +48.18% = **-32.31%p**) FAIL → 종합 FAIL. 런북: `docs/runbooks/step_f_low_volatility_2026-05-02.md`.
 
 **Step F PR5 (F5 RSI 평균회귀) 완료 — PASS (2026-05-02)**. KOSPI 200 캐시 101종목 대상 일봉 RSI(14) 평균회귀 전략 백테스트 (2025-04-01 ~ 2026-04-21, 과매도 30, 과매수 70). MDD -6.40% · 연환산 Sharpe 2.4723 · 총수익률 +56.31% mark-to-market. ADR-0022 게이트 3종 전원 PASS (DCA 대비 알파 **+8.13%p**, trades=175 — Step F 전체에서 통계적으로 가장 신뢰도 높은 알파 확인). 런북: `docs/runbooks/step_f_rsi_mr_2026-05-02.md`.
+
+**Step F PR6 (종합 판정 + ADR-0023) 완료 (2026-05-02)**. 5 가설 비교 표 + 시나리오 A 판정 → **F5 RSI 평균회귀 (`RSIMRStrategy`) 를 1차 채택 후보로 확정**. PR2 Golden Cross 는 단일 trade caveat 로 채택 보류 (코드 보존). PR3 모멘텀·PR4 저변동성은 본 평가 환경 한계 인정으로 후보 제외 (코드 보존). **Phase 3 (모의투자 무중단 운영) 진입은 ADR-0023 의 4 추가 검증 (C1 universe 199 종목 전체 백필 + 재평가 · C2 walk-forward 본 구현 + 다년 평가 · C3 069500 일봉 수정주가 보정 검증 · C4 PR5 파라미터 sensitivity grid) 전부 통과 후로 게이팅**. 종합 런북: `docs/runbooks/step_f_summary_2026-05-02.md`. ADR: `docs/adr/0023-rsi-mr-strategy-adoption-conditional.md`.
 
 **Phase 3 착수 전제 통과** (2026-04-21). 실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK) 완료.
 

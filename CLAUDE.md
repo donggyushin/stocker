@@ -4,7 +4,7 @@
 
 ## 프로젝트 한 줄 요약
 
-Python 기반 한국주식 **데이트레이딩** 자동매매 시스템. 한국투자증권 KIS Developers API + Opening Range Breakout(ORB) 전략 + 100~200만원 초기 자본. **paper 주문 + live 시세 하이브리드 키** 구조 (KIS paper 도메인에 시세 API 없음 — 시세는 별도 실전 APP_KEY 로 실전 도메인 호출). 현재 **Phase 1 PASS (코드·테스트 레벨). Phase 2 진행 중 — 백테스트 엔진·전략·리스크·CSV/KIS 분봉 어댑터·백필 CLI 까지 모든 코드 산출물 완료. 2026-04-24 1차 백테스트 FAIL + 복구 로드맵 (A 민감도 → B 비용 → C 유니버스 → D 파라미터 → E 전략 교체) 순차 게이팅. Step A~E 전원 FAIL (230+ 런 / 0 PASS) → Step F (가설 풀 확장, ADR-0022 게이트 적용) 진입 중 — PR1 (F1 DCA baseline) PASS (MDD -12.92% / Sharpe 2.27 / 총수익률 +51.50% mark-to-market), PR2 (F2 Golden Cross) PASS (MDD -20.52% / Sharpe 2.2753 / 총수익률 +182.36% mark-to-market, 단 단일 trade·데이터 plausibility caveat 적용), PR3 (F3 Cross-sectional 모멘텀) 완료 — FAIL (MDD -7.70% / Sharpe 0.99 / 총수익률 +11.22%, 게이트 2 DCA 알파 -36.96%p), PR4 (F4 Low Volatility) 완료 — FAIL (MDD -9.62% / Sharpe 1.17 / 총수익률 +15.87%, 게이트 2 DCA 알파 -32.31%p), PR5 (F5 RSI 평균회귀) 완료 — PASS (MDD -6.40% / Sharpe 2.4723 / 총수익률 +56.31%, DCA 대비 알파 +8.13%p, trades=175 통계 신뢰도 높음). Phase 3 코드 산출물 (Executor·main.py APScheduler·monitor/notifier·storage/db·세션 재기동·broker 체결조회) 모두 완료 상태로 보존 — 단 Phase 2 수익률 확인 전까지 Phase 3 진입 금지.**
+Python 기반 한국주식 자동매매 시스템 (2026-05-02 기준 일중 데이트레이딩 가정 폐기 → 일/월 단위 평균회귀 채택 후보). 한국투자증권 KIS Developers API + 100~200만원 초기 자본. **paper 주문 + live 시세 하이브리드 키** 구조 (KIS paper 도메인에 시세 API 없음 — 시세는 별도 실전 APP_KEY 로 실전 도메인 호출). 현재 **Phase 1 PASS (코드·테스트 레벨). Phase 2 진행 중 — 백테스트 엔진·전략·리스크·CSV/KIS 분봉 어댑터·백필 CLI 까지 모든 코드 산출물 완료. 2026-04-24 1차 백테스트 FAIL + 복구 로드맵 (A 민감도 → B 비용 → C 유니버스 → D 파라미터 → E 전략 교체) 순차 게이팅. Step A~E 전원 FAIL (230+ 런 / 0 PASS) → Step F (가설 풀 확장, ADR-0022 게이트 적용) PR1~PR5 평가 완료. 시나리오 A 판정 (PASS 후보 채택) — ADR-0023 으로 F5 RSI 평균회귀 (`RSIMRStrategy`) 1차 채택 후보 확정 (MDD -6.40% / Sharpe 2.4723 / 총수익률 +56.31% / DCA 대비 알파 +8.13%p / trades=175). PR2 (F2 Golden Cross) 는 단일 trade caveat 로 채택 보류 (코드 보존). PR3 (모멘텀)·PR4 (저변동성) 채택 후보 제외 (게이트 2 FAIL, 코드 보존). Phase 3 (모의투자) 진입은 ADR-0023 의 4 추가 검증 (universe 199 종목 전체 백필 + walk-forward + 069500 수정주가 plausibility + PR5 sensitivity grid) 통과 후로 게이팅. Phase 3 코드 산출물 (Executor·main.py APScheduler·monitor/notifier·storage/db·세션 재기동·broker 체결조회) 모두 완료 상태로 보존.**
 
 상세 설계는 `plan.md`를 참조한다. 외부 독자용 개요는 `README.md`.
 
@@ -15,12 +15,12 @@ Python 기반 한국주식 **데이트레이딩** 자동매매 시스템. 한국
 ## 확정된 결정 (임의 변경 금지, 변경 필요 시 사용자에게 먼저 확인)
 
 - 증권사: 한국투자증권 KIS Developers (토스증권은 API 미제공)
-- 전략: Opening Range Breakout (long-only, KOSPI 200 대형주)
+- 전략: F5 RSI 평균회귀 (`RSIMRStrategy`) 1차 채택 후보 (ADR-0023, 2026-05-02). KOSPI 200 cross-sectional 일봉 RSI(14) 평균회귀, 과매도 30 진입 / 과매수 70 청산 / stop_loss -3%. ORB·VWAP-MR·Gap-Reversal·Cross-sectional 모멘텀·저변동성·Golden Cross 전 후보는 회귀·비교 baseline 으로 코드 보존
 - 초기 자본: 100~200만원
 - 실행: 로컬 맥북, 장중(9:00~15:30 KST)
 - 알림: 텔레그램 봇
 - 스택: Python 3.12+, `uv`, `python-kis 2.x`, `pykrx`, `pyyaml`, `APScheduler`, `loguru`, `python-telegram-bot`, SQLite (백테스트 엔진은 자체 시뮬레이션 루프 — `backtesting.py` 폐기 결정 2026-04-20)
-- 리스크 한도: 종목당 진입 자본의 20%, 동시 3종목, 손절 -1.5% / 익절 +3.0% / 15:00 강제청산, 일일 손실 -2% 서킷브레이커
+- 리스크 한도 (ORB 일중 가정 산물 — Step F PR5 채택으로 일/월 단위 전환 시 재정의 예정): 종목당 진입 자본의 20%, 동시 3종목, 손절 -1.5% / 익절 +3.0% / 15:00 강제청산, 일일 손실 -2% 서킷브레이커. PR5 RSI MR 의 stop_loss -3% / max_positions 10 은 백테스트 파라미터 기준이며 Phase 3 진입 시 ADR-0023 sensitivity grid (C4) 결과로 본 한도 갱신 ADR 작성 예정
 - 키 정책: 주문/잔고(KisClient)는 paper APP_KEY → paper 도메인. 시세 조회/WebSocket(RealtimeDataStore)은 별도 실전 APP_KEY → 실전 도메인 (KIS paper 도메인에 `/quotations/*` 시세 API 미제공).
 
 자세한 수치와 근거는 `plan.md` 참조.
@@ -218,7 +218,7 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
 
 ## 현재 상태 (2026-05-02 기준)
 
-**한 줄 진행도**: Phase 1 PASS · Phase 2 진행 중 (1차 백테스트 FAIL → ADR-0019 복구 로드맵 Step F PR1 PASS · PR2 PASS · PR3 FAIL · PR4 FAIL · PR5 PASS). Phase 3 코드 산출물 완료 상태로 보존, 진입 금지.
+**한 줄 진행도**: Phase 1 PASS · Phase 2 진행 중 (1차 백테스트 FAIL → ADR-0019 복구 로드맵 Step F PR1~PR5 평가 완료, ADR-0023 으로 F5 RSI 평균회귀 1차 채택 후보 확정). Phase 3 코드 산출물 완료 상태로 보존 — ADR-0023 의 4 추가 검증 통과 전까지 Phase 3 진입 금지.
 
 - **Phase 2 1차 백테스트 결과 (2026-04-24, 1년치 KIS 백필 + `--loader=kis`)**: MDD **-51.36%**, 총수익률 -50.05%, 샤프 -6.81, 승률 31.35%, 손익비 1.28, 기대값 ≈ -0.28R. Phase 2 PASS 기준 3.4 배 초과 미달.
 - **신규 Phase 2 PASS 게이트 (ADR-0019)**: (1) MDD > -15%, (2) 승률 × 손익비 > 1.0, (3) 연환산 샤프 > 0 — 세 조건 전부 충족 + walk-forward 통과 후에만 Phase 3 착수.
@@ -235,14 +235,15 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
     - Gap-Reversal Top 50: MDD -10.19%(게이트 1만 통과) · 승×손익비 0.339 · 샤프 -3.23 — FAIL.
     - Gap-Reversal Top 100: MDD -19.99% · 승×손익비 0.289 · 샤프 -6.27 — FAIL.
     - 코드 산출물(`VWAPMRStrategy`·`GapReversalStrategy`·`DailyBarPrevCloseProvider`·`backfill_daily_bars`) 보존. 런북: `docs/runbooks/step_e_vwap_mr_2026-05-01.md` · `docs/runbooks/step_e_gap_reversal_2026-05-01.md`.
-  - **Step F** — 가설 풀 확장 (ADR-0021 결정, ADR-0022 게이트 적용). 진입 중. 게이트 재정의: MDD > -25% · DCA baseline 대비 양의 알파 · 연환산 샤프 > 0.3 (세 조건 동시). 상세 진행 계획: `docs/step_f_strategy_pool_plan.md`.
-    - **PR1 (F1 DCA baseline) 완료 — PASS (2026-05-02)**. MDD -12.92% · Sharpe 2.2683 · 총수익률 +51.50% mark-to-market (시작 자본 2,000,000 KRW, KODEX 200 069500, 1년). 런북: `docs/runbooks/step_f_dca_baseline_2026-05-02.md`.
-    - **PR2 (F2 Golden Cross) 완료 — PASS (2026-05-02)**. MDD -20.52% · Sharpe 2.2753 · 총수익률 +182.36% mark-to-market (시작 자본 2,000,000 KRW, KODEX 200 069500, 2024-06-01 ~ 2026-04-21). DCA 대비 알파 +130.86%p. 단, trades=1 (통계 신뢰도 낮음) + 데이터 plausibility caveat (069500 가격 2.93× 이상 급등 — 수정주가 검증 필요). 런북: `docs/runbooks/step_f_golden_cross_2026-05-02.md`.
-    - **PR3 (F3 Cross-sectional 모멘텀) 완료 — FAIL (2026-05-02)**. MDD -7.70% · Sharpe 0.9910 · 총수익률 +11.22% mark-to-market (시작 자본 2,000,000 KRW, KOSPI 200 캐시 101종목, 2025-04-01 ~ 2026-04-21, lookback 6개월, top-N 10). ADR-0022 게이트 1(MDD -7.70% > -25%) PASS · 게이트 3(Sharpe 0.9910 > 0.3) PASS · 게이트 2(DCA 대비 알파 +11.22% - +48.18% = -36.96%p) **FAIL** → 종합 FAIL. 주요 caveat: 유니버스 부분집합(101/199) + lookback 단축(12개월 표준 → 6개월) + KOSPI 강세장 인덱스 베타 압도 + Strategy-backtest drift(entry skip 시 holdings 불일치). 런북: `docs/runbooks/step_f_momentum_2026-05-02.md`.
-    - **PR4 (F4 Low Volatility) 완료 — FAIL (2026-05-02)**. MDD -9.62% · Sharpe 1.1713 · 총수익률 +15.87% mark-to-market (시작 자본 2,000,000 KRW, KOSPI 200 캐시 101종목, 2025-04-01 ~ 2026-04-21, lookback_days=60, top-N 10, rebalance_month_interval=3). ADR-0022 게이트 1(MDD -9.62% > -25%) PASS · 게이트 3(Sharpe 1.1713 > 0.3) PASS · 게이트 2(DCA 대비 알파 +15.87% - +48.18% = **-32.31%p**) **FAIL** → 종합 FAIL. 런북: `docs/runbooks/step_f_low_volatility_2026-05-02.md`.
-    - **PR5 (F5 RSI 평균회귀) 완료 — PASS (2026-05-02)**. MDD -6.40% · Sharpe 2.4723 · 총수익률 +56.31% mark-to-market (시작 자본 2,000,000 KRW, KOSPI 200 캐시 101종목, 2025-04-01 ~ 2026-04-21, RSI 14, 과매도 30, 과매수 70). ADR-0022 게이트 1(MDD -6.40% > -25%) PASS · 게이트 3(Sharpe 2.4723 > 0.3) PASS · 게이트 2(DCA 대비 알파 +56.31% - +48.18% = **+8.13%p**) **PASS** → 종합 PASS. trades=175 (entry+exit pair) — Step F 전체에서 통계적으로 가장 신뢰도 높은 알파 확인. 청산 사유: stop_loss 113 (64.6%) / take_profit 58 (33.1%) / force_close 4 (2.3%). 승률 34.29% + 평균 손익비 4.3799 — 평균회귀 전형 패턴. 런북: `docs/runbooks/step_f_rsi_mr_2026-05-02.md`.
-- **Phase 3 진입 금지 (ADR-0019)**: 게이트 통과 전까지 `main.py` 모의투자 무중단 운영 계획 전면 보류. `execution/`·`main.py`·`monitor/`·`storage/` 코드 산출물은 보존 — 복구 후 그대로 재사용.
-- **테스트 카운트**: pytest **2140 collected** (Step F PR5 기준 — PR4 2055 + PR5 신규 85. `test_strategy_rsi_mr.py` 45 케이스 + `test_backtest_rsi_mr.py` 40 케이스).
+  - **Step F** — 가설 풀 확장 (ADR-0021 결정, ADR-0022 게이트 적용). PR1~PR5 평가 완료 → ADR-0023 으로 F5 RSI 평균회귀 1차 채택 후보 확정 (시나리오 A). 게이트 재정의: MDD > -25% · DCA baseline 대비 양의 알파 · 연환산 샤프 > 0.3 (세 조건 동시).
+    - **PR1 (F1 DCA baseline) — PASS (2026-05-02)**. MDD -12.92% · Sharpe 2.2683 · 총수익률 +51.50% (069500, 1년). 후속 PR baseline. 런북: `docs/runbooks/step_f_dca_baseline_2026-05-02.md`.
+    - **PR2 (F2 Golden Cross) — PASS (2026-05-02, 채택 보류)**. MDD -20.52% · Sharpe 2.2753 · 총수익률 +182.36% · DCA 대비 알파 +130.86%p. 단 trades=1 통계 신뢰도 낮음 + 069500 가격 2.93× 데이터 plausibility caveat. 런북: `docs/runbooks/step_f_golden_cross_2026-05-02.md`.
+    - **PR3 (F3 Cross-sectional 모멘텀) — FAIL (2026-05-02)**. MDD -7.70% · Sharpe 0.9910 · 총수익률 +11.22% · DCA 알파 -36.96%p (게이트 2 FAIL). 채택 후보 제외 (코드 보존). 런북: `docs/runbooks/step_f_momentum_2026-05-02.md`.
+    - **PR4 (F4 Low Volatility) — FAIL (2026-05-02)**. MDD -9.62% · Sharpe 1.1713 · 총수익률 +15.87% · DCA 알파 -32.31%p (게이트 2 FAIL). 채택 후보 제외 (코드 보존). 런북: `docs/runbooks/step_f_low_volatility_2026-05-02.md`.
+    - **PR5 (F5 RSI 평균회귀) — PASS (2026-05-02, 1차 채택 후보)**. MDD -6.40% · Sharpe 2.4723 · 총수익률 +56.31% · DCA 대비 알파 +8.13%p · trades=175 (Step F 최강 통계 신뢰도). 청산 사유: stop_loss 113 (64.6%) / take_profit 58 (33.1%) / force_close 4 (2.3%). 승률 34.29% · 평균 손익비 4.3799 — 평균회귀 전형. 런북: `docs/runbooks/step_f_rsi_mr_2026-05-02.md`.
+    - **PR6 (종합 판정 + ADR-0023) — 본 PR (2026-05-02)**. 시나리오 A 판정. F5 RSI 평균회귀 1차 채택 후보 확정. Phase 3 진입 조건 4종 명시 (universe 199 백필 + walk-forward + 069500 수정주가 plausibility + PR5 sensitivity grid). 종합 런북: `docs/runbooks/step_f_summary_2026-05-02.md`. ADR: `docs/adr/0023-rsi-mr-strategy-adoption-conditional.md`.
+- **Phase 3 진입 게이팅 (ADR-0019 + ADR-0023)**: ADR-0023 의 C1~C4 추가 검증 통과 전까지 `main.py` 모의투자 무중단 운영 계획 보류. `execution/`·`main.py`·`monitor/`·`storage/` 코드 산출물은 보존 — 채택 후보 PR5 가 `Strategy` Protocol 준수라 그대로 재사용.
+- **테스트 카운트**: pytest **2140 collected** (Step F PR5 기준 — PR4 2055 + PR5 신규 85. PR6 은 docs-only 라 테스트 카운트 변동 없음).
 - **운영자 close 대기 Issue**: #51 (Phase 2 PASS 판정 FAIL → 복구 로드맵으로 대체) · #52 (`KisMinuteBarLoader` 파싱 실패 대응, 운영자 `scripts/debug_kis_minute.py` 실행 후 댓글) · #63 (공휴일 캘린더 가드, 백필 재실행으로 `date_mismatch` 0 확인 후 댓글) · #71 (장시간 hang 방지, 2026-04-24 백필 완주 확인 — 운영자 댓글만 잔여).
 
 상세한 Phase 별 산출물·결정·테스트 카운트 변화·Issue 대응 이력은 [docs/phase-history.md](./docs/phase-history.md) 참조.
