@@ -88,6 +88,8 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **Step F PR2 (F2 Golden Cross) 완료 — PASS (2026-05-02)**. KODEX 200(069500) 200일 SMA 추세 추종 전략 백테스트 (2024-06-01 ~ 2026-04-21). MDD -20.52% · 연환산 Sharpe 2.2753 · 총수익률 +182.36% mark-to-market. ADR-0022 게이트 3종 PASS (DCA 대비 알파 +130.86%p). 단, trades=1 (통계 신뢰도 낮음) + 069500 가격 급등 데이터 plausibility 검증 필요. 런북: `docs/runbooks/step_f_golden_cross_2026-05-02.md`.
 
+**Step F PR3 (F3 Cross-sectional 모멘텀) 완료 — FAIL (2026-05-02)**. KOSPI 200 캐시 101종목 대상 cross-sectional 모멘텀 전략 백테스트 (2025-04-01 ~ 2026-04-21, lookback 6개월, top-N 10). MDD -7.70% · 연환산 Sharpe 0.9910 · 총수익률 +11.22% mark-to-market. ADR-0022 게이트 1·3 PASS, 게이트 2(DCA 대비 알파 +11.22% - +48.18% = **-36.96%p**) FAIL → 종합 FAIL. 주요 caveat: 유니버스 부분집합(101/199) + lookback 단축(12개월 표준 → 6개월) + KOSPI 강세장 인덱스 베타 압도. 런북: `docs/runbooks/step_f_momentum_2026-05-02.md`.
+
 **Phase 3 착수 전제 통과** (2026-04-21). 실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK) 완료.
 
 **Phase 3 첫 산출물 — Executor (코드·테스트 레벨) 완료** (2026-04-21). `execution/` 패키지 신설 — `Executor` + Protocol 3종(`OrderSubmitter`/`BalanceProvider`/`BarSource`) + 어댑터 3종(`LiveOrderSubmitter`/`LiveBalanceProvider`/`DryRunOrderSubmitter`) + `StepReport`/`ReconcileReport` DTO. pytest **605건 green**.
@@ -112,7 +114,7 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 ## 디렉토리 구조
 
-현재 존재하는 파일 (Phase 2 Step F PR2 완료 기준):
+현재 존재하는 파일 (Phase 2 Step F PR3 완료 기준):
 
 ```text
 stock-agent/
@@ -154,6 +156,7 @@ stock-agent/
 │   │   ├── factory.py         # build_strategy_factory + STRATEGY_CHOICES (Step E PR4)
 │   │   ├── dca.py             # DCAStrategy + DCAConfig (Step F PR1)
 │   │   ├── golden_cross.py    # GoldenCrossStrategy + GoldenCrossConfig (Step F PR2)
+│   │   ├── momentum.py        # MomentumStrategy + MomentumConfig (Step F PR3)
 │   │   └── CLAUDE.md          # 모듈 세부 문서
 │   ├── risk/
 │   │   ├── __init__.py        # RiskManager, RiskConfig, RiskDecision, PositionRecord, RejectReason, RiskManagerError export
@@ -169,6 +172,7 @@ stock-agent/
 │   │   ├── prev_close.py      # DailyBarPrevCloseProvider (Step E Stage 2 — GapReversalStrategy 전일 종가 주입)
 │   │   ├── dca.py             # DCABaselineConfig + compute_dca_baseline (Step F PR1)
 │   │   ├── golden_cross.py    # GoldenCrossBaselineConfig + compute_golden_cross_baseline (Step F PR2)
+│   │   ├── momentum.py        # MomentumBaselineConfig + compute_momentum_baseline (Step F PR3)
 │   │   └── CLAUDE.md          # 모듈 세부 문서
 │   ├── execution/
 │   │   ├── __init__.py        # Executor, ExecutorConfig, OrderSubmitter, BalanceProvider, BarSource, LiveOrderSubmitter, LiveBalanceProvider, DryRunOrderSubmitter, StepReport, ReconcileReport, EntryEvent, ExitEvent, ExecutorError export (13종)

@@ -526,6 +526,14 @@ ADR-0019 자체는 폐기 X — 일중 가정 평가 사이클 사실 기록 보
 
 주요 caveat: (1) trades=1 — 통계 신뢰도 낮음. (2) 069500 가격 2.93× 급등 — pykrx 수정주가 보정 여부 검증 필요. 절대 수익률 수치는 데이터 검증 후 재해석 권장.
 
+#### Step F PR3 — F3 Cross-sectional 모멘텀 완료 — FAIL (2026-05-02)
+
+`src/stock_agent/strategy/momentum.py` (`MomentumStrategy`, `MomentumConfig`) + `src/stock_agent/backtest/momentum.py` (`MomentumBaselineConfig`, `compute_momentum_baseline`) + `scripts/backtest.py --strategy-type=momentum` 라우팅 (`--top-n` / `--lookback-months` / `--rebalance-day` CLI 인자 신설). 테스트 85 함수 신규 (parametrize 확장 후 pytest 1830 → 1941 collected).
+
+결과: MDD -7.70% · Sharpe 0.9910 · 총수익률 +11.22% mark-to-market (시작 자본 2,000,000 KRW, KOSPI 200 캐시 101종목, 2025-04-01 ~ 2026-04-21, lookback 6개월, top-N 10). ADR-0022 게이트 1(MDD > -25%) PASS · 게이트 3(Sharpe > 0.3) PASS · 게이트 2(DCA 대비 알파 +11.22% - +48.18% = **-36.96%p**) **FAIL** → 종합 FAIL. 런북: `docs/runbooks/step_f_momentum_2026-05-02.md`.
+
+주요 caveat: (1) 유니버스 부분집합 (199 종목 중 101 — 캐시 부족). (2) lookback 단축 (12개월 학술 표준 → 6개월). (3) 2025-04 ~ 2026-04 KOSPI 200 강세장 구간 — 인덱스 베타(+48.18%)가 cross-sectional 알파를 압도. (4) Strategy-backtest drift: entry skip 시 MomentumStrategy holdings 와 실 lot 불일치 — 후속 보강 필요.
+
 ---
 
 ## Phase 3 진행 요약 (2026-04-21 기준)

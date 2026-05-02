@@ -62,6 +62,10 @@ from stock_agent.backtest.golden_cross import (
     compute_golden_cross_baseline,
 )
 from stock_agent.backtest.loader import BarLoader
+from stock_agent.backtest.momentum import (
+    MomentumBaselineConfig,
+    compute_momentum_baseline,
+)
 from stock_agent.backtest.prev_close import DailyBarPrevCloseProvider
 from stock_agent.config import get_settings
 from stock_agent.data import (
@@ -80,7 +84,12 @@ from stock_agent.strategy.factory import STRATEGY_CHOICES, build_strategy_factor
 # `--strategy-type` argparse choices — factory 의 STRATEGY_CHOICES (orb/vwap-mr/
 # gap-reversal) + "dca". DCA 는 BacktestEngine 우회 경로(`compute_dca_baseline`)
 # 라 factory 에 들어가지 않는다.
-_CLI_STRATEGY_CHOICES: tuple[str, ...] = (*STRATEGY_CHOICES, "dca", "golden-cross")
+_CLI_STRATEGY_CHOICES: tuple[str, ...] = (
+    *STRATEGY_CHOICES,
+    "dca",
+    "golden-cross",
+    "momentum",
+)
 
 # exit code 규약 (scripts/sensitivity.py 와 동일): 2 = 입력·설정 오류 (재시도
 # 무의미), 3 = I/O 오류 (재시도 가치 있음).
@@ -160,7 +169,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "dca=DCABaselineStrategy (ADR-0019 Step F PR1 — `--loader=daily` 권장). "
             "golden-cross=GoldenCrossStrategy (ADR-0019 Step F PR2 — `--loader=daily` 권장, "
             "200d SMA cross 추세추종). "
-            "dca/golden-cross 는 `BacktestEngine` 우회 — 별도 평가 함수 경로."
+            "momentum=MomentumStrategy (ADR-0019 Step F PR3 — `--loader=daily` 권장, "
+            "12개월 cross-sectional 모멘텀, 매월 첫 영업일 리밸런싱). "
+            "dca/golden-cross/momentum 은 `BacktestEngine` 우회 — 별도 평가 함수 경로."
         ),
     )
     parser.add_argument(
@@ -170,6 +181,33 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "DCA 월 투자금 (KRW). `--strategy-type=dca` 분기에서만 사용. "
             "`starting_capital_krw` 이하여야 한다."
+        ),
+    )
+    parser.add_argument(
+        "--top-n",
+        type=int,
+        default=10,
+        help=(
+            "Momentum 상위 N 종목 (`--strategy-type=momentum` 분기 전용). "
+            "1 이상 universe 길이 이하."
+        ),
+    )
+    parser.add_argument(
+        "--lookback-months",
+        type=int,
+        default=12,
+        help=(
+            "Momentum 룩백 개월 수 (`--strategy-type=momentum` 분기 전용). "
+            "양수. 1개월 ≈ 21 영업일 근사."
+        ),
+    )
+    parser.add_argument(
+        "--rebalance-day",
+        type=int,
+        default=1,
+        help=(
+            "Momentum 리밸런싱 영업일 (월 N번째, 1~28). "
+            "`--strategy-type=momentum` 분기 전용. 현재 구현은 매월 첫 분봉 트리거."
         ),
     )
     parser.add_argument(
@@ -304,6 +342,9 @@ def _run_pipeline(args: argparse.Namespace) -> None:
         return
     if args.strategy_type == "golden-cross":
         _run_golden_cross_pipeline(args)
+        return
+    if args.strategy_type == "momentum":
+        _run_momentum_pipeline(args)
         return
 
     symbols = _resolve_symbols(args.symbols, args.universe_yaml)
@@ -652,6 +693,172 @@ def _render_golden_cross_markdown(
     lines.append(
         "- SMA(200) lookback 으로 인해 첫 200 영업일 동안 시그널 없음. "
         "1년 평가 + 200일 lookback = 약 18개월 이상 데이터 필요."
+    )
+    lines.append(
+        "- 본 리포트의 MDD/Sharpe 는 단일 구간 결과. walk-forward 검증 (Phase 5) "
+        "통과 전까지 실전 전환 금지."
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _run_momentum_pipeline(args: argparse.Namespace) -> None:
+    """`--strategy-type=momentum` 전용 파이프라인 — `compute_momentum_baseline` 호출.
+
+    BacktestEngine 우회. universe 는 `_resolve_symbols(args.symbols, args.universe_yaml)`
+    결과 사용. `--top-n` / `--lookback-months` / `--rebalance-day` 로 파라미터 주입.
+    """
+    universe = _resolve_symbols(args.symbols, args.universe_yaml)
+    loader = _build_loader(args)
+
+    config = MomentumBaselineConfig(
+        starting_capital_krw=args.starting_capital,
+        universe=universe,
+        lookback_months=args.lookback_months,
+        top_n=args.top_n,
+        rebalance_day=args.rebalance_day,
+    )
+
+    logger.info(
+        "momentum.start loader={l} from={s} to={e} universe={u} capital={c} "
+        "lookback={lb} top_n={n} rebalance_day={d}",
+        l=args.loader,
+        s=args.start,
+        e=args.end,
+        u=len(universe),
+        c=args.starting_capital,
+        lb=config.lookback_months,
+        n=config.top_n,
+        d=config.rebalance_day,
+    )
+
+    try:
+        result = compute_momentum_baseline(loader, config, args.start, args.end)
+
+        context = _ReportContext(
+            start=args.start,
+            end=args.end,
+            symbols=universe,
+            starting_capital_krw=args.starting_capital,
+        )
+
+        args.output_markdown.parent.mkdir(parents=True, exist_ok=True)
+        args.output_csv.parent.mkdir(parents=True, exist_ok=True)
+        args.output_trades_csv.parent.mkdir(parents=True, exist_ok=True)
+
+        args.output_markdown.write_text(
+            _render_momentum_markdown(result, context, config=config),
+            encoding="utf-8",
+        )
+        _write_metrics_csv(result.metrics, args.output_csv)
+        _write_trades_csv(result.trades, args.output_trades_csv)
+    finally:
+        close = getattr(loader, "close", None)
+        if callable(close):
+            close()
+
+    logger.info(
+        "momentum.done trades={t} mdd={m} sharpe={s} verdict={v}",
+        t=len(result.trades),
+        m=_format_pct(result.metrics.max_drawdown_pct),
+        s=_format_decimal(result.metrics.sharpe_ratio, 4),
+        v=_momentum_verdict_label(result.metrics, daily_equity_len=len(result.daily_equity)),
+    )
+
+
+def _momentum_verdict_label(metrics: BacktestMetrics, *, daily_equity_len: int) -> str:
+    """ADR-0022 게이트 1 + 게이트 3 자동 판정. 게이트 2 (DCA 대비 알파) 는 runbook 수동.
+
+    게이트 1: ``max_drawdown_pct > -0.25``.
+    게이트 3: ``sharpe_ratio > 0.3`` (240 영업일 이상 표본에서만 신뢰).
+
+    게이트 2 는 DCA baseline 결과와의 비교 — 별도 런 결과를 runbook 에서 인용해 판정.
+    """
+    gate1_pass = metrics.max_drawdown_pct > _DCA_MDD_THRESHOLD
+    gate3_pass = metrics.sharpe_ratio > _DCA_SHARPE_THRESHOLD
+    failed: list[str] = []
+    if not gate1_pass:
+        failed.append("게이트 1")
+    if not gate3_pass:
+        failed.append("게이트 3")
+    if failed:
+        return f"FAIL ({'·'.join(failed)})"
+    if daily_equity_len < _DCA_MIN_SESSIONS_FOR_PASS:
+        return "PASS (참고용 — 표본 240 미만, 알파 미정)"
+    return "PASS (게이트 1·3, 알파 미정)"
+
+
+def _render_momentum_markdown(
+    result: BacktestResult,
+    context: _ReportContext,
+    *,
+    config: MomentumBaselineConfig,
+) -> str:
+    """Momentum 전용 Markdown 리포트 — ADR-0022 게이트 1·3 자동, 2 수동."""
+    metrics = result.metrics
+    verdict = _momentum_verdict_label(metrics, daily_equity_len=len(result.daily_equity))
+    lines: list[str] = []
+
+    lines.append("# Cross-sectional Momentum 백테스트 리포트 (ADR-0019 Step F PR3)")
+    lines.append("")
+    lines.append(f"- 기간: `{context.start.isoformat()}` ~ `{context.end.isoformat()}`")
+    lines.append(f"- universe 크기: {len(context.symbols)}")
+    lines.append(f"- lookback_months: {config.lookback_months}")
+    lines.append(f"- top_n: {config.top_n}")
+    lines.append(f"- rebalance_day: {config.rebalance_day}")
+    lines.append(f"- 시작 자본: {context.starting_capital_krw:,} KRW")
+    lines.append(f"- 거래 수: {len(result.trades)}")
+    lines.append("")
+    lines.append(f"## ADR-0022 게이트 판정: **{verdict}**")
+    lines.append("")
+    lines.append(
+        f"- 게이트 1 (MDD > {_format_pct(_DCA_MDD_THRESHOLD)}): "
+        f"`{_format_pct(metrics.max_drawdown_pct)}`"
+    )
+    lines.append(
+        "- 게이트 2 (DCA 대비 알파): **runbook 수동 판정** — DCA baseline 총수익률과 비교."
+    )
+    lines.append(
+        f"- 게이트 3 (Sharpe > {_format_decimal(_DCA_SHARPE_THRESHOLD, 2)}): "
+        f"`{_format_decimal(metrics.sharpe_ratio, 4)}`"
+    )
+    lines.append("")
+    lines.append("## 메트릭")
+    lines.append("")
+    lines.append("| 항목 | 값 |")
+    lines.append("|---|---|")
+    lines.append(f"| 총수익률 | {_format_pct(metrics.total_return_pct)} |")
+    lines.append(f"| 최대 낙폭 (MDD) | {_format_pct(metrics.max_drawdown_pct)} |")
+    lines.append(f"| 샤프 비율 (연환산) | {_format_decimal(metrics.sharpe_ratio, 4)} |")
+    lines.append(f"| 승률 | {_format_pct(metrics.win_rate)} |")
+    lines.append(f"| 평균 손익비 | {_format_decimal(metrics.avg_pnl_ratio, 4)} |")
+    lines.append(f"| 일평균 거래 수 | {_format_decimal(metrics.trades_per_day, 3)} |")
+    lines.append(f"| 순손익 (KRW) | {metrics.net_pnl_krw:,} |")
+    lines.append("")
+    lines.append("## 일일 자본 요약")
+    lines.append("")
+    if result.daily_equity:
+        equities = [row.equity_krw for row in result.daily_equity]
+        first = result.daily_equity[0]
+        last = result.daily_equity[-1]
+        trough = min(result.daily_equity, key=lambda r: r.equity_krw)
+        lines.append(f"- 세션 수: {len(result.daily_equity)}")
+        lines.append(f"- 시작: `{first.session_date.isoformat()}` {first.equity_krw:,} KRW")
+        lines.append(f"- 종료: `{last.session_date.isoformat()}` {last.equity_krw:,} KRW")
+        lines.append(f"- 최저점: `{trough.session_date.isoformat()}` {trough.equity_krw:,} KRW")
+        lines.append(f"- 최고점 자본: {max(equities):,} KRW")
+    else:
+        lines.append("- 세션 없음 (입력 분봉이 비어있거나 날짜 필터 결과가 0건)")
+    lines.append("")
+    lines.append("## 주의")
+    lines.append("")
+    lines.append(
+        "- 게이트 2 (DCA baseline 대비 알파) 는 runbook 에서 수동 판정. "
+        "F1 DCA baseline (PR1) 의 `total_return_pct` 와 비교해 양의 알파 충족 여부를 결정."
+    )
+    lines.append(
+        "- lookback_months × 21 영업일 동안 lookback 미충족 — 첫 리밸런싱은 lookback 충족 후 "
+        "월 첫 영업일 도달 시 발화."
     )
     lines.append(
         "- 본 리포트의 MDD/Sharpe 는 단일 구간 결과. walk-forward 검증 (Phase 5) "

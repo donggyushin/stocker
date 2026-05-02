@@ -56,11 +56,14 @@ PR2 — F2 Golden Cross ✓ 완료 (2026-05-02, PASS — 3 게이트, 단 caveat
   ├ 주요 caveat: trades=1 (통계 신뢰도 낮음), 데이터 plausibility 검증 필요 (+182.36% 절대 수치)
   └ baseline 비교: 총수익률 +182.36% mark-to-market (시작 자본 2,000,000 KRW, 069500, 58주)
   ↓
-PR3 — F3 Cross-sectional 모멘텀
-  ├ src/stock_agent/strategy/momentum.py — MomentumStrategy (12개월 returns ranking)
-  ├ tests/test_strategy_momentum.py
-  ├ scripts/backtest.py --strategy-type momentum
-  ├ docs/runbooks/step_f_momentum_2026-MM-DD.md
+PR3 — F3 Cross-sectional 모멘텀 ✓ 완료 (2026-05-02, FAIL — 게이트 2)
+  ├ src/stock_agent/strategy/momentum.py — MomentumStrategy, MomentumConfig
+  ├ src/stock_agent/backtest/momentum.py — MomentumBaselineConfig, compute_momentum_baseline
+  ├ tests/test_strategy_momentum.py (47건), tests/test_backtest_momentum.py (38건)
+  ├ scripts/backtest.py --strategy-type momentum (--top-n / --lookback-months / --rebalance-day 신설)
+  ├ docs/runbooks/step_f_momentum_2026-05-02.md
+  ├ ADR-0022 게이트 판정: MDD -7.70% PASS / Sharpe 0.9910 PASS / DCA 대비 알파 -36.96%p FAIL → 종합 FAIL
+  └ 결과: 총수익률 +11.22% mark-to-market (시작 자본 2,000,000 KRW, 101종목, 2025-04-01 ~ 2026-04-21)
   ↓
 PR4 — F4 저변동성 (옵션, 보너스)
   ├ src/stock_agent/strategy/low_volatility.py — LowVolStrategy
