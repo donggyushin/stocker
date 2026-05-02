@@ -42,6 +42,7 @@ from stock_agent.backtest.walk_forward import (
     WalkForwardResult,
     WalkForwardWindow,
     generate_windows,
+    run_rsi_mr_walk_forward,
     run_walk_forward,
 )
 from stock_agent.risk import RejectReason
@@ -70,6 +71,7 @@ __all__ = [
     "load_sensitivity_rows",
     "merge_sensitivity_rows",
     "render_markdown_table",
+    "run_rsi_mr_walk_forward",
     "run_sensitivity",
     "run_sensitivity_combos",
     "run_sensitivity_combos_parallel",
