@@ -103,27 +103,6 @@ def _make_config(
     )
 
 
-def _feed_closes(
-    strategy: RSIMRStrategy,
-    symbol: str,
-    closes: list[int | float],
-    *,
-    start_date: date = _BASE_DATE,
-    start_minute: int = 0,
-) -> None:
-    """종목 하나에 closes 를 순서대로 bar 로 변환해 on_bar 에 주입."""
-    for i, c in enumerate(closes):
-        ts = datetime(
-            start_date.year,
-            start_date.month,
-            start_date.day,
-            9,
-            start_minute + i,
-            tzinfo=KST,
-        )
-        strategy.on_bar(_make_bar(symbol, ts, c))
-
-
 # ---------------------------------------------------------------------------
 # RSI 수기 계산 헬퍼 (simple average gain/loss 방식)
 # 명세: gains = max(close[i]-close[i-1], 0), losses = max(close[i-1]-close[i], 0)
