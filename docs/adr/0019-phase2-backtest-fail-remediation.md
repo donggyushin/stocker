@@ -113,6 +113,10 @@ PR #51 당초 계획은 PASS 시 docs-only PR 로 Phase 2 선언, FAIL 시 "ORB 
 
 5. **Phase 2 PASS 미달성 상태 + Phase 3 진입 금지 정책**은 Step F 평가 결과 산출 전까지 그대로 유지.
 
+### 추가 결정 (ADR-0023, 2026-05-02)
+
+Step F PR1~PR5 평가 완료 후 시나리오 A 판정 ([ADR-0023](./0023-rsi-mr-strategy-adoption-conditional.md)). F5 RSI 평균회귀 (`RSIMRStrategy`) 1차 채택 후보 확정 — MDD -6.40% · Sharpe 2.4723 · 총수익률 +56.31% · DCA 대비 알파 +8.13%p · trades=175. ADR-0022 게이트 3종 통과 = Phase 2 백테스트 단계 PASS 조건 충족. 단 Phase 3 진입은 ADR-0023 의 C1~C4 추가 검증 (universe 199 백필 + walk-forward + 069500 plausibility + PR5 sensitivity grid) 통과 후로 게이팅. 종합 런북: `docs/runbooks/step_f_summary_2026-05-02.md`.
+
 ## 추적
 
 - 코드: `config/holidays.yaml` (근로자의날 2 건 보강), `scripts/sensitivity.py` · `scripts/backtest.py` (기존 인프라, 단계 A 에서 사용), `src/stock_agent/backtest/walk_forward.py` (단계 이후 게이트)
