@@ -31,6 +31,10 @@ stock-agent 의 시뮬레이션 경계 모듈. `ORBStrategy` + `RiskManager` 를
 
 `MomentumBaselineConfig`, `compute_momentum_baseline`
 
+`low_volatility.py` 공개 심볼 (`backtest/low_volatility.py` — `__init__.py` 미재노출, 직접 import):
+
+`LowVolBaselineConfig`, `compute_low_volatility_baseline`
+
 `RejectReason` 은 `stock_agent.risk` 의 Literal 을 재노출. `BacktestResult.rejected_counts` 의 키 타입이라 같은 패키지에서 접근 가능해야 소비자가 `risk` 패키지를 직접 import 하지 않는다.
 
 ## 현재 상태 (2026-04-20 기준)

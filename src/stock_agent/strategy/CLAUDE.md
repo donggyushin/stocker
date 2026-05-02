@@ -26,9 +26,13 @@ stock-agent 의 전략 경계 모듈. `Strategy` Protocol + `ORBStrategy` / `VWA
 
 `MomentumConfig`, `MomentumStrategy`
 
+`low_volatility.py` 공개 심볼 (`strategy/low_volatility.py` — `__init__.py` 미재노출, 직접 import):
+
+`LowVolConfig`, `LowVolStrategy`
+
 ## 현재 상태 (2026-05-02 기준)
 
-**Phase 2 진행 중. ORBStrategy 완료 (2026-04-20). VWAPMRStrategy 추가 (2026-05-01, Step E PR2). GapReversalStrategy 추가 (2026-05-01, Step E PR3). `factory.py` 추가 (2026-05-01, Step E PR4 Stage 1). DCAStrategy 추가 (2026-05-02, Step F PR1 — ADR-0022 게이트 PASS). GoldenCrossStrategy 추가 (2026-05-02, Step F PR2 — ADR-0022 게이트 PASS, 단 단일 trade caveat). MomentumStrategy 추가 (2026-05-02, Step F PR3 — ADR-0022 게이트 2 FAIL).**
+**Phase 2 진행 중. ORBStrategy 완료 (2026-04-20). VWAPMRStrategy 추가 (2026-05-01, Step E PR2). GapReversalStrategy 추가 (2026-05-01, Step E PR3). `factory.py` 추가 (2026-05-01, Step E PR4 Stage 1). DCAStrategy 추가 (2026-05-02, Step F PR1 — ADR-0022 게이트 PASS). GoldenCrossStrategy 추가 (2026-05-02, Step F PR2 — ADR-0022 게이트 PASS, 단 단일 trade caveat). MomentumStrategy 추가 (2026-05-02, Step F PR3 — ADR-0022 게이트 2 FAIL). LowVolStrategy 추가 (2026-05-02, Step F PR4 — ADR-0022 게이트 2 FAIL).**
 
 ### `base.py` — Protocol + DTO + 상수
 
@@ -546,3 +550,62 @@ pytest **47 케이스 green** (`tests/test_strategy_momentum.py`). 외부 목킹
 | non-universe 종목 처리 | 3 |
 
 관련 테스트 파일: `tests/test_strategy_momentum.py`.
+
+---
+
+## `low_volatility.py` — LowVolStrategy (Step F PR4)
+
+ADR-0019 Step F 복구 로드맵 네 번째 전략 후보. 저변동성 이상 수익 (Frazzini-Pedersen 2014) 분기 리밸런싱. ADR-0022 게이트 판정: FAIL (게이트 2 — DCA 대비 알파 -32.31%p).
+
+`strategy/__init__.py` 에 재노출하지 않음 — 소비자 `compute_low_volatility_baseline` (`backtest/low_volatility.py`) 이 직접 import.
+
+### `LowVolConfig` (`@dataclass(frozen=True, slots=True)`)
+
+| 필드 | 기본값 | 설명 |
+|---|---|---|
+| `universe` | 필수 | `tuple[str, ...]` — 평가 대상 종목 (1개 이상, 6자리 숫자 정규식, 중복 금지) |
+| `lookback_days` | `60` | 변동성 측정 lookback 기간 (영업일 단위, 양수 필수) |
+| `top_n` | `20` | 리밸런싱 시 보유 종목 수 (1 이상, `len(universe)` 이하 강제) |
+| `rebalance_month_interval` | `3` | 리밸런싱 주기 (월 단위, 1 이상) — 3이면 분기 리밸런싱 |
+| `position_pct` | `Decimal("1.0")` | 자본 투입 비율 (0 < pct ≤ 1) |
+
+`__post_init__` 검증 (위반 시 `RuntimeError` — 다른 모듈과 동일 기조):
+- `universe` 빈 tuple / 정규식 위반 / 중복
+- `lookback_days > 0`
+- `top_n >= 1`, `top_n <= len(universe)`
+- `rebalance_month_interval >= 1`
+- `0 < position_pct <= 1`
+
+### `LowVolStrategy` — 저변동성 분기 리밸런싱 상태 머신
+
+- `Strategy` Protocol 구현체 (`on_bar`, `on_time`).
+- **의미론**: universe 종목의 일봉 close 를 누적해 일별 수익률 표준편차를 계산. `rebalance_month_interval` 월마다 변동성 asc 정렬 → 하위 `top_n` 종목 보유, 동일 가중 (자본 / N).
+- `on_bar` 에서 일봉 close 버퍼 업데이트. 리밸런싱 트리거 시 기존 보유 종목 `ExitSignal(reason="force_close")` + 신규 하위-N 종목 `EntrySignal(stop_price=Decimal("0"), take_price=Decimal("0"))` 다중 emit.
+- `on_time` 은 항상 빈 리스트 반환 — 강제청산 없음 (분기 리밸런싱 전략).
+- **lookback 부족 시**: 누적 일봉 수가 `lookback_days` 미만이면 리밸런싱 스킵.
+- **non-universe 종목 가드**: universe 에 없는 symbol 은 `on_bar` 에서 조용히 무시.
+- **세션 경계**: 리밸런싱 주기 판정은 `bar.bar_time.date()` 의 월 필드 변경 누적으로.
+- **입력 검증 (`RuntimeError` 전파)**: aware datetime 강제 (naive → 거부).
+
+### 설계 특성
+
+- `EntrySignal.stop_price=Decimal("0")` / `take_price=Decimal("0")` 는 "손익절 미사용" 마커 — `compute_low_volatility_baseline` 이 인식해 손익절 판정 건너뜀. `BacktestEngine` 직접 주입 시 비정상 동작.
+- 다중 lot 동시 보유 + mark-to-market 평가는 `backtest/low_volatility.py` 의 `compute_low_volatility_baseline` 이 담당 (`BacktestEngine` 우회). MomentumStrategy 와 동일 패턴, ranking metric 만 변경 (수익률 → 변동성 역순).
+- DCA·GoldenCross·Momentum 과 동일 비용 계약 (slip 0.1% / commission 0.015% / sell tax 0.18%).
+
+### 테스트 현황 (LowVolStrategy)
+
+pytest **47 케이스 green** (`tests/test_strategy_low_volatility.py`). 외부 목킹 불필요 — 순수 로직.
+
+| 그룹 | 케이스 수 |
+|---|---|
+| Config 검증 | 16 |
+| close 버퍼 누적 | 4 |
+| 리밸런싱 트리거링 | 5 |
+| 시그널 emit (ExitSignal + EntrySignal) | 6 |
+| 시그널 필드 검증 | 7 |
+| 입력 가드 | 6 |
+| Protocol 호환성 | 7 |
+| non-universe 종목 처리 | 3 |
+
+관련 테스트 파일: `tests/test_strategy_low_volatility.py`.
