@@ -97,4 +97,4 @@ ADR-0022 의 시나리오 표 적용 결과 시나리오 A (F2~F5 중 1+ 가 게
 - 관련 이슈: #78 (Step E 이슈, ADR-0021 작성 직후 close 완료).
 - 관련 ADR: [ADR-0017](./0017-phase2-pass-1year.md), [ADR-0019](./0019-phase2-backtest-fail-remediation.md), [ADR-0021](./0021-step-e-vwap-gap-failed.md), [ADR-0022](./0022-step-f-gate-redefinition.md).
 - 도입 PR: TBD (본 ADR 도입 PR — Step F PR6).
-- 후속 (예정): C1~C4 검증 작업 (universe 백필 + walk-forward 본 구현 + 069500 plausibility 검증 + PR5 sensitivity grid). 각 작업은 별도 PR 또는 본 ADR 의 사후 결과 보강.
+- 후속 진행 중: C1 통과 (2026-05-02, `docs/runbooks/c1_universe_full_backfill_2026-05-02.md` — universe 199 종목 백필 + PR5 재평가 MDD -8.17% / Sharpe 2.2966 / 총수익률 +63.44% / DCA 알파 +15.26%p / trades=177, 게이트 3종 PASS). 잔여 C2~C4 (walk-forward 본 구현 / 069500 수정주가 plausibility / PR5 sensitivity grid). 각 작업은 별도 PR 또는 본 ADR 의 사후 결과 보강.

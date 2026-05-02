@@ -4,7 +4,7 @@
 
 ## 프로젝트 한 줄 요약
 
-Python 기반 한국주식 자동매매 시스템 (2026-05-02 기준 일중 데이트레이딩 가정 폐기 → 일/월 단위 평균회귀 채택 후보). 한국투자증권 KIS Developers API + 100~200만원 초기 자본. **paper 주문 + live 시세 하이브리드 키** 구조 (KIS paper 도메인에 시세 API 없음 — 시세는 별도 실전 APP_KEY 로 실전 도메인 호출). 현재 **Phase 1 PASS (코드·테스트 레벨). Phase 2 진행 중 — 백테스트 엔진·전략·리스크·CSV/KIS 분봉 어댑터·백필 CLI 까지 모든 코드 산출물 완료. 2026-04-24 1차 백테스트 FAIL + 복구 로드맵 (A 민감도 → B 비용 → C 유니버스 → D 파라미터 → E 전략 교체) 순차 게이팅. Step A~E 전원 FAIL (230+ 런 / 0 PASS) → Step F (가설 풀 확장, ADR-0022 게이트 적용) PR1~PR5 평가 완료. 시나리오 A 판정 (PASS 후보 채택) — ADR-0023 으로 F5 RSI 평균회귀 (`RSIMRStrategy`) 1차 채택 후보 확정 (MDD -6.40% / Sharpe 2.4723 / 총수익률 +56.31% / DCA 대비 알파 +8.13%p / trades=175). PR2 (F2 Golden Cross) 는 단일 trade caveat 로 채택 보류 (코드 보존). PR3 (모멘텀)·PR4 (저변동성) 채택 후보 제외 (게이트 2 FAIL, 코드 보존). Phase 3 (모의투자) 진입은 ADR-0023 의 4 추가 검증 (universe 199 종목 전체 백필 + walk-forward + 069500 수정주가 plausibility + PR5 sensitivity grid) 통과 후로 게이팅. Phase 3 코드 산출물 (Executor·main.py APScheduler·monitor/notifier·storage/db·세션 재기동·broker 체결조회) 모두 완료 상태로 보존.**
+Python 기반 한국주식 자동매매 시스템 (2026-05-02 기준 일중 데이트레이딩 가정 폐기 → 일/월 단위 평균회귀 채택 후보). 한국투자증권 KIS Developers API + 100~200만원 초기 자본. **paper 주문 + live 시세 하이브리드 키** 구조 (KIS paper 도메인에 시세 API 없음 — 시세는 별도 실전 APP_KEY 로 실전 도메인 호출). 현재 **Phase 1 PASS (코드·테스트 레벨). Phase 2 진행 중 — 백테스트 엔진·전략·리스크·CSV/KIS 분봉 어댑터·백필 CLI 까지 모든 코드 산출물 완료. 2026-04-24 1차 백테스트 FAIL + 복구 로드맵 (A 민감도 → B 비용 → C 유니버스 → D 파라미터 → E 전략 교체) 순차 게이팅. Step A~E 전원 FAIL (230+ 런 / 0 PASS) → Step F (가설 풀 확장, ADR-0022 게이트 적용) PR1~PR5 평가 완료. 시나리오 A 판정 (PASS 후보 채택) — ADR-0023 으로 F5 RSI 평균회귀 (`RSIMRStrategy`) 1차 채택 후보 확정 (MDD -6.40% / Sharpe 2.4723 / 총수익률 +56.31% / DCA 대비 알파 +8.13%p / trades=175). PR2 (F2 Golden Cross) 는 단일 trade caveat 로 채택 보류 (코드 보존). PR3 (모멘텀)·PR4 (저변동성) 채택 후보 제외 (게이트 2 FAIL, 코드 보존). Phase 3 (모의투자) 진입은 ADR-0023 의 4 추가 검증 통과 후로 게이팅 — **C1 통과 (2026-05-02)**, C2~C4 잔여 (walk-forward + 069500 수정주가 plausibility + PR5 sensitivity grid). Phase 3 코드 산출물 (Executor·main.py APScheduler·monitor/notifier·storage/db·세션 재기동·broker 체결조회) 모두 완료 상태로 보존.**
 
 상세 설계는 `plan.md`를 참조한다. 외부 독자용 개요는 `README.md`.
 
@@ -218,7 +218,7 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
 
 ## 현재 상태 (2026-05-02 기준)
 
-**한 줄 진행도**: Phase 1 PASS · Phase 2 진행 중 (1차 백테스트 FAIL → ADR-0019 복구 로드맵 Step F PR1~PR5 평가 완료, ADR-0023 으로 F5 RSI 평균회귀 1차 채택 후보 확정). Phase 3 코드 산출물 완료 상태로 보존 — ADR-0023 의 4 추가 검증 통과 전까지 Phase 3 진입 금지.
+**한 줄 진행도**: Phase 1 PASS · Phase 2 진행 중 (1차 백테스트 FAIL → ADR-0019 복구 로드맵 Step F PR1~PR5 평가 완료, ADR-0023 으로 F5 RSI 평균회귀 1차 채택 후보 확정, C1 통과 (2026-05-02)). Phase 3 코드 산출물 완료 상태로 보존 — ADR-0023 의 C2~C4 잔여 검증 통과 전까지 Phase 3 진입 금지.
 
 - **Phase 2 1차 백테스트 결과 (2026-04-24, 1년치 KIS 백필 + `--loader=kis`)**: MDD **-51.36%**, 총수익률 -50.05%, 샤프 -6.81, 승률 31.35%, 손익비 1.28, 기대값 ≈ -0.28R. Phase 2 PASS 기준 3.4 배 초과 미달.
 - **신규 Phase 2 PASS 게이트 (ADR-0019)**: (1) MDD > -15%, (2) 승률 × 손익비 > 1.0, (3) 연환산 샤프 > 0 — 세 조건 전부 충족 + walk-forward 통과 후에만 Phase 3 착수.
@@ -243,6 +243,8 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
     - **PR5 (F5 RSI 평균회귀) — PASS (2026-05-02, 1차 채택 후보)**. MDD -6.40% · Sharpe 2.4723 · 총수익률 +56.31% · DCA 대비 알파 +8.13%p · trades=175 (Step F 최강 통계 신뢰도). 청산 사유: stop_loss 113 (64.6%) / take_profit 58 (33.1%) / force_close 4 (2.3%). 승률 34.29% · 평균 손익비 4.3799 — 평균회귀 전형. 런북: `docs/runbooks/step_f_rsi_mr_2026-05-02.md`.
     - **PR6 (종합 판정 + ADR-0023) — 본 PR (2026-05-02)**. 시나리오 A 판정. F5 RSI 평균회귀 1차 채택 후보 확정. Phase 3 진입 조건 4종 명시 (universe 199 백필 + walk-forward + 069500 수정주가 plausibility + PR5 sensitivity grid). 종합 런북: `docs/runbooks/step_f_summary_2026-05-02.md`. ADR: `docs/adr/0023-rsi-mr-strategy-adoption-conditional.md`.
 - **Phase 3 진입 게이팅 (ADR-0019 + ADR-0023)**: ADR-0023 의 C1~C4 추가 검증 통과 전까지 `main.py` 모의투자 무중단 운영 계획 보류. `execution/`·`main.py`·`monitor/`·`storage/` 코드 산출물은 보존 — 채택 후보 PR5 가 `Strategy` Protocol 준수라 그대로 재사용.
+  - **C1 PASS (2026-05-02)**: universe 199 종목 일봉 백필 완료 (2024-04-01~2026-04-21) + PR5 RSI MR 재평가 결과 MDD -8.17% / Sharpe 2.2966 / 총수익률 +63.44% / DCA 알파 +15.26%p / trades=177. ADR-0022 게이트 3종 전원 PASS. 런북: `docs/runbooks/c1_universe_full_backfill_2026-05-02.md`.
+  - **C2~C4 잔여**: C2 walk-forward 본 구현 + 다년 코호트 · C3 069500 수정주가 plausibility · C4 PR5 파라미터 sensitivity grid.
 - **테스트 카운트**: pytest **2140 collected** (Step F PR5 기준 — PR4 2055 + PR5 신규 85. PR6 은 docs-only 라 테스트 카운트 변동 없음).
 - **운영자 close 대기 Issue**: #51 (Phase 2 PASS 판정 FAIL → 복구 로드맵으로 대체) · #52 (`KisMinuteBarLoader` 파싱 실패 대응, 운영자 `scripts/debug_kis_minute.py` 실행 후 댓글) · #63 (공휴일 캘린더 가드, 백필 재실행으로 `date_mismatch` 0 확인 후 댓글) · #71 (장시간 hang 방지, 2026-04-24 백필 완주 확인 — 운영자 댓글만 잔여).
 

@@ -556,10 +556,10 @@ PR6 본 PR. 코드 변경 없음 — 종합 판정 런북 (`docs/runbooks/step_f
 
 **ADR-0023 결정**: F5 RSI 평균회귀 (`RSIMRStrategy`) 를 Step F 1차 채택 후보로 선정. Phase 3 (모의투자 무중단 운영) 진입은 다음 4 추가 검증 전부 통과 후로 게이팅:
 
-- **C1**: universe 199 종목 전체 백필 + PR5 재평가 (현재 캐시 101 종목 부분집합).
-- **C2**: walk-forward 검증 본 구현 + 다년 코호트 검증 (현재 단일 1년 코호트만 평가).
-- **C3**: 069500 일봉 수정주가 보정 검증 (KRX 정보데이터시스템 [11003/11006] 직접 비교).
-- **C4**: PR5 파라미터 sensitivity grid (`rsi_period` · `oversold/overbought` · `stop_loss_pct` · `max_positions`) 32~96 조합 스윕.
+- **C1**: universe 199 종목 전체 백필 + PR5 재평가 (현재 캐시 101 종목 부분집합). — **PASS (2026-05-02)**. MDD -8.17% · Sharpe 2.2966 · 총수익률 +63.44% · DCA 알파 +15.26%p · trades=177. ADR-0022 게이트 3종 전원 통과. 런북: `docs/runbooks/c1_universe_full_backfill_2026-05-02.md`.
+- **C2**: walk-forward 검증 본 구현 + 다년 코호트 검증 (현재 단일 1년 코호트만 평가). — 미완료.
+- **C3**: 069500 일봉 수정주가 보정 검증 (KRX 정보데이터시스템 [11003/11006] 직접 비교). — 미완료.
+- **C4**: PR5 파라미터 sensitivity grid (`rsi_period` · `oversold/overbought` · `stop_loss_pct` · `max_positions`) 32~96 조합 스윕. — 미완료.
 
 **부결과**:
 
