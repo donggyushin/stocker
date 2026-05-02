@@ -97,4 +97,8 @@ ADR-0022 의 시나리오 표 적용 결과 시나리오 A (F2~F5 중 1+ 가 게
 - 관련 이슈: #78 (Step E 이슈, ADR-0021 작성 직후 close 완료).
 - 관련 ADR: [ADR-0017](./0017-phase2-pass-1year.md), [ADR-0019](./0019-phase2-backtest-fail-remediation.md), [ADR-0021](./0021-step-e-vwap-gap-failed.md), [ADR-0022](./0022-step-f-gate-redefinition.md).
 - 도입 PR: TBD (본 ADR 도입 PR — Step F PR6).
-- 후속 진행 중: C1 통과 (2026-05-02, `docs/runbooks/c1_universe_full_backfill_2026-05-02.md` — universe 199 종목 백필 + PR5 재평가 MDD -8.17% / Sharpe 2.2966 / 총수익률 +63.44% / DCA 알파 +15.26%p / trades=177, 게이트 3종 PASS). 잔여 C2~C4 (walk-forward 본 구현 / 069500 수정주가 plausibility / PR5 sensitivity grid). 각 작업은 별도 PR 또는 본 ADR 의 사후 결과 보강.
+- 후속 진행 중:
+  - C1 통과 (2026-05-02, `docs/runbooks/c1_universe_full_backfill_2026-05-02.md` — universe 199 종목 백필 + PR5 재평가 MDD -8.17% / Sharpe 2.2966 / 총수익률 +63.44% / DCA 알파 +15.26%p / trades=177, 게이트 3종 PASS).
+  - C2 통과 (2026-05-02, `docs/runbooks/c2_walk_forward_rsi_mr_2026-05-02.md` — walk-forward 본 구현 (`scripts/walk_forward_rsi_mr.py`) + 다년 캐시 (2024-04-01~2026-04-21) 분할 평가. step6 (2 windows, degradation -5.16%) + step3 (3 windows, degradation +11.32%) 모두 ADR-0022 게이트 + degradation 임계 (≤ 0.3, ADR-0024) 통과).
+  - C3 통과 (2026-05-03, `docs/runbooks/c3_069500_adjusted_plausibility_2026-05-03.md` — pykrx 일봉 캐시가 수정주가 데이터로 확정 (Stage 3 cache vs adjusted=True diff 0). ETF/KOSPI200 비율 점프 0건 (Stage 2). Google Finance 069500 + Wikipedia KOSPI 200 absolute level cross-check 정합 (Stage 4). PR1~PR5 절대 수익률은 데이터 보정 오류가 아닌 한국 KOSPI 200 강세장 macro 의 결과로 확정).
+  - 잔여 C4 (PR5 sensitivity grid). 각 작업은 별도 PR 또는 본 ADR 의 사후 결과 보강.
