@@ -98,7 +98,9 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **ADR-0023 C1 통과 (2026-05-02)**. universe 199 종목 일봉 백필 완료 (2024-04-01~2026-04-21) + PR5 RSI MR 재평가: MDD -8.17% · Sharpe 2.2966 · 총수익률 +63.44% · DCA 알파 +15.26%p · trades=177. ADR-0022 게이트 3종 전원 PASS. 원본 PR5 의 universe 부분집합 편향 caveat 해소. 런북: `docs/runbooks/c1_universe_full_backfill_2026-05-02.md`.
 
-**ADR-0023 C2 통과 (2026-05-02)**. walk-forward 본 구현 (`scripts/walk_forward_rsi_mr.py` + `backtest/walk_forward.py`) + 다년 캐시 (2024-04-01~2026-04-21) 분할 평가. step6 (2 windows) + step3 (3 windows) 모두 ADR-0022 게이트 + degradation ≤ 0.3 (ADR-0024) 통과. 잔여: C3 069500 수정주가 plausibility · C4 sensitivity grid. 런북: `docs/runbooks/c2_walk_forward_rsi_mr_2026-05-02.md`.
+**ADR-0023 C2 통과 (2026-05-02)**. walk-forward 본 구현 (`scripts/walk_forward_rsi_mr.py` + `backtest/walk_forward.py`) + 다년 캐시 (2024-04-01~2026-04-21) 분할 평가. step6 (2 windows) + step3 (3 windows) 모두 ADR-0022 게이트 + degradation ≤ 0.3 (ADR-0024) 통과. 런북: `docs/runbooks/c2_walk_forward_rsi_mr_2026-05-02.md`.
+
+**ADR-0023 C3 통과 (2026-05-03)**. `scripts/verify_069500_adjusted.py` 진단 CLI + `data/c3_verify_069500.json` raw 결과. `data/stock_agent.db` 캐시 458 행 = pykrx `adjusted=True` 458 행 close 완전 일치 (Stage 3 diff 0). ETF/KOSPI 200 비율 점프 0건 (Stage 2). Google Finance · Wikipedia KOSPI 200 cross-check 정합 (Stage 4). pykrx 일봉 캐시는 수정주가 데이터로 확정 — PR1~PR5 절대 수익률은 한국 KOSPI 200 강세장 macro 의 결과. 잔여: C4 sensitivity grid. 런북: `docs/runbooks/c3_069500_adjusted_plausibility_2026-05-03.md`.
 
 **Phase 3 착수 전제 통과** (2026-04-21). 실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK) 완료.
 

@@ -558,7 +558,7 @@ PR6 본 PR. 코드 변경 없음 — 종합 판정 런북 (`docs/runbooks/step_f
 
 - **C1**: universe 199 종목 전체 백필 + PR5 재평가 (현재 캐시 101 종목 부분집합). — **PASS (2026-05-02)**. MDD -8.17% · Sharpe 2.2966 · 총수익률 +63.44% · DCA 알파 +15.26%p · trades=177. ADR-0022 게이트 3종 전원 통과. 런북: `docs/runbooks/c1_universe_full_backfill_2026-05-02.md`.
 - **C2**: walk-forward 검증 본 구현 + 다년 코호트 검증 (현재 단일 1년 코호트만 평가). — **PASS (2026-05-02)**. `scripts/walk_forward_rsi_mr.py` 신규 CLI + `backtest/walk_forward.py` `generate_windows`·`run_rsi_mr_walk_forward` 본 구현. step6 (2 windows): train_avg +19.20% · test_avg +20.19% · degradation -5.16% · 2/2 PASS. step3 (3 windows): train_avg +18.97% · test_avg +16.82% · degradation +11.32% · 3/3 PASS. pass_threshold 0.3 (ADR-0024). 런북: `docs/runbooks/c2_walk_forward_rsi_mr_2026-05-02.md`.
-- **C3**: 069500 일봉 수정주가 보정 검증 (KRX 정보데이터시스템 [11003/11006] 직접 비교). — 미완료.
+- **C3**: 069500 일봉 수정주가 보정 검증. — **PASS (2026-05-03)**. `scripts/verify_069500_adjusted.py` + `data/c3_verify_069500.json`. `data/stock_agent.db` 캐시 458 행 = pykrx `adjusted=True` 458 행 close 완전 일치 (Stage 3 diff 0). ETF/KOSPI 200 (1028) 비율 점프 0건 (Stage 2). Google Finance · Wikipedia KOSPI 200 absolute level cross-check 정합 (Stage 4). pykrx 일봉 캐시는 수정주가 데이터로 확정 — PR1~PR5 절대 수익률은 한국 KOSPI 200 강세장 macro 의 결과. 런북: `docs/runbooks/c3_069500_adjusted_plausibility_2026-05-03.md`.
 - **C4**: PR5 파라미터 sensitivity grid (`rsi_period` · `oversold/overbought` · `stop_loss_pct` · `max_positions`) 32~96 조합 스윕. — 미완료.
 
 **부결과**:
