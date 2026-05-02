@@ -30,9 +30,13 @@ stock-agent 의 전략 경계 모듈. `Strategy` Protocol + `ORBStrategy` / `VWA
 
 `LowVolConfig`, `LowVolStrategy`
 
+`rsi_mr.py` 공개 심볼 (`strategy/rsi_mr.py` — `__init__.py` 미재노출, 직접 import):
+
+`RSIMRConfig`, `RSIMRStrategy`
+
 ## 현재 상태 (2026-05-02 기준)
 
-**Phase 2 진행 중. ORBStrategy 완료 (2026-04-20). VWAPMRStrategy 추가 (2026-05-01, Step E PR2). GapReversalStrategy 추가 (2026-05-01, Step E PR3). `factory.py` 추가 (2026-05-01, Step E PR4 Stage 1). DCAStrategy 추가 (2026-05-02, Step F PR1 — ADR-0022 게이트 PASS). GoldenCrossStrategy 추가 (2026-05-02, Step F PR2 — ADR-0022 게이트 PASS, 단 단일 trade caveat). MomentumStrategy 추가 (2026-05-02, Step F PR3 — ADR-0022 게이트 2 FAIL). LowVolStrategy 추가 (2026-05-02, Step F PR4 — ADR-0022 게이트 2 FAIL).**
+**Phase 2 진행 중. ORBStrategy 완료 (2026-04-20). VWAPMRStrategy 추가 (2026-05-01, Step E PR2). GapReversalStrategy 추가 (2026-05-01, Step E PR3). `factory.py` 추가 (2026-05-01, Step E PR4 Stage 1). DCAStrategy 추가 (2026-05-02, Step F PR1 — ADR-0022 게이트 PASS). GoldenCrossStrategy 추가 (2026-05-02, Step F PR2 — ADR-0022 게이트 PASS, 단 단일 trade caveat). MomentumStrategy 추가 (2026-05-02, Step F PR3 — ADR-0022 게이트 2 FAIL). LowVolStrategy 추가 (2026-05-02, Step F PR4 — ADR-0022 게이트 2 FAIL). RSIMRStrategy 추가 (2026-05-02, Step F PR5 — ADR-0022 게이트 3종 PASS).**
 
 ### `base.py` — Protocol + DTO + 상수
 
@@ -609,3 +613,79 @@ pytest **47 케이스 green** (`tests/test_strategy_low_volatility.py`). 외부 
 | non-universe 종목 처리 | 3 |
 
 관련 테스트 파일: `tests/test_strategy_low_volatility.py`.
+
+---
+
+## `rsi_mr.py` — RSIMRStrategy (Step F PR5)
+
+ADR-0019 Step F 복구 로드맵 다섯 번째 전략 후보. 일봉 RSI(14) 기반 평균회귀. ADR-0022 게이트 판정: **PASS (3종 전원 통과)**. Step F 전체에서 DCA 대비 양의 알파를 확보한 두 번째 사례 (PR2 Golden Cross 이후), 단 trades=175 로 통계 신뢰도가 가장 높음.
+
+`strategy/__init__.py` 에 재노출하지 않음 — 소비자 `compute_rsi_mr_baseline` (`backtest/rsi_mr.py`) 이 직접 import.
+
+### `RSIMRConfig` (`@dataclass(frozen=True, slots=True)`)
+
+| 필드 | 기본값 | 설명 |
+|---|---|---|
+| `universe` | 필수 | `tuple[str, ...]` — 평가 대상 종목 (1개 이상, 6자리 숫자 정규식, 중복 금지) |
+| `rsi_period` | `14` | RSI 계산 기간 (일봉 기준, 양수 필수) |
+| `oversold_threshold` | `30` | 과매도 임계치 — RSI ≤ 이 값 이면 진입 시그널 |
+| `overbought_threshold` | `70` | 과매수 임계치 — RSI ≥ 이 값 이면 청산 시그널 |
+| `stop_loss_pct` | `Decimal("0.03")` | 손절 비율 (3%, 0 < pct < 1) |
+| `max_positions` | `10` | 동시 보유 최대 종목 수 (1 이상, 기본값 10 은 작은 universe 허용) |
+| `position_pct` | `Decimal("1.0")` | 자본 투입 비율 (0 < pct ≤ 1) |
+
+`__post_init__` 검증 (위반 시 `RuntimeError` — 다른 모듈과 동일 기조):
+- `universe` 빈 tuple / 정규식 위반 / 중복
+- `rsi_period > 0`
+- `0 < oversold_threshold < 50`, `50 < overbought_threshold < 100`, `oversold < overbought`
+- `0 < stop_loss_pct < 1`
+- `max_positions >= 1`, 사용자 명시 값일 때 `<= len(universe)`
+- `0 < position_pct <= 1`
+
+### `RSIMRStrategy` — per-symbol RSI 평균회귀 상태 머신
+
+- `Strategy` Protocol 구현체 (`on_bar`, `on_time`).
+- **RSI 계산**: simple average gain/loss 방식 (Wilder smoothing 미사용). 일봉 close 버퍼를 종목별로 관리하며, `rsi_period + 1` 개 이상의 종가가 쌓인 시점부터 RSI 산출.
+- **진입 조건**: RSI < `oversold_threshold` 이고 해당 심볼이 미보유 상태이며 `max_positions` 한도 미초과.
+- **청산 조건** (우선순위 순 — `ORBStrategy` 와 동일 기조):
+  1. `bar.low ≤ stop_price` → `ExitSignal(reason="stop_loss", price=stop_price)` (슬리피지 과소평가 방지 우선).
+  2. RSI > `overbought_threshold` → `ExitSignal(reason="take_profit", price=bar.close)` (RSI 회귀 청산).
+- **`EntrySignal.take_price=Decimal("0")` 마커**: 고정 익절가 미사용. RSI 회귀 청산은 별도 판정 경로.
+- **동일 세션(date) 내 청산 후 재진입 차단**: RSI 가 즉시 회복되더라도 당일 재진입 없음 (무한 루프 방지).
+- **multi-symbol per-bar 시그널**: 매 일봉 bar 에서 universe 전 종목에 대해 시그널 판정 (LowVol/Momentum 의 시점 트리거와 다름 — 매일 신호 산출).
+- `on_time` 은 항상 빈 리스트 반환 — 강제청산 없음 (일봉 전략).
+- **세션 경계 자동 리셋**: `bar.bar_time.date()` 변경 감지 시 당일 재진입 차단 플래그 초기화.
+- **non-universe 종목 가드**: universe 에 없는 symbol 은 `on_bar` 에서 조용히 무시.
+- **입력 검증 (`RuntimeError` 전파)**: aware datetime 강제 (naive → 거부).
+
+### 설계 특성
+
+- 다중 lot 동시 보유 + mark-to-market 평가는 `backtest/rsi_mr.py` 의 `compute_rsi_mr_baseline` 이 담당 (`BacktestEngine` 우회).
+- DCA·GoldenCross·Momentum·LowVol 과 동일 비용 계약 (slip 0.1% / commission 0.015% / sell tax 0.18%).
+- `BacktestEngine` 직접 주입 시 `EntrySignal.take_price=0` 마커 미인식 + force_close_at 충돌 — `compute_rsi_mr_baseline` 경유가 필수.
+
+### ADR-0022 게이트 판정 (2026-05-02)
+
+| 게이트 | 기준 | 결과 | 판정 |
+|---|---|---|---|
+| 1 (MDD) | > -25% | -6.40% | PASS |
+| 2 (DCA 대비 알파) | 양의 알파 | +8.13%p (+56.31% - +48.18%) | PASS |
+| 3 (Sharpe) | > 0.3 | 2.4723 | PASS |
+
+→ 종합 **PASS**. trades=175, 시작 자본 2,000,000 KRW → 종료 3,126,256 KRW.
+
+### 테스트 현황 (RSIMRStrategy)
+
+pytest **45 케이스 green** (`tests/test_strategy_rsi_mr.py`). 외부 목킹 불필요 — 순수 로직.
+
+| 그룹 | 케이스 수 |
+|---|---|
+| Config 검증 | ~10 |
+| RSI 계산 (simple avg gain/loss) | ~6 |
+| 진입 시그널 (과매도 진입·max_positions 한도) | ~8 |
+| 청산 시그널 (RSI 회귀·손절) | ~8 |
+| 동일 세션 재진입 차단 | ~3 |
+| 입력 가드 | ~5 |
+| Protocol 호환성 | ~5 |
+
+관련 테스트 파일: `tests/test_strategy_rsi_mr.py`.

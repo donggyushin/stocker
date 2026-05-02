@@ -74,11 +74,14 @@ PR4 — F4 저변동성 ✓ 완료 (2026-05-02, FAIL — 게이트 2)
   ├ ADR-0022 게이트 판정: MDD -9.62% PASS / Sharpe 1.1713 PASS / DCA 대비 알파 -32.31%p FAIL → 종합 FAIL
   └ 결과: 총수익률 +15.87% mark-to-market (시작 자본 2,000,000 KRW, 101종목, 2025-04-01 ~ 2026-04-21)
   ↓
-PR5 — F5 RSI 평균회귀 (옵션, 보너스)
-  ├ src/stock_agent/strategy/rsi_mr.py — RSIMRStrategy
-  ├ tests/test_strategy_rsi_mr.py
-  ├ scripts/backtest.py --strategy-type rsi-mr
-  ├ docs/runbooks/step_f_rsi_mr_2026-MM-DD.md
+PR5 — F5 RSI 평균회귀 ✓ 완료 (2026-05-02, PASS — 3 게이트 전원 통과)
+  ├ src/stock_agent/strategy/rsi_mr.py — RSIMRStrategy, RSIMRConfig
+  ├ src/stock_agent/backtest/rsi_mr.py — RSIMRBaselineConfig, compute_rsi_mr_baseline
+  ├ tests/test_strategy_rsi_mr.py (45건), tests/test_backtest_rsi_mr.py (40건)
+  ├ scripts/backtest.py --strategy-type rsi-mr (--rsi-period / --oversold-threshold / --overbought-threshold / --stop-loss-pct / --max-positions 신설)
+  ├ docs/runbooks/step_f_rsi_mr_2026-05-02.md
+  ├ ADR-0022 게이트 판정: MDD -6.40% PASS / Sharpe 2.4723 PASS / DCA 대비 알파 +8.13%p PASS → 종합 PASS
+  └ 결과: 총수익률 +56.31% mark-to-market (시작 자본 2,000,000 KRW, 101종목, 2025-04-01 ~ 2026-04-21, trades=175)
   ↓
 PR6 — 종합 판정 + 최종 결정 ADR
   ├ docs/runbooks/step_f_summary_2026-MM-DD.md (4~5 후보 비교 표)
@@ -277,12 +280,17 @@ PR6 (종합 + ADR-0023)
 
 ## 다음 세션 시작 가이드
 
-1. 본 파일 읽기 → 현재 위치 파악 (`PR4 완료, FAIL` 상태에서 시작).
-2. PR5 (F5 RSI 평균회귀) RED-first TDD 사이클 시작 (옵션, 보너스):
-   - `tests/test_strategy_rsi_mr.py` 작성 (unit-test-writer 위임)
-   - FAIL 확인
-   - `src/stock_agent/strategy/rsi_mr.py` 구현
-   - GREEN 확인
-   - `scripts/backtest.py --strategy-type rsi-mr` 라우팅 추가
-   - 백테스트 실행 + runbook 작성 + ADR-0022 게이트 판정 (DCA baseline +51.50% 대비 알파 포함)
-3. PR5 완료 후 또는 PR5 건너뛰고 PR6 (종합 판정 + ADR-0023) 진입 가능. DCA baseline 비교 기준: **+51.50% mark-to-market** (2025-04-22 ~ 2026-04-21, 시작 자본 2,000,000 KRW, 069500). 현재 Step F 결과: PR1 PASS · PR2 PASS (caveat) · PR3 FAIL · PR4 FAIL.
+1. 본 파일 읽기 → 현재 위치 파악 (`PR5 완료, PASS` 상태에서 시작 — PR6 진입 대기).
+2. **PR6 (종합 판정 + ADR-0023) 진입**:
+   - `docs/runbooks/step_f_summary_2026-MM-DD.md` 작성 (F1~F5 전 결과 비교 표 + 시나리오 판정)
+   - ADR-0022 게이트 3종 동시 통과 후보: **PR5 (RSI MR, trades=175)**, PR2 (Golden Cross, trades=1 caveat), PR1 (DCA baseline — 비교 기준)
+   - 시나리오 판정: F2~F5 중 1+ 양의 알파 PASS → 시나리오 A (채택 후보 선정 + Phase 3 모의투자 진입 검토)
+   - ADR-0023 작성 (시나리오 A: `0023-<후보>-strategy-adoption.md`)
+   - Issue #78 close
+3. DCA baseline 비교 기준: **+51.50% mark-to-market** (2025-04-22 ~ 2026-04-21, 시작 자본 2,000,000 KRW, 069500).
+4. 현재 Step F 결과 요약:
+   - PR1 (DCA baseline) **PASS** — MDD -12.92% / Sharpe 2.27 / +51.50%
+   - PR2 (Golden Cross) **PASS** — MDD -20.52% / Sharpe 2.2753 / +182.36% (단, trades=1 caveat)
+   - PR3 (모멘텀) FAIL — DCA 대비 알파 -36.96%p
+   - PR4 (저변동성) FAIL — DCA 대비 알파 -32.31%p
+   - PR5 (RSI MR) **PASS** — MDD -6.40% / Sharpe 2.4723 / DCA 대비 알파 +8.13%p / trades=175

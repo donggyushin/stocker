@@ -71,6 +71,10 @@ from stock_agent.backtest.momentum import (
     compute_momentum_baseline,
 )
 from stock_agent.backtest.prev_close import DailyBarPrevCloseProvider
+from stock_agent.backtest.rsi_mr import (
+    RSIMRBaselineConfig,
+    compute_rsi_mr_baseline,
+)
 from stock_agent.config import get_settings
 from stock_agent.data import (
     HistoricalDataStore,
@@ -94,6 +98,7 @@ _CLI_STRATEGY_CHOICES: tuple[str, ...] = (
     "golden-cross",
     "momentum",
     "low-vol",
+    "rsi-mr",
 )
 
 # exit code 규약 (scripts/sensitivity.py 와 동일): 2 = 입력·설정 오류 (재시도
@@ -178,7 +183,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "12개월 cross-sectional 모멘텀, 매월 첫 영업일 리밸런싱). "
             "low-vol=LowVolStrategy (ADR-0019 Step F PR4 — `--loader=daily` 권장, "
             "직전 60영업일 일별 수익률 표준편차 하위 N 종목 보유, 분기 리밸런싱). "
-            "dca/golden-cross/momentum/low-vol 은 `BacktestEngine` 우회 — 별도 평가 함수 경로."
+            "rsi-mr=RSIMRStrategy (ADR-0019 Step F PR5 — `--loader=daily` 권장, "
+            "RSI(14) 평균회귀, RSI<30 진입, RSI>70 또는 stop_loss 청산). "
+            "dca/golden-cross/momentum/low-vol/rsi-mr 은 `BacktestEngine` 우회 — "
+            "별도 평가 함수 경로."
         ),
     )
     parser.add_argument(
@@ -233,6 +241,39 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Low Volatility 리밸런싱 개월 주기 (`--strategy-type=low-vol` 분기 전용). "
             "1~12 범위. 3=분기, 1=매월, 6=반기."
+        ),
+    )
+    parser.add_argument(
+        "--rsi-period",
+        type=int,
+        default=14,
+        help="RSI 평균회귀 lookback 기간 (`--strategy-type=rsi-mr` 분기 전용). 양수.",
+    )
+    parser.add_argument(
+        "--oversold-threshold",
+        type=Decimal,
+        default=Decimal("30"),
+        help="RSI 평균회귀 oversold 임계 (`--strategy-type=rsi-mr` 분기 전용). (0, 50).",
+    )
+    parser.add_argument(
+        "--overbought-threshold",
+        type=Decimal,
+        default=Decimal("70"),
+        help="RSI 평균회귀 overbought 임계 (`--strategy-type=rsi-mr` 분기 전용). (50, 100).",
+    )
+    parser.add_argument(
+        "--stop-loss-pct",
+        type=Decimal,
+        default=Decimal("0.03"),
+        help="RSI 평균회귀 손절 비율 (`--strategy-type=rsi-mr` 분기 전용). (0, 1).",
+    )
+    parser.add_argument(
+        "--max-positions",
+        type=int,
+        default=10,
+        help=(
+            "RSI 평균회귀 동시 보유 최대 종목 수 (`--strategy-type=rsi-mr` 분기 전용). "
+            "1 이상 universe 길이 이하 (기본값 10 은 작은 universe 허용)."
         ),
     )
     parser.add_argument(
@@ -373,6 +414,9 @@ def _run_pipeline(args: argparse.Namespace) -> None:
         return
     if args.strategy_type == "low-vol":
         _run_low_volatility_pipeline(args)
+        return
+    if args.strategy_type == "rsi-mr":
+        _run_rsi_mr_pipeline(args)
         return
 
     symbols = _resolve_symbols(args.symbols, args.universe_yaml)
@@ -901,6 +945,193 @@ def _low_volatility_verdict_label(metrics: BacktestMetrics, *, daily_equity_len:
     if daily_equity_len < _DCA_MIN_SESSIONS_FOR_PASS:
         return "PASS (참고용 — 표본 240 미만, 알파 미정)"
     return "PASS (게이트 1·3, 알파 미정)"
+
+
+def _run_rsi_mr_pipeline(args: argparse.Namespace) -> None:
+    """`--strategy-type=rsi-mr` 전용 파이프라인 — `compute_rsi_mr_baseline` 호출.
+
+    BacktestEngine 우회. universe 는 `_resolve_symbols(args.symbols, args.universe_yaml)`
+    결과 사용. `--rsi-period` / `--oversold-threshold` / `--overbought-threshold` /
+    `--stop-loss-pct` / `--max-positions` 로 파라미터 주입.
+    """
+    universe = _resolve_symbols(args.symbols, args.universe_yaml)
+    loader = _build_loader(args)
+
+    config = RSIMRBaselineConfig(
+        starting_capital_krw=args.starting_capital,
+        universe=universe,
+        rsi_period=args.rsi_period,
+        oversold_threshold=args.oversold_threshold,
+        overbought_threshold=args.overbought_threshold,
+        stop_loss_pct=args.stop_loss_pct,
+        max_positions=args.max_positions,
+    )
+
+    logger.info(
+        "rsi_mr.start loader={l} from={s} to={e} universe={u} capital={c} "
+        "rsi_period={rp} oversold={os} overbought={ob} stop={sl} max_pos={mp}",
+        l=args.loader,
+        s=args.start,
+        e=args.end,
+        u=len(universe),
+        c=args.starting_capital,
+        rp=config.rsi_period,
+        os=config.oversold_threshold,
+        ob=config.overbought_threshold,
+        sl=config.stop_loss_pct,
+        mp=config.max_positions,
+    )
+
+    try:
+        result = compute_rsi_mr_baseline(loader, config, args.start, args.end)
+
+        context = _ReportContext(
+            start=args.start,
+            end=args.end,
+            symbols=universe,
+            starting_capital_krw=args.starting_capital,
+        )
+
+        args.output_markdown.parent.mkdir(parents=True, exist_ok=True)
+        args.output_csv.parent.mkdir(parents=True, exist_ok=True)
+        args.output_trades_csv.parent.mkdir(parents=True, exist_ok=True)
+
+        args.output_markdown.write_text(
+            _render_rsi_mr_markdown(result, context, config=config),
+            encoding="utf-8",
+        )
+        _write_metrics_csv(result.metrics, args.output_csv)
+        _write_trades_csv(result.trades, args.output_trades_csv)
+    finally:
+        close = getattr(loader, "close", None)
+        if callable(close):
+            close()
+
+    logger.info(
+        "rsi_mr.done trades={t} mdd={m} sharpe={s} verdict={v}",
+        t=len(result.trades),
+        m=_format_pct(result.metrics.max_drawdown_pct),
+        s=_format_decimal(result.metrics.sharpe_ratio, 4),
+        v=_rsi_mr_verdict_label(result.metrics, daily_equity_len=len(result.daily_equity)),
+    )
+
+
+def _rsi_mr_verdict_label(metrics: BacktestMetrics, *, daily_equity_len: int) -> str:
+    """ADR-0022 게이트 1 + 게이트 3 자동 판정. 게이트 2 (DCA 대비 알파) 는 runbook 수동.
+
+    게이트 1: ``max_drawdown_pct > -0.25``.
+    게이트 3: ``sharpe_ratio > 0.3`` (240 영업일 이상 표본에서만 신뢰).
+
+    게이트 2 는 DCA baseline 결과와의 비교 — 별도 런 결과를 runbook 에서 인용해 판정.
+    """
+    gate1_pass = metrics.max_drawdown_pct > _DCA_MDD_THRESHOLD
+    gate3_pass = metrics.sharpe_ratio > _DCA_SHARPE_THRESHOLD
+    failed: list[str] = []
+    if not gate1_pass:
+        failed.append("게이트 1")
+    if not gate3_pass:
+        failed.append("게이트 3")
+    if failed:
+        return f"FAIL ({'·'.join(failed)})"
+    if daily_equity_len < _DCA_MIN_SESSIONS_FOR_PASS:
+        return "PASS (참고용 — 표본 240 미만, 알파 미정)"
+    return "PASS (게이트 1·3, 알파 미정)"
+
+
+def _render_rsi_mr_markdown(
+    result: BacktestResult,
+    context: _ReportContext,
+    *,
+    config: RSIMRBaselineConfig,
+) -> str:
+    """RSI 평균회귀 전용 Markdown 리포트 — ADR-0022 게이트 1·3 자동, 2 수동."""
+    metrics = result.metrics
+    verdict = _rsi_mr_verdict_label(metrics, daily_equity_len=len(result.daily_equity))
+    lines: list[str] = []
+
+    lines.append("# RSI 평균회귀 백테스트 리포트 (ADR-0019 Step F PR5)")
+    lines.append("")
+    lines.append(f"- 기간: `{context.start.isoformat()}` ~ `{context.end.isoformat()}`")
+    lines.append(f"- universe 크기: {len(context.symbols)}")
+    lines.append(f"- rsi_period: {config.rsi_period}")
+    lines.append(f"- oversold_threshold: {config.oversold_threshold}")
+    lines.append(f"- overbought_threshold: {config.overbought_threshold}")
+    lines.append(f"- stop_loss_pct: {config.stop_loss_pct}")
+    lines.append(f"- max_positions: {config.max_positions}")
+    lines.append(f"- 시작 자본: {context.starting_capital_krw:,} KRW")
+    lines.append(f"- 거래 수: {len(result.trades)}")
+    lines.append("")
+    lines.append(f"## ADR-0022 게이트 판정: **{verdict}**")
+    lines.append("")
+    lines.append(
+        f"- 게이트 1 (MDD > {_format_pct(_DCA_MDD_THRESHOLD)}): "
+        f"`{_format_pct(metrics.max_drawdown_pct)}`"
+    )
+    lines.append(
+        "- 게이트 2 (DCA 대비 알파): **runbook 수동 판정** — DCA baseline 총수익률과 비교."
+    )
+    lines.append(
+        f"- 게이트 3 (Sharpe > {_format_decimal(_DCA_SHARPE_THRESHOLD, 2)}): "
+        f"`{_format_decimal(metrics.sharpe_ratio, 4)}`"
+    )
+    lines.append("")
+    lines.append("## 메트릭")
+    lines.append("")
+    lines.append("| 항목 | 값 |")
+    lines.append("|---|---|")
+    lines.append(f"| 총수익률 | {_format_pct(metrics.total_return_pct)} |")
+    lines.append(f"| 최대 낙폭 (MDD) | {_format_pct(metrics.max_drawdown_pct)} |")
+    lines.append(f"| 샤프 비율 (연환산) | {_format_decimal(metrics.sharpe_ratio, 4)} |")
+    lines.append(f"| 승률 | {_format_pct(metrics.win_rate)} |")
+    lines.append(f"| 평균 손익비 | {_format_decimal(metrics.avg_pnl_ratio, 4)} |")
+    lines.append(f"| 일평균 거래 수 | {_format_decimal(metrics.trades_per_day, 3)} |")
+    lines.append(f"| 순손익 (KRW) | {metrics.net_pnl_krw:,} |")
+    lines.append("")
+    lines.append("## 일일 자본 요약")
+    lines.append("")
+    if result.daily_equity:
+        equities = [row.equity_krw for row in result.daily_equity]
+        first = result.daily_equity[0]
+        last = result.daily_equity[-1]
+        trough = min(result.daily_equity, key=lambda r: r.equity_krw)
+        lines.append(f"- 세션 수: {len(result.daily_equity)}")
+        lines.append(f"- 시작: `{first.session_date.isoformat()}` {first.equity_krw:,} KRW")
+        lines.append(f"- 종료: `{last.session_date.isoformat()}` {last.equity_krw:,} KRW")
+        lines.append(f"- 최저점: `{trough.session_date.isoformat()}` {trough.equity_krw:,} KRW")
+        lines.append(f"- 최고점 자본: {max(equities):,} KRW")
+    else:
+        lines.append("- 세션 없음 (입력 분봉이 비어있거나 날짜 필터 결과가 0건)")
+    lines.append("")
+    lines.append("## 청산 사유 분포")
+    lines.append("")
+    if result.trades:
+        from collections import Counter
+
+        reason_counts = Counter(t.exit_reason for t in result.trades)
+        lines.append("| 사유 | 카운트 |")
+        lines.append("|---|---|")
+        for reason in sorted(reason_counts):
+            lines.append(f"| `{reason}` | {reason_counts[reason]} |")
+    else:
+        lines.append("- 거래 0건")
+    lines.append("")
+    lines.append("## 주의")
+    lines.append("")
+    lines.append(
+        "- 게이트 2 (DCA baseline 대비 알파) 는 runbook 에서 수동 판정. "
+        "F1 DCA baseline (PR1) 의 `total_return_pct` 와 비교해 양의 알파 충족 여부를 결정."
+    )
+    lines.append(
+        "- RSI 계산은 simple average gain/loss 방식 (Wilder smoothing 미사용). "
+        "표준 Wilder 와 결과 다소 차이."
+    )
+    lines.append("- 동일 세션(date) 내 청산 후 재진입 차단 — RSI 회복 즉시 무한 루프 방지.")
+    lines.append(
+        "- 본 리포트의 MDD/Sharpe 는 단일 구간 결과. walk-forward 검증 (Phase 5) "
+        "통과 전까지 실전 전환 금지."
+    )
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _render_low_volatility_markdown(
