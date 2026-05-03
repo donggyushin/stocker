@@ -151,7 +151,7 @@ Phase 3 모의투자 무중단 운영 10영업일 후 다음을 회고하고 필
 ## 추적
 
 - 코드 (PR2 예정): `src/stock_agent/main.py` — `RiskConfig` 명시 주입, `RSIMRStrategy` import + 인스턴스 교체.
-- 코드 (PR3 완료, 2026-05-03): `src/stock_agent/main.py` — `15:00 force_close` cron 비활성화. `src/stock_agent/execution/executor.py` — 분봉 stop_loss 가드 추가. (`src/stock_agent/risk/manager.py` 변경 없음)
+- 코드 (PR3 완료, #111, 2026-05-03): `src/stock_agent/main.py` — `15:00 force_close` cron 비활성화. `src/stock_agent/execution/executor.py` — 분봉 stop_loss 가드 추가. (`src/stock_agent/risk/manager.py` 변경 없음)
 - 관련 ADR: [ADR-0019](./0019-phase2-backtest-fail-remediation.md), [ADR-0022](./0022-step-f-gate-redefinition.md), [ADR-0023](./0023-rsi-mr-strategy-adoption-conditional.md), [ADR-0024](./0024-walk-forward-pass-threshold.md).
 - 도입 PR: PR3 (머지 완료, 2026-05-03).
 - 후속 ADR: ADR-0026 (10영업일 모의투자 회고 후 한도 갱신, 조건부).
