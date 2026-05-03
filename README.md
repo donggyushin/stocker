@@ -100,7 +100,11 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **ADR-0023 C2 통과 (2026-05-02)**. walk-forward 본 구현 (`scripts/walk_forward_rsi_mr.py` + `backtest/walk_forward.py`) + 다년 캐시 (2024-04-01~2026-04-21) 분할 평가. step6 (2 windows) + step3 (3 windows) 모두 ADR-0022 게이트 + degradation ≤ 0.3 (ADR-0024) 통과. 런북: `docs/runbooks/c2_walk_forward_rsi_mr_2026-05-02.md`.
 
-**ADR-0023 C3 통과 (2026-05-03)**. `scripts/verify_069500_adjusted.py` 진단 CLI + `data/c3_verify_069500.json` raw 결과. `data/stock_agent.db` 캐시 458 행 = pykrx `adjusted=True` 458 행 close 완전 일치 (Stage 3 diff 0). ETF/KOSPI 200 비율 점프 0건 (Stage 2). Google Finance · Wikipedia KOSPI 200 cross-check 정합 (Stage 4). pykrx 일봉 캐시는 수정주가 데이터로 확정 — PR1~PR5 절대 수익률은 한국 KOSPI 200 강세장 macro 의 결과. 잔여: C4 sensitivity grid. 런북: `docs/runbooks/c3_069500_adjusted_plausibility_2026-05-03.md`.
+**ADR-0023 C3 통과 (2026-05-03)**. `scripts/verify_069500_adjusted.py` 진단 CLI + `data/c3_verify_069500.json` raw 결과. `data/stock_agent.db` 캐시 458 행 = pykrx `adjusted=True` 458 행 close 완전 일치 (Stage 3 diff 0). ETF/KOSPI 200 비율 점프 0건 (Stage 2). Google Finance · Wikipedia KOSPI 200 cross-check 정합 (Stage 4). pykrx 일봉 캐시는 수정주가 데이터로 확정 — PR1~PR5 절대 수익률은 한국 KOSPI 200 강세장 macro 의 결과. 런북: `docs/runbooks/c3_069500_adjusted_plausibility_2026-05-03.md`.
+
+**ADR-0023 C4 통과 (2026-05-03)**. RSI MR sensitivity grid 96 조합 (rsi_period 3 × oversold 2 × overbought 2 × stop_loss 4 × max_positions 2). DCA baseline +48.18% 대비 64/96 (66.67%) all_gates_pass. 현행 14/30/70/0.03/10 PASS, 현행 인접 7/8 (87.5%). 게이트 1·3 100% PASS, 게이트 2 만 32 FAIL. Phase 3 진입 게이트 판정 PASS. 런북: `docs/runbooks/c4_rsi_mr_sensitivity_2026-05-03.md`.
+
+**Phase 2 PASS 공식 선언 (2026-05-03)**. ADR-0023 의 C1~C4 추가 검증 전원 통과 → Phase 3 (모의투자 무중단 운영) 착수 재허가. `main.py` 모의투자 운영 가능 상태. 상세: `docs/adr/0023-rsi-mr-strategy-adoption-conditional.md`.
 
 **Phase 3 착수 전제 통과** (2026-04-21). 실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK) 완료.
 
