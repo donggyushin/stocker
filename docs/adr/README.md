@@ -54,6 +54,8 @@ ADR 가 **불필요** 한 변경:
 | [0022](./0022-step-f-gate-redefinition.md) | Step F 게이트 재정의 — 일중 가정 폐기, 일/월 단위 + DCA baseline 상대 비교 | 승인됨 | 2026-05-01 |
 | [0023](./0023-rsi-mr-strategy-adoption-conditional.md) | F5 RSI 평균회귀 1차 채택 (조건부) — Step F 시나리오 A 판정 | 승인됨 | 2026-05-02 |
 | [0024](./0024-walk-forward-pass-threshold.md) | Walk-forward pass-threshold = 0.3 결정 (C2 검증 기준) | 승인됨 | 2026-05-02 |
+| [0025](./0025-rsi-mr-operational-risk-limits.md) | RSI MR 운영 리스크 한도 재정의 — Phase 3 모의투자 기준값 확정 | 채택 | 2026-05-03 |
+| [0026](./0026-formatter-unification-ruff-only.md) | 포매터 단일화 — ruff format 채택, black 폐기 | 승인됨 | 2026-05-03 |
 
 ## 관련 문서
 

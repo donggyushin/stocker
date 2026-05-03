@@ -400,6 +400,154 @@ def test_build_runtime_Runtime_필드_9개_반환(
 
 
 # ---------------------------------------------------------------------------
+# 3-B. build_runtime — RSIMRStrategy wiring & RiskConfig ADR-0025 (RED, PR2)
+# ---------------------------------------------------------------------------
+# PR2 src 변경 전 기준으로 전원 FAIL 이 필요한 케이스.
+# 목킹 정책: KIS 네트워크 0, universe_loader 람다 주입, scheduler/notifier/recorder
+#            더미 팩토리, Settings 는 SimpleNamespace(has_live_keys=True).
+
+
+class TestBuildRuntimeRsiMrWiringRED:
+    """ADR-0025 결정값 적용 전 실패해야 하는 RED 케이스 4건.
+
+    main.py:293-294 가 ORBStrategy → RSIMRStrategy / RiskConfig() 기본값 →
+    ADR-0025 명시 주입으로 바뀐 뒤 GREEN 이 되어야 한다.
+    """
+
+    _FAKE_TICKERS = ("005930", "000660", "035720")
+
+    # ------------------------------------------------------------------
+    # 공유 헬퍼 — 모든 테스트가 동일 팩토리 조합을 사용한다.
+    # ------------------------------------------------------------------
+
+    def _build(self, tickers: tuple[str, ...] = _FAKE_TICKERS) -> Any:
+        from types import SimpleNamespace
+
+        from stock_agent.monitor import NullNotifier
+        from stock_agent.storage import NullTradingRecorder
+
+        args = _parse_args([])
+        settings = SimpleNamespace(has_live_keys=True)
+
+        universe = KospiUniverse(as_of_date=_DATE, source="test", tickers=tickers)
+
+        return build_runtime(
+            args,
+            settings,  # type: ignore[arg-type]
+            kis_client_factory=lambda s: MagicMock(spec=KisClient),
+            realtime_store_factory=lambda s: MagicMock(),
+            scheduler_factory=lambda: MagicMock(),
+            universe_loader=lambda p: universe,
+            notifier_factory=lambda s, d: NullNotifier(),
+            recorder_factory=lambda s, d: NullTradingRecorder(),
+            clock=lambda: _kst(9, 0),
+        )
+
+    # ------------------------------------------------------------------
+    # 케이스 1: strategy 인스턴스 타입이 RSIMRStrategy 여야 한다
+    # ------------------------------------------------------------------
+
+    def test_build_runtime_strategy_타입이_RSIMRStrategy(self) -> None:
+        """PR2 후 GREEN: runtime.executor._strategy 가 RSIMRStrategy isinstance.
+
+        현재(PR2 전) main.py 는 ORBStrategy 를 wiring 하므로 이 단언은 FAIL.
+        """
+        from stock_agent.strategy.rsi_mr import RSIMRStrategy
+
+        runtime = self._build()
+        strategy = runtime.executor._strategy
+        assert isinstance(strategy, RSIMRStrategy), (
+            f"expected RSIMRStrategy, got {type(strategy).__name__}"
+        )
+
+    # ------------------------------------------------------------------
+    # 케이스 2: RSIMRConfig.universe 가 universe_loader 반환 tickers 와 일치
+    # ------------------------------------------------------------------
+
+    def test_build_runtime_rsimr_config_universe_일치(self) -> None:
+        """PR2 후 GREEN: strategy.config.universe == KospiUniverse.tickers (순서·내용 모두).
+
+        현재(PR2 전) strategy 가 ORBStrategy 이므로 .config.universe 속성이 없어
+        AttributeError 또는 isinstance FAIL 이 선행 발생.
+        """
+        from stock_agent.strategy.rsi_mr import RSIMRStrategy
+
+        runtime = self._build(tickers=self._FAKE_TICKERS)
+        strategy = runtime.executor._strategy
+        # RSIMRStrategy 타입 가드 — 실패 메시지를 명확히 하기 위해 선행 단언
+        assert isinstance(strategy, RSIMRStrategy), (
+            f"expected RSIMRStrategy, got {type(strategy).__name__}"
+        )
+        assert strategy.config.universe == self._FAKE_TICKERS, (
+            f"expected universe={self._FAKE_TICKERS}, got {strategy.config.universe}"
+        )
+
+    # ------------------------------------------------------------------
+    # 케이스 3: RiskConfig ADR-0025 명시 주입값 검증
+    # ------------------------------------------------------------------
+
+    def test_build_runtime_risk_config_adr0025_명시값(self) -> None:
+        """PR2 후 GREEN: RiskConfig 가 ADR-0025 결정값으로 명시 주입된다.
+
+        ADR-0025 결정표:
+            position_pct     = Decimal("0.10")
+            max_positions    = 10
+            daily_loss_limit_pct = Decimal("0.02")
+            daily_max_entries = 5
+
+        현재(PR2 전) RiskConfig() 기본값:
+            position_pct=Decimal("0.20"), max_positions=3,
+            daily_loss_limit_pct=Decimal("0.02"), daily_max_entries=10
+        → position_pct 와 max_positions, daily_max_entries 불일치로 FAIL.
+        """
+        from decimal import Decimal
+
+        from stock_agent.risk import RiskConfig
+
+        runtime = self._build()
+        cfg: RiskConfig = runtime.risk_manager.config
+
+        assert cfg.position_pct == Decimal("0.10"), (
+            f"expected position_pct=0.10, got {cfg.position_pct}"
+        )
+        assert cfg.max_positions == 10, f"expected max_positions=10, got {cfg.max_positions}"
+        assert cfg.daily_loss_limit_pct == Decimal("0.02"), (
+            f"expected daily_loss_limit_pct=0.02, got {cfg.daily_loss_limit_pct}"
+        )
+        assert cfg.daily_max_entries == 5, (
+            f"expected daily_max_entries=5, got {cfg.daily_max_entries}"
+        )
+        # min_notional_krw 는 ORB 시절 기본값 100_000 유지 — 변경 없음 확인
+        assert cfg.min_notional_krw == 100_000, (
+            f"expected min_notional_krw=100_000, got {cfg.min_notional_krw}"
+        )
+
+    # ------------------------------------------------------------------
+    # 케이스 4: 임의 fake universe 주입 시 strategy.config.universe 일치 (회귀 가드)
+    # ------------------------------------------------------------------
+
+    def test_build_runtime_fake_universe_strategy_config_universe_회귀가드(self) -> None:
+        """PR2 후 GREEN: universe_loader 가 임의 tickers 를 반환하면
+        RSIMRStrategy.config.universe 가 그 tuple 과 정확히 동일해야 한다.
+
+        순서·내용 모두 동일해야 하며, 이 케이스는 universe wiring 로직의
+        회귀를 방지한다.  현재(PR2 전) ORBStrategy 를 쓰므로 FAIL.
+        """
+        from stock_agent.strategy.rsi_mr import RSIMRStrategy
+
+        alt_tickers = ("000270", "005380", "051910")
+        runtime = self._build(tickers=alt_tickers)
+        strategy = runtime.executor._strategy
+
+        assert isinstance(strategy, RSIMRStrategy), (
+            f"expected RSIMRStrategy, got {type(strategy).__name__}"
+        )
+        assert strategy.config.universe == alt_tickers, (
+            f"expected universe={alt_tickers}, got {strategy.config.universe}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # 4. build_runtime — 에러 경로
 # ---------------------------------------------------------------------------
 

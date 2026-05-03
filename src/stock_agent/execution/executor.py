@@ -58,7 +58,7 @@ from stock_agent.broker import (
 from stock_agent.broker.kis_client import KisClient
 from stock_agent.data import MinuteBar
 from stock_agent.risk import PositionRecord, RiskManager
-from stock_agent.strategy import EntrySignal, ExitReason, ExitSignal, ORBStrategy, Signal
+from stock_agent.strategy import EntrySignal, ExitReason, ExitSignal, ORBStrategy, Signal, Strategy
 
 KST = timezone(timedelta(hours=9))
 
@@ -449,7 +449,7 @@ class Executor:
         self,
         *,
         symbols: tuple[str, ...],
-        strategy: ORBStrategy,
+        strategy: Strategy,
         risk_manager: RiskManager,
         bar_source: BarSource,
         order_submitter: OrderSubmitter,
@@ -574,27 +574,42 @@ class Executor:
         )
 
         touched_symbols: list[str] = []
-        try:
-            for pos in positions:
-                self._strategy.restore_long_position(pos.symbol, pos.entry_price, pos.entry_ts)
-                touched_symbols.append(pos.symbol)
-            for sym in effective_closed:
-                self._strategy.mark_session_closed(sym, session_date)
-                touched_symbols.append(sym)
-        except Exception as e:  # noqa: BLE001 — 부분 복원 롤백 경로 (CRITICAL 재발 방지)
-            self._strategy.reset_session(touched_symbols)
-            self._risk_manager.start_session(session_date, starting_capital_krw)
-            logger.critical(
-                "executor.restore_session 부분 실패 — ORB/RiskManager clean 세션으로 롤백. "
-                "touched={touched} error={cls}: {err}",
-                touched=touched_symbols,
-                cls=e.__class__.__name__,
-                err=str(e),
+        # Pyright narrow 안전을 위해 로컬 변수로 받는다 — 인스턴스 attribute 직접
+        # isinstance 체크는 mutable 가정 때문에 narrow 가 보장되지 않는다.
+        strategy_ref = self._strategy
+        if isinstance(strategy_ref, ORBStrategy):
+            # ORB 일중 전략 — per-symbol 상태 머신 재구성 필요.
+            try:
+                for pos in positions:
+                    strategy_ref.restore_long_position(pos.symbol, pos.entry_price, pos.entry_ts)
+                    touched_symbols.append(pos.symbol)
+                for sym in effective_closed:
+                    strategy_ref.mark_session_closed(sym, session_date)
+                    touched_symbols.append(sym)
+            except Exception as e:  # noqa: BLE001 — 부분 복원 롤백 경로 (CRITICAL 재발 방지)
+                strategy_ref.reset_session(touched_symbols)
+                self._risk_manager.start_session(session_date, starting_capital_krw)
+                logger.critical(
+                    "executor.restore_session 부분 실패 — ORB/RiskManager clean 세션으로 롤백. "
+                    "touched={touched} error={cls}: {err}",
+                    touched=touched_symbols,
+                    cls=e.__class__.__name__,
+                    err=str(e),
+                )
+                raise ExecutorError(
+                    "restore_session 중 ORBStrategy 복원 실패 — clean 세션으로 롤백: "
+                    f"{e.__class__.__name__}: {e}"
+                ) from e
+        else:
+            # RSIMRStrategy 등 일봉 전략 — restore_long_position/mark_session_closed/
+            # reset_session API 미보유. EOD 트리거 (PR3 예정) 가 lookback 일봉을 다시
+            # 흘려 strategy 내부 close 버퍼·holdings 를 자연 복원하므로 ORB 루프 skip.
+            # _open_lots 는 아래에서 직접 복원해 broker 잔고와 정합 유지 (ADR-0025).
+            logger.warning(
+                "executor.restore_session: {strat_cls} 는 ORB 복원 루프 skip — "
+                "EOD 일봉 재흐름으로 자연 복원 가정 (ADR-0025).",
+                strat_cls=type(self._strategy).__name__,
             )
-            raise ExecutorError(
-                "restore_session 중 ORBStrategy 복원 실패 — clean 세션으로 롤백: "
-                f"{e.__class__.__name__}: {e}"
-            ) from e
 
         self._last_processed_bar_time.clear()
         self._open_lots = {

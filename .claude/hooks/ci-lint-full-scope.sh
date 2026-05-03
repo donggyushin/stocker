@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
-# stock-agent PreToolUse hook — `git push` 직전에 CI 파이프라인의 3 종 lint
-# (`ruff check` · `ruff format --check` · `black --check`) 를 전체 범위
+# stock-agent PreToolUse hook — `git push` 직전에 CI 파이프라인의 2 종 lint
+# (`ruff check` · `ruff format --check`) 를 전체 범위
 # (`src scripts tests`) 로 강제 검사한다.
 #
-# 배경: .github/workflows/ci.yml 의 "Lint, format, test" job 은 4 종 검사를
+# 배경: .github/workflows/ci.yml 의 "Lint, format, test" job 은 3 종 검사를
 # 모두 `src scripts tests` 범위로 돈다 (ruff check / ruff format --check /
-# black --check / pyright). `pyright-full-scope.sh` 훅이 pyright 는 커버
-# 하지만 나머지 3 종은 구멍이다. 로컬에서 좁은 경로만 돌리거나 black
-# 재포맷 후 ruff 재체크를 빠뜨리면 push 이후 CI 에서 빨간색이 뜬다
-# (실사례: Issue #40 PR #43 — UP037 타입 어노테이션 따옴표 누락이 CI 에서
-# 먼저 잡혔다).
+# pyright). `pyright-full-scope.sh` 훅이 pyright 는 커버하지만 나머지 2 종
+# 은 구멍이다. 로컬에서 좁은 경로만 돌리거나 ruff 재포맷 후 ruff 재체크를
+# 빠뜨리면 push 이후 CI 에서 빨간색이 뜬다 (실사례: Issue #40 PR #43 —
+# UP037 타입 어노테이션 따옴표 누락이 CI 에서 먼저 잡혔다).
 #
-# 정책: `git push` 시도 시 3 종 검사를 순차로 실행해 첫 실패에서 exit 2
+# black 폐기 (ADR-0026, 2026-05-03): ruff format 단일 채택. 본 hook 의 3 종
+# → 2 종 축소.
+#
+# 정책: `git push` 시도 시 2 종 검사를 순차로 실행해 첫 실패에서 exit 2
 # 차단. 긴급 우회는 `STOCK_AGENT_LINT_BYPASS=1 git push ...` (24 시간 내
 # 회귀 테스트 + 원인 제거 커밋 필수).
 #
-# 성능: 3 종 합계 ~2-3 초. push 주기가 희소하므로 허용 오버헤드.
+# 성능: 2 종 합계 ~1-2 초. push 주기가 희소하므로 허용 오버헤드.
 #
 # 경로 매칭은 symlink 해소 후 PROJECT_ROOT prefix 로 판정.
 # hook 스펙: https://code.claude.com/docs/en/hooks.md (PreToolUse)
@@ -101,8 +103,8 @@ grep -qE '^\[tool\.ruff\]' "$PYPROJECT" || exit 0
 cd "$PROJECT_ROOT"
 
 # ---------------------------------------------------------------------------
-# 5) 3 종 lint 순차 실행 — 첫 실패에서 차단.
-#    CI 와 동일: src scripts tests 범위.
+# 5) 2 종 lint 순차 실행 — 첫 실패에서 차단.
+#    CI 와 동일: src scripts tests 범위. (black 폐기 — ADR-0026)
 # ---------------------------------------------------------------------------
 
 run_check() {
@@ -113,9 +115,9 @@ run_check() {
       echo "[ci-lint-full-scope] git push 차단 — ${label} 실패 (\`src scripts tests\` 범위)."
       echo ""
       echo "CI 파이프라인(.github/workflows/ci.yml) 의 \"Lint, format, test\" job 은"
-      echo "ruff check / ruff format --check / black --check / pyright 를 모두"
-      echo "이 범위로 돌립니다. 로컬에서 좁은 경로만 체크하거나 black 재포맷"
-      echo "후 ruff 재실행을 빠뜨리면 CI 에서 터집니다."
+      echo "ruff check / ruff format --check / pyright 를 모두"
+      echo "이 범위로 돌립니다. 로컬에서 좁은 경로만 체크하거나 ruff format 재실행"
+      echo "을 빠뜨리면 CI 에서 터집니다."
       echo "(실사례: PR #43 — UP037 따옴표 누락)."
       echo ""
       echo "${label} 출력 (마지막 30 줄):"
@@ -128,7 +130,6 @@ run_check() {
       echo "  2) 로컬 재검사:"
       echo "       uv run ruff check src scripts tests"
       echo "       uv run ruff format --check src scripts tests"
-      echo "       uv run black --check src scripts tests"
       echo "  3) green 이면 다시 git push 시도."
       echo ""
       echo "긴급 우회: STOCK_AGENT_LINT_BYPASS=1 git push ..."
@@ -140,6 +141,5 @@ run_check() {
 
 run_check "ruff check" uv run ruff check src scripts tests
 run_check "ruff format --check" uv run ruff format --check src scripts tests
-run_check "black --check" uv run black --check src scripts tests
 
 exit 0

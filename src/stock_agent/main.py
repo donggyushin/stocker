@@ -9,7 +9,9 @@ Phase 3 두 번째 산출물. 이 모듈은 **조립만** 한다 — 전략·리
     15:00 KST  → on_force_close         (Executor.force_close_all)
     15:30 KST  → on_daily_report        (일일 요약 로그)
 
-※ 09:30 OR-High 확정은 별도 cron 이 아닌 `on_step` 루프의 `ORBStrategy.on_bar` 부작용이다.
+※ 전략은 `RSIMRStrategy` (ADR-0023 채택, ADR-0025 한도 적용). 일봉 RSI 평균회귀라
+  `on_step` 분봉 호출만으로는 백테스트와 의미 정합되지 않음 — EOD 트리거 + 분봉 fill 추적
+  하이브리드 운영은 PR3 (ADR-0025 결과 섹션 참조) 에서 도입.
 
 범위 (이번 PR)
     - `main.py` + APScheduler wiring + 드라이런 CLI 플래그
@@ -41,6 +43,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -80,7 +83,7 @@ from stock_agent.storage import (
     StorageError,
     TradingRecorder,
 )
-from stock_agent.strategy import ORBStrategy, StrategyConfig
+from stock_agent.strategy.rsi_mr import RSIMRConfig, RSIMRStrategy
 
 EXIT_OK = 0
 EXIT_UNEXPECTED = 1
@@ -290,8 +293,15 @@ def build_runtime(
     order_submitter = _build_order_submitter(args.dry_run, kis_client)
     balance_provider: BalanceProvider = LiveBalanceProvider(kis_client)
 
-    strategy = ORBStrategy(StrategyConfig())
-    risk_manager = RiskManager(RiskConfig())
+    strategy = RSIMRStrategy(RSIMRConfig(universe=tuple(universe.tickers)))
+    risk_manager = RiskManager(
+        RiskConfig(
+            position_pct=Decimal("0.10"),
+            max_positions=10,
+            daily_loss_limit_pct=Decimal("0.02"),
+            daily_max_entries=5,
+        )
+    )
     executor = Executor(
         symbols=universe.tickers,
         strategy=strategy,
