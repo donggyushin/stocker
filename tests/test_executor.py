@@ -5116,3 +5116,411 @@ class TestExecutorRestoreSessionAtomicity:
             logger.remove(sink_id)
 
         assert len(log_messages) >= 1, "logger.critical 이 최소 1회 방출되어야 한다"
+
+
+# ===========================================================================
+# PR3 — 분봉 step stop_loss 가드 (RED)
+#
+# 검증 목표:
+#   (A) _handle_entry 가 EntrySignal.stop_price 를 _OpenLot 에 보존한다.
+#   (B) step() 분봉 처리 중 bar.low ≤ lot.stop_price 이면 즉시 시장가 매도
+#       + ExitEvent(reason="stop_loss") 발행, strategy.on_bar 미호출.
+#   (C) bar.low > stop_price 이면 가드 미발동, strategy.on_bar 정상 호출.
+#   (D) 가드 발동 후 _open_lots 에서 심볼 제거 + RiskManager.record_exit 호출.
+#   (E) stop_price=0 이면 가드 비활성.
+#
+# GREEN 단계에서 강제되는 결정:
+#   - _OpenLot 에 stop_price: Decimal 필드 추가 (frozen=True slots=True 유지).
+#   - _handle_entry 에서 signal.stop_price 를 _OpenLot 에 저장.
+#   - step() 분봉 루프에서 bar 처리 전 가드 체크:
+#       if lot.stop_price > 0 and bar.low <= lot.stop_price:
+#           ExitSignal(symbol, price=lot.stop_price, reason="stop_loss") 직접 처리
+#           strategy.on_bar(bar) 호출 skip.
+#   - stop_price=0 이면 가드 비활성 (signal 마커 패턴, rsi_mr.py 의 take_price=0 차용).
+# ===========================================================================
+
+
+class TestStepStopLossGuard:
+    """분봉 step 에서 _OpenLot.stop_price 기반 즉시 손절 가드 검증 (PR3 RED)."""
+
+    # -----------------------------------------------------------------------
+    # (A) stop_price 보존
+    # -----------------------------------------------------------------------
+
+    def test_handle_entry_signal_stop_price_직접_주입_보존(
+        self,
+        strategy: ORBStrategy,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """EntrySignal(stop_price=Decimal("49350")) 진입 후 _OpenLot.stop_price 보존.
+
+        RSIMRStrategy.on_bar 경유 없이 MagicMock strategy 로 EntrySignal 을 직접
+        주입해 _OpenLot.stop_price 저장 계약만 검증한다.
+
+        GREEN 단계: _OpenLot 에 stop_price 필드 추가 후 _handle_entry 가 저장.
+        """
+        from stock_agent.strategy.base import EntrySignal
+
+        stop_price_val = Decimal("49350")
+
+        mock_strategy = MagicMock(spec=ORBStrategy)
+        # on_bar 가 EntrySignal 을 반환하도록 설정
+        mock_strategy.on_bar.return_value = [
+            EntrySignal(
+                symbol=_SYMBOL_A,
+                price=Decimal("50000"),
+                ts=_kst(9, 30),
+                stop_price=stop_price_val,
+                take_price=Decimal("0"),
+            )
+        ]
+        mock_strategy.on_time.return_value = []
+
+        exc = _make_executor(
+            mock_strategy,  # type: ignore[arg-type]
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+        )
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+
+        entry_bar = _bar(_SYMBOL_A, 9, 30, close=50_000)
+        fake_bar_source.set_bars(_SYMBOL_A, [entry_bar])
+        exc.step(_kst(9, 31))
+
+        # 진입이 승인되었으면 _OpenLot.stop_price 가 보존되어야 한다
+        # GREEN 단계: _OpenLot(entry_price=..., qty=..., stop_price=Decimal("49350"))
+        assert _SYMBOL_A in exc._open_lots, "_open_lots 에 진입 기록이 없다"  # type: ignore[attr-defined]
+        lot = exc._open_lots[_SYMBOL_A]  # type: ignore[attr-defined]
+        assert lot.stop_price == stop_price_val, (  # type: ignore[attr-defined]
+            f"_OpenLot.stop_price={getattr(lot, 'stop_price', 'MISSING')} 는 "
+            f"{stop_price_val} 여야 한다"
+        )
+
+    # -----------------------------------------------------------------------
+    # (B) 가드 발동: bar.low ≤ stop_price → 즉시 시장가 매도
+    # -----------------------------------------------------------------------
+
+    def test_step_분봉_low가_stop_price_이하면_즉시_시장가_매도(
+        self,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """bar.low ≤ lot.stop_price 이면 strategy.on_bar 없이 즉시 submit_sell 호출.
+
+        GREEN 단계: step() 분봉 루프에서 가드 체크 → ExitSignal 직접 처리.
+        """
+        from stock_agent.strategy.base import EntrySignal
+
+        stop_price_val = Decimal("49000")
+
+        mock_strategy = MagicMock(spec=ORBStrategy)
+        mock_strategy.on_bar.return_value = [
+            EntrySignal(
+                symbol=_SYMBOL_A,
+                price=Decimal("50000"),
+                ts=_kst(9, 30),
+                stop_price=stop_price_val,
+                take_price=Decimal("0"),
+            )
+        ]
+        mock_strategy.on_time.return_value = []
+
+        exc = _make_executor(
+            mock_strategy,  # type: ignore[arg-type]
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+        )
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+
+        # 1차 step: 진입
+        entry_bar = _bar(_SYMBOL_A, 9, 30, close=50_000)
+        fake_bar_source.set_bars(_SYMBOL_A, [entry_bar])
+        exc.step(_kst(9, 31))
+        assert len(risk_manager.active_positions) == 1, "진입 전제 조건 미충족"
+
+        # 2차 step: bar.low ≤ stop_price → 가드 발동
+        mock_strategy.on_bar.return_value = []  # 이제 EntrySignal 없음
+        guard_bar = _bar(
+            _SYMBOL_A,
+            9,
+            35,
+            close=48_500,
+            high=49_200,
+            low=int(stop_price_val) - 100,  # 48_900 < 49_000
+        )
+        fake_bar_source.set_bars(_SYMBOL_A, [guard_bar])
+        report = exc.step(_kst(9, 36))
+
+        # 가드 발동 → submit_sell 1회
+        assert len(fake_order_submitter.sell_calls) == 1, (
+            f"stop_loss 가드 발동 시 submit_sell 1회 기대, "
+            f"실제={len(fake_order_submitter.sell_calls)}"
+        )
+        # StepReport 에 ExitEvent(reason="stop_loss") 포함
+        assert len(report.exit_events) == 1, f"exit_events 1건 기대, 실제={len(report.exit_events)}"
+        assert report.exit_events[0].reason == "stop_loss", (
+            f"reason='stop_loss' 기대, 실제={report.exit_events[0].reason}"
+        )
+
+    def test_step_분봉_가드_발동시_strategy_on_bar_미호출(
+        self,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """stop_loss 가드 발동 심볼·bar 에서 strategy.on_bar 가 호출되지 않는다.
+
+        GREEN 단계: 가드 발동 시 strategy.on_bar(bar) 호출 skip.
+        """
+        from stock_agent.strategy.base import EntrySignal
+
+        stop_price_val = Decimal("49000")
+
+        mock_strategy = MagicMock(spec=ORBStrategy)
+        mock_strategy.on_bar.return_value = [
+            EntrySignal(
+                symbol=_SYMBOL_A,
+                price=Decimal("50000"),
+                ts=_kst(9, 30),
+                stop_price=stop_price_val,
+                take_price=Decimal("0"),
+            )
+        ]
+        mock_strategy.on_time.return_value = []
+
+        exc = _make_executor(
+            mock_strategy,  # type: ignore[arg-type]
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+        )
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+
+        # 진입
+        entry_bar = _bar(_SYMBOL_A, 9, 30, close=50_000)
+        fake_bar_source.set_bars(_SYMBOL_A, [entry_bar])
+        exc.step(_kst(9, 31))
+        mock_strategy.on_bar.reset_mock()
+        mock_strategy.on_bar.return_value = []
+
+        # 가드 발동 bar
+        guard_bar = _bar(_SYMBOL_A, 9, 35, close=48_500, high=49_200, low=int(stop_price_val) - 100)
+        fake_bar_source.set_bars(_SYMBOL_A, [guard_bar])
+        exc.step(_kst(9, 36))
+
+        # strategy.on_bar 가 guard_bar 로 호출되면 안 된다
+        for call_args in mock_strategy.on_bar.call_args_list:
+            bar_arg = call_args.args[0] if call_args.args else call_args.kwargs.get("bar")
+            assert bar_arg is not guard_bar, (
+                "stop_loss 가드 발동 bar 에서 strategy.on_bar 가 호출되면 안 된다"
+            )
+
+    # -----------------------------------------------------------------------
+    # (C) 가드 미발동: bar.low > stop_price → strategy.on_bar 정상 호출
+    # -----------------------------------------------------------------------
+
+    def test_step_분봉_low_가_stop_price_초과면_가드_미발동_strategy_정상_호출(
+        self,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """bar.low > stop_price 이면 가드 패스 + strategy.on_bar 정상 호출.
+
+        GREEN 단계: 가드 미발동 경로에서 기존 strategy.on_bar 루프 그대로.
+        """
+        from stock_agent.strategy.base import EntrySignal
+
+        stop_price_val = Decimal("49000")
+
+        mock_strategy = MagicMock(spec=ORBStrategy)
+        mock_strategy.on_bar.return_value = [
+            EntrySignal(
+                symbol=_SYMBOL_A,
+                price=Decimal("50000"),
+                ts=_kst(9, 30),
+                stop_price=stop_price_val,
+                take_price=Decimal("0"),
+            )
+        ]
+        mock_strategy.on_time.return_value = []
+
+        exc = _make_executor(
+            mock_strategy,  # type: ignore[arg-type]
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+        )
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+
+        # 진입
+        entry_bar = _bar(_SYMBOL_A, 9, 30, close=50_000)
+        fake_bar_source.set_bars(_SYMBOL_A, [entry_bar])
+        exc.step(_kst(9, 31))
+        mock_strategy.on_bar.reset_mock()
+        mock_strategy.on_bar.return_value = []
+
+        # low > stop_price — 가드 미발동
+        safe_bar = _bar(
+            _SYMBOL_A,
+            9,
+            35,
+            close=50_200,
+            high=50_500,
+            low=int(stop_price_val) + 500,  # 49_500 > 49_000
+        )
+        fake_bar_source.set_bars(_SYMBOL_A, [safe_bar])
+        exc.step(_kst(9, 36))
+
+        # strategy.on_bar 가 safe_bar 로 호출되어야 한다
+        called_bars = [
+            (c.args[0] if c.args else c.kwargs.get("bar"))
+            for c in mock_strategy.on_bar.call_args_list
+        ]
+        assert safe_bar in called_bars, (
+            "가드 미발동 시 strategy.on_bar(safe_bar) 가 호출되어야 한다"
+        )
+        # submit_sell 미호출
+        assert len(fake_order_submitter.sell_calls) == 0, (
+            "가드 미발동 시 submit_sell 이 호출되면 안 된다"
+        )
+
+    # -----------------------------------------------------------------------
+    # (D) 가드 발동 후 _open_lots 제거 + record_exit 호출
+    # -----------------------------------------------------------------------
+
+    def test_step_가드_발동_후_open_lots에서_제거(
+        self,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """stop_loss 가드 청산 후 _open_lots 에서 심볼 키 제거 + active_positions 비워짐.
+
+        GREEN 단계: _handle_exit 경로가 _open_lots.pop(symbol) + record_exit 를 수행.
+        """
+        from stock_agent.strategy.base import EntrySignal
+
+        stop_price_val = Decimal("49000")
+
+        mock_strategy = MagicMock(spec=ORBStrategy)
+        mock_strategy.on_bar.return_value = [
+            EntrySignal(
+                symbol=_SYMBOL_A,
+                price=Decimal("50000"),
+                ts=_kst(9, 30),
+                stop_price=stop_price_val,
+                take_price=Decimal("0"),
+            )
+        ]
+        mock_strategy.on_time.return_value = []
+
+        exc = _make_executor(
+            mock_strategy,  # type: ignore[arg-type]
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+        )
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+
+        # 진입
+        entry_bar = _bar(_SYMBOL_A, 9, 30, close=50_000)
+        fake_bar_source.set_bars(_SYMBOL_A, [entry_bar])
+        exc.step(_kst(9, 31))
+        assert _SYMBOL_A in exc._open_lots, "진입 전제 조건: _open_lots 에 심볼 존재"  # type: ignore[attr-defined]
+
+        # 가드 발동
+        mock_strategy.on_bar.return_value = []
+        guard_bar = _bar(_SYMBOL_A, 9, 35, close=48_500, high=49_200, low=int(stop_price_val) - 100)
+        fake_bar_source.set_bars(_SYMBOL_A, [guard_bar])
+        exc.step(_kst(9, 36))
+
+        # _open_lots 에서 제거
+        assert _SYMBOL_A not in exc._open_lots, (  # type: ignore[attr-defined]
+            "가드 청산 후 _open_lots 에서 심볼이 제거되어야 한다"
+        )
+        # RiskManager.active_positions 비워짐
+        assert len(risk_manager.active_positions) == 0, (
+            "가드 청산 후 active_positions 가 비어있어야 한다"
+        )
+
+    # -----------------------------------------------------------------------
+    # (E) stop_price=0 이면 가드 비활성
+    # -----------------------------------------------------------------------
+
+    def test_handle_entry_stop_price_zero면_가드_비활성(
+        self,
+        risk_manager: RiskManager,
+        fake_order_submitter: FakeOrderSubmitter,
+        fake_balance_provider: FakeBalanceProvider,
+        fake_bar_source: FakeBarSource,
+    ) -> None:
+        """EntrySignal(stop_price=Decimal("0")) 진입 시 가드 비활성.
+
+        stop_price=0 은 가드 비활성 마커. bar.low 가 0 이하인 경우는
+        실무상 발생하지 않으므로 사실상 가드 작동 안 함.
+
+        GREEN 단계: lot.stop_price == 0 이면 가드 체크 skip.
+        """
+        from stock_agent.strategy.base import EntrySignal
+
+        mock_strategy = MagicMock(spec=ORBStrategy)
+        mock_strategy.on_bar.return_value = [
+            EntrySignal(
+                symbol=_SYMBOL_A,
+                price=Decimal("50000"),
+                ts=_kst(9, 30),
+                stop_price=Decimal("0"),  # 비활성 마커
+                take_price=Decimal("0"),
+            )
+        ]
+        mock_strategy.on_time.return_value = []
+
+        exc = _make_executor(
+            mock_strategy,  # type: ignore[arg-type]
+            risk_manager,
+            fake_order_submitter,
+            fake_balance_provider,
+            fake_bar_source,
+        )
+        exc.start_session(_DATE, _STARTING_CAPITAL)
+
+        # 진입
+        entry_bar = _bar(_SYMBOL_A, 9, 30, close=50_000)
+        fake_bar_source.set_bars(_SYMBOL_A, [entry_bar])
+        exc.step(_kst(9, 31))
+
+        # 진입 후 _open_lots.stop_price == 0
+        if _SYMBOL_A in exc._open_lots:  # type: ignore[attr-defined]
+            lot = exc._open_lots[_SYMBOL_A]  # type: ignore[attr-defined]
+            assert getattr(lot, "stop_price", Decimal("0")) == Decimal("0"), (  # type: ignore[attr-defined]
+                "stop_price=0 마커가 _OpenLot 에 보존되어야 한다"
+            )
+
+        mock_strategy.on_bar.reset_mock()
+        mock_strategy.on_bar.return_value = []
+
+        # bar.low 가 낮아도 stop_price=0 이면 가드 미발동
+        low_bar = _bar(_SYMBOL_A, 9, 35, close=40_000, high=45_000, low=1)
+        fake_bar_source.set_bars(_SYMBOL_A, [low_bar])
+        exc.step(_kst(9, 36))
+
+        # 가드 미발동 → submit_sell 없음
+        assert len(fake_order_submitter.sell_calls) == 0, (
+            "stop_price=0 마커 시 가드가 발동되면 안 된다"
+        )

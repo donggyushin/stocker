@@ -40,6 +40,14 @@ zero → skip + info 로그 + `return False` (RiskManager 미기록).
 `_handle_exit`: `status != "full"` → `ExecutorError` 승격 (운영자 개입 유도).
 `StepReport` 구조는 변경 없음 — `entry_events.qty` 가 실체결 수량으로 해석됨(계약 의미 명확화).
 
+**Phase 3 PR3 (ADR-0025) 완료(2026-05-03)에 따른 확장**:
+- `_OpenLot.stop_price: Decimal = Decimal("0")` 필드 추가. `0` = 가드 비활성 마커(DCA 등 손절가 미사용 전략 + `restore_session` 복원 포지션).
+- `_handle_entry` 가 `signal.stop_price` 를 `_OpenLot.stop_price` 에 보존. slippage 적용된 `entry_fill_price` 와 무관.
+- `_handle_exit` fallback · `restore_session` 은 `stop_price=Decimal("0")` 명시 (`OpenPositionInput` Protocol 에 `stop_price` 미포함 — 가드 비활성, 다음 EOD 일봉으로 자연 청산).
+- `_stop_loss_guard_signals(bar) -> list[Signal]` 헬퍼 신설. `lot.stop_price > 0` 이고 `bar.low <= lot.stop_price` 이면 `ExitSignal(reason="stop_loss", price=lot.stop_price, ts=bar.bar_time)` 반환.
+- `step()` 분봉 루프에 가드 호출 추가: 각 bar 처리 시 `_stop_loss_guard_signals(bar)` 먼저 호출 → 발동 시 `_process_signals` 처리 + `_last_processed_bar_time[symbol]` 갱신 후 `strategy.on_bar` 호출 skip.
+- `Executor.strategy` 공개 프로퍼티 신설 — `main.py` `_install_jobs` 의 RSI MR 판정용(`isinstance(executor.strategy, RSIMRStrategy)`).
+
 Phase 3 PASS 선언은 모의투자 환경에서 **연속 10영업일 무중단 + 0 unhandled
 error + 모든 주문이 SQLite 기록 + 텔레그램 알림 100% 수신** 후. 본 PR 은 그
 조건 중 단 하나도 자동으로 충족하지 않는다 — 이번 PR 의 산출은 단위 테스트로
@@ -130,6 +138,7 @@ step(now: datetime) -> StepReport          # 1 sweep
 force_close_all(now: datetime) -> StepReport
 reconcile() -> ReconcileReport
 is_halted (property)                       # _halt or risk_manager.is_halted
+strategy (property)                        # PR3 신설 — main._install_jobs RSI MR 판정용
 ```
 
 ### `ExecutorConfig` 필드
@@ -201,7 +210,9 @@ last_reconcile: ReconcileReport | None   # property, read-only
 ```text
 1. RiskManager.restore_session(session_date, starting_capital_krw,
        open_positions=..., entries_today=..., daily_realized_pnl_krw=...) 위임.
-2. open_positions 순회 → _open_lots[symbol] = _OpenLot(entry_price, qty).
+2. open_positions 순회 → _open_lots[symbol] = _OpenLot(entry_price, qty, stop_price=Decimal("0")).
+   # OpenPositionInput Protocol 에 stop_price 미포함 — 가드 비활성.
+   # 다음 EOD 일봉이 RSIMRStrategy.on_bar 에서 stop_loss 발동 시 자연 청산.
 3. isinstance(strategy, ORBStrategy) 가 True 인 경우 (ADR-0025 PR2):
    - open_positions 의 각 symbol 에 대해 strategy.restore_long_position(symbol, ...) 호출.
    - closed_symbols \ open_symbols 에 대해 strategy.mark_session_closed(symbol, session_date) 호출.
@@ -223,6 +234,13 @@ last_reconcile: ReconcileReport | None   # property, read-only
      bars = bar_source.get_minute_bars(symbol)
      for bar in bars:
          if bar.bar_time <= _last_processed_bar_time[symbol]: continue   # idempotent
+         # PR3 (ADR-0025): 분봉 stop_loss 가드 — bar.low ≤ lot.stop_price 시
+         # strategy.on_bar 호출 없이 ExitSignal(reason="stop_loss") 직접 처리.
+         guard_signals = _stop_loss_guard_signals(bar)
+         if guard_signals:
+             _process_signals(guard_signals)
+             _last_processed_bar_time[symbol] = bar.bar_time
+             continue
          signals = strategy.on_bar(bar)
          _process_signals(signals)
          _last_processed_bar_time[symbol] = bar.bar_time
@@ -246,7 +264,8 @@ last_reconcile: ReconcileReport | None   # property, read-only
 6. `entry_fill_price = buy_fill_price(signal.price, slippage_rate)` —
    `backtest.costs.buy_fill_price` 재사용.
 7. `risk_manager.record_entry(symbol, entry_fill_price, outcome.filled_qty, now)` +
-   `_open_lots[symbol] = _OpenLot(entry_fill_price, outcome.filled_qty)`. `status ==
+   `_open_lots[symbol] = _OpenLot(entry_price=entry_fill_price, qty=outcome.filled_qty, stop_price=signal.stop_price)`.
+   `signal.stop_price` 원본 보존(slippage 적용 전 전략 산출값). `status ==
    "partial"` 이면 warning 로그 (잔량 취소 완료, 체결분만 기록).
 
 ## ExitSignal 처리
@@ -383,3 +402,4 @@ generic `except Exception` 금지. `assert` 대신 명시적 예외. broker/stra
   와 동일).
 - **호가 단위 라운딩** — 현재 `Decimal` 원시 그대로. KRX 호가 단위 적용은
   Phase 5 재설계 범위.
+- **stop_price 영속화** — `OpenPositionInput`/`storage.OpenPositionRow` 에 `stop_price` 컬럼 추가는 별도 PR. 현재는 restore 후 가드 비활성(`Decimal("0")`), 다음 EOD 일봉으로 자연 청산. (ADR-0025 결과 섹션 + PR3 결정)

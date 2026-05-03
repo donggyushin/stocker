@@ -614,3 +614,17 @@ PR6 본 PR. 코드 변경 없음 — 종합 판정 런북 (`docs/runbooks/step_f
 [x] `src/stock_agent/execution/executor.py`: `strategy` 매개변수 타입 `ORBStrategy` → `Strategy` Protocol 로 확장. `restore_session` 의 ORB 상태 복원 루프(`restore_long_position`/`mark_session_closed`/`reset_session`)를 `isinstance(strategy, ORBStrategy)` 가드로 감싸고, else 분기에서 RSIMRStrategy 등 일봉 전략은 EOD 일봉 재흐름으로 자연 복원 가정 + warning 로그.
 
 pytest **2221 passed, 4 skipped** (PR2 기준).
+
+### Phase 3 PR3 — 15:00 force_close cron 비활성화 + Executor 분봉 stop_loss 가드 (2026-05-03, ADR-0025)
+
+[x] `src/stock_agent/main.py` (`_install_jobs`): `isinstance(runtime.executor.strategy, RSIMRStrategy)` 가드 추가. RSI MR 모드면 `on_force_close` cron 미등록 + warning 로그("RSI MR 모드 — 15:00 force_close cron 미등록, ADR-0025"). ORB 등 일중 전략은 기존대로 cron 등록. `RiskConfig` 변경 없음.
+
+[x] `src/stock_agent/execution/executor.py`:
+- `_OpenLot.stop_price: Decimal = Decimal("0")` 필드 추가. `0` 마커 = 가드 비활성(DCA 등 손절가 미사용 전략 + `restore_session` 복원 포지션).
+- `_handle_entry` — `_open_lots[symbol] = _OpenLot(entry_price=..., qty=..., stop_price=signal.stop_price)`. EntrySignal 의 stop_price 원본 보존.
+- `_handle_exit` fallback · `restore_session` — `stop_price=Decimal("0")` 명시(가드 비활성 — 다음 EOD 일봉 자연 청산).
+- `Executor.strategy` 공개 프로퍼티 신설(main `_install_jobs` RSI MR 판정용).
+- `_stop_loss_guard_signals(bar)` 헬퍼 신설. `lot.stop_price > 0` 이고 `bar.low <= lot.stop_price` 이면 `ExitSignal(reason="stop_loss", price=lot.stop_price, ts=bar.bar_time)` 반환.
+- `step()` 분봉 루프에 가드 호출 추가: bar 처리 시작 시 `_stop_loss_guard_signals(bar)` 호출 → 발동 시 `_process_signals` 처리 + `strategy.on_bar` 호출 skip.
+
+pytest **2231 passed, 4 skipped** (PR3 기준 — PR2 대비 +10: `TestInstallJobsRSIMRBranch` 4건 + `TestStepStopLossGuard` 6건).

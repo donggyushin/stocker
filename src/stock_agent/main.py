@@ -4,14 +4,16 @@ Phase 3 두 번째 산출물. 이 모듈은 **조립만** 한다 — 전략·리
 단독 동작 계약은 이미 잠겨 있다.
 
 스케줄 (plan.md Phase 3, ADR-0011) — `_install_jobs` 가 등록하는 cron 4종
+(RSI MR 모드는 3종 — `on_force_close` 미등록, ADR-0025 PR3)
     09:00 KST  → on_session_start      (RiskManager/Executor 세션 리셋)
     매분 00s  → on_step                (Executor.step, 9-14시 평일)
-    15:00 KST  → on_force_close         (Executor.force_close_all)
+    15:00 KST  → on_force_close         (Executor.force_close_all, ORB 등 일중 전략만)
     15:30 KST  → on_daily_report        (일일 요약 로그)
 
 ※ 전략은 `RSIMRStrategy` (ADR-0023 채택, ADR-0025 한도 적용). 일봉 RSI 평균회귀라
-  `on_step` 분봉 호출만으로는 백테스트와 의미 정합되지 않음 — EOD 트리거 + 분봉 fill 추적
-  하이브리드 운영은 PR3 (ADR-0025 결과 섹션 참조) 에서 도입.
+  `on_step` 분봉 호출은 strategy.on_bar 의 RSI 의미를 오염시킬 수 있음 — EOD 트리거 +
+  분봉 fill 추적 풀 하이브리드 운영은 후속 PR. PR3 (ADR-0025 결과 섹션) 는 두 가지만
+  처리: (1) 15:00 force_close cron 비활성화 (2) Executor 분봉 stop_loss 가드.
 
 범위 (이번 PR)
     - `main.py` + APScheduler wiring + 드라이런 CLI 플래그
@@ -361,11 +363,23 @@ def _install_jobs(
         trigger=CronTrigger(day_of_week="mon-fri", hour="9-14", minute="*", second=0, timezone=tz),
         name="on_step",
     )
-    scheduler.add_job(
-        _on_force_close(runtime, effective_clock),
-        trigger=CronTrigger(day_of_week="mon-fri", hour=15, minute=0, second=0, timezone=tz),
-        name="on_force_close",
-    )
+    # PR3 (ADR-0025): RSI MR 모드면 15:00 force_close cron 등록 skip.
+    # 일봉 평균회귀 전략 특성상 일중 강제청산이 부적합 — 청산 시점은 다음
+    # 영업일 시초가(RSI 회귀 청산) 또는 분봉 stop_loss 가드(Executor 책임)
+    # 가 자연 결정한다. RSIMRStrategy.on_time 이 항상 빈 리스트라 cron 호출
+    # 자체가 무해하지만, 의미적 정합성과 운영자 혼란 방지를 위해 등록 자체
+    # 를 생략한다. ORBStrategy 등 일중 전략은 기존대로 등록.
+    if isinstance(runtime.executor.strategy, RSIMRStrategy):
+        logger.warning(
+            "main.install_jobs: RSI MR 모드 — 15:00 force_close cron 미등록 "
+            "(일봉 평균회귀 전략 강제청산 부적합, ADR-0025)."
+        )
+    else:
+        scheduler.add_job(
+            _on_force_close(runtime, effective_clock),
+            trigger=CronTrigger(day_of_week="mon-fri", hour=15, minute=0, second=0, timezone=tz),
+            name="on_force_close",
+        )
     scheduler.add_job(
         _on_daily_report(runtime, effective_clock),
         trigger=CronTrigger(day_of_week="mon-fri", hour=15, minute=30, second=0, timezone=tz),
