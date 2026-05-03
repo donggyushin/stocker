@@ -38,9 +38,6 @@ jobs:
       - name: Format check (ruff format)
         run: uv run ruff format --check src scripts tests
 
-      - name: Format check (black)
-        run: uv run black --check src scripts tests
-
       - name: Type check (pyright)
         run: uv run pyright src scripts tests
 

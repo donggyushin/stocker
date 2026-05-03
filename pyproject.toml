@@ -18,7 +18,6 @@ dependencies = [
 [dependency-groups]
 dev = [
     "ruff>=0.6",
-    "black>=24.8",
     "pytest>=8.3",
     "pytest-mock>=3.14",
     "pre-commit>=3.8",
@@ -45,10 +44,6 @@ select = ["E", "F", "I", "B", "UP", "N", "SIM"]
 # N806: 지연 import 패턴(예: `KisMinuteBarLoader, _ = _import_loader()`) 에서
 # 클래스 변수명을 클래스 정체성 유지 위해 대문자로 유지 — 테스트에 한정.
 "tests/**/*.py" = ["N802", "N806"]
-
-[tool.black]
-line-length = 100
-target-version = ["py312"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -25,15 +25,18 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 - 손절 -1.5%, 익절 +3.0%, 15:00 강제 청산
 - KOSPI 200 중 9:00~9:30 거래대금 상위 N종목만 후보
 
-## 리스크 관리 (기본값)
+## 리스크 관리 (Phase 3 모의투자 운영 기준값, ADR-0025)
 
-| 항목 | 값 |
-|---|---|
-| 종목당 진입 금액 | 자본의 20% |
-| 동시 보유 종목 | 최대 3종목 |
-| 종목당 손절 / 익절 | -1.5% / +3.0% |
-| 일일 손실 한도 | 자본의 -2% 도달 시 당일 매매 중단 |
-| 일일 최대 진입 | 10회 |
+| 항목 | 값 | 적용 대상 |
+|---|---|---|
+| 종목당 진입 금액 | 세션 자본의 10% | `RiskConfig.position_pct` |
+| 동시 보유 종목 | 최대 10종목 | `RiskConfig.max_positions` |
+| 종목당 손절 | -3% (stop_loss_pct) | `RSIMRConfig` |
+| 일일 손실 한도 | 자본의 -2% 도달 시 당일 매매 중단 | `RiskConfig.daily_loss_limit_pct` |
+| 일일 최대 진입 | 5회 | `RiskConfig.daily_max_entries` |
+| 강제청산 | 운영 미사용 (일봉 전략, ORB 폐기) | — |
+
+ORB 시절 기본값(종목당 20%, 동시 3종목, 손절 -1.5%, 익절 +3.0%, 일일 10회)은 ADR-0025 로 대체됨. 고정 익절 미사용 — RSI 과매수 도달(70) 시 청산.
 
 ## 기술 스택
 
@@ -48,8 +51,8 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 - **설정 검증**: `pydantic-settings`
 - **저장소**: SQLite (MVP)
 - **테스트**: `pytest`, `pytest-mock`
-- **포매터/린터**: `ruff`, `black` (`pre-commit` 훅 적용)
-- **CI**: GitHub Actions — PR 및 main push 마다 ruff·black·pytest 자동 실행. main 머지는 CI job `Lint, format, test` 통과 필수.
+- **포매터/린터**: `ruff` (lint + format, `pre-commit` 훅 적용). black 폐기 (ADR-0026, 2026-05-03).
+- **CI**: GitHub Actions — PR 및 main push 마다 ruff·pytest 자동 실행. main 머지는 CI job `Lint, format, test` 통과 필수.
 
 ## 로드맵 (총 약 4주)
 
@@ -106,6 +109,8 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 
 **Phase 2 PASS 공식 선언 (2026-05-03)**. ADR-0023 의 C1~C4 추가 검증 전원 통과 → Phase 3 (모의투자 무중단 운영) 착수 재허가. `main.py` 모의투자 운영 가능 상태. 상세: `docs/adr/0023-rsi-mr-strategy-adoption-conditional.md`.
 
+**Phase 3 PR2 완료 (2026-05-03)**. `main.py` 전략 wiring `ORBStrategy` → `RSIMRStrategy` 교체 + `RiskConfig` ADR-0025 확정값 명시 주입. `executor.py` `strategy` 매개변수 타입을 `Strategy` Protocol 로 확장 + `restore_session` ORB/일봉 전략 분기 추가. ADR-0025 리스크 한도 운영 적용. pytest **2221 passed, 4 skipped**.
+
 **Phase 3 착수 전제 통과** (2026-04-21). 실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK) 완료.
 
 **Phase 3 첫 산출물 — Executor (코드·테스트 레벨) 완료** (2026-04-21). `execution/` 패키지 신설 — `Executor` + Protocol 3종(`OrderSubmitter`/`BalanceProvider`/`BarSource`) + 어댑터 3종(`LiveOrderSubmitter`/`LiveBalanceProvider`/`DryRunOrderSubmitter`) + `StepReport`/`ReconcileReport` DTO. pytest **605건 green**.
@@ -135,11 +140,11 @@ KOSPI 200 대형주를 대상으로 Opening Range Breakout(ORB) 전략을 자동
 ```text
 stock-agent/
 ├── .github/workflows/
-│   └── ci.yml                 # PR·main push 시 ruff/black/pytest 자동 실행
+│   └── ci.yml                 # PR·main push 시 ruff/pytest 자동 실행
 ├── .python-version            # 3.12
-├── pyproject.toml             # uv 기반, ruff/black/pytest 설정 포함
+├── pyproject.toml             # uv 기반, ruff/pytest 설정 포함
 ├── uv.lock                    # 패키지 잠금 (pykrx 1.2.7, pyyaml 6.0.3 포함)
-├── .pre-commit-config.yaml    # ruff, black, 기본 훅
+├── .pre-commit-config.yaml    # ruff (lint + format), 기본 훅
 ├── .env.example               # KIS·텔레그램 키 placeholder (.env는 .gitignore)
 ├── .gitignore
 ├── README.md

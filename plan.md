@@ -38,15 +38,20 @@
 
 ## 리스크 관리 기본값 (100~200만원 기준, config로 조정 가능)
 
-| 항목 | 기본값 | 이유 |
-|---|---|---|
-| 종목당 진입 금액 | 자본의 20% | 동시 최대 5종목 분산 |
-| 동시 보유 종목 수 | 최대 3종목 (MVP) | 모니터링 부담 경감 |
-| 종목당 손절 | -1.5% | 익절 2:1 손익비 확보 |
-| 종목당 익절 | +3.0% or 15:00 청산 | 당일 청산 원칙 |
-| 일일 손실 한도 | 자본의 -2% 도달 시 당일 매매 중단 | 서킷브레이커 |
-| 일일 최대 진입 | 10회 | 오버트레이딩 방지 |
-| 최소 거래금액 | 10만원/종목 | 수수료 비중 관리 |
+**Phase 3 모의투자 운영 기준값 (ADR-0025, 2026-05-03 확정)** — ORB 시절 기본값을 RSI MR 일봉 전략 특성에 맞게 재정의.
+
+| 항목 | 운영 기준값 (ADR-0025) | 적용 대상 | 이유 |
+|---|---|---|---|
+| 종목당 진입 금액 | 세션 자본의 10% | `RiskConfig.position_pct` | max_positions=10 과 결합해 전체 자본 균등 분배 |
+| 동시 보유 종목 수 | 최대 10종목 | `RiskConfig.max_positions` | ADR-0023 C4 sensitivity grid 현행값 PASS |
+| 종목당 손절 | -3% (stop_loss_pct) | `RSIMRConfig.stop_loss_pct` | ADR-0023 C4 96 조합 중 최고 통과율 |
+| 종목당 익절 | RSI 과매수(70) 도달 시 청산 | `RSIMRConfig` | 고정 익절 미사용 — 평균회귀 전략 특성 |
+| 강제청산 (force_close_at) | 운영 미사용 | main.py cron 비활성화 | 일봉 전략 — 다음 영업일 시초가 또는 분봉 stop_loss 가드로 청산 |
+| 일일 손실 한도 | 자본의 -2% 도달 시 당일 매매 중단 | `RiskConfig.daily_loss_limit_pct` | 전략 무관 자본 보호 게이트 — 보존 |
+| 일일 최대 진입 | 5회 | `RiskConfig.daily_max_entries` | RSI MR 백테스트 평균 ≈ 0.7건/일 기준 상한 |
+| 최소 거래금액 | 10만원/종목 | `RiskConfig.min_notional_krw` | 수수료 비중 관리 — 보존 |
+
+ORB 시절 기본값(position_pct 20%, max_positions 3, daily_max_entries 10, 손절 -1.5%, 익절 +3.0%, 15:00 강제청산)은 ADR-0025 로 대체됨. `RSIMRConfig.position_pct=1.0` 은 백테스트 내부 자금 배분 비율(백테스트 결과 재현용)이며 `RiskConfig.position_pct=0.10` 과 의미 차원이 다름 — 혼동 금지 (ADR-0025 맥락 섹션 참조).
 
 ---
 
@@ -54,7 +59,7 @@
 
 **언어/런타임**: Python 3.12+
 
-**CI**: `.github/workflows/ci.yml` — PR 및 main push 시 `uv sync --frozen` → ruff/black 정적 분석 → pytest 자동 실행. main 브랜치는 CI job `Lint, format, test` 통과 없이 머지 불가 (required status check, `strict=true`).
+**CI**: `.github/workflows/ci.yml` — PR 및 main push 시 `uv sync --frozen` → ruff (lint + format) 정적 분석 → pytest 자동 실행. main 브랜치는 CI job `Lint, format, test` 통과 없이 머지 불가 (required status check, `strict=true`). black 폐기 (ADR-0026, 2026-05-03).
 
 **주요 라이브러리**
 - `python-kis 2.x`: KIS Developers REST/WebSocket 래퍼 (오픈소스 검증됨, mojito2 미사용)
@@ -129,7 +134,7 @@ stock-agent/
 ### Phase 0 — 계좌·API·환경 준비 (2~3일) — 완료 2026-04-19
 - 한투증권 비대면 계좌 개설 (모바일 MTS)
 - KIS Developers 가입 → **모의투자용 APP_KEY/SECRET 먼저** 발급
-- 레포 초기화 (`uv init`), `.env`/`.gitignore`, `pre-commit`(ruff/black) 세팅
+- 레포 초기화 (`uv init`), `.env`/`.gitignore`, `pre-commit`(ruff lint + format) 세팅
 - 텔레그램 봇 생성 (@BotFather), 채팅 ID 확보
 - **산출물**: `scripts/healthcheck.py` 실행 시 모의 계좌 잔고 조회 성공 + "hello" 텔레그램 알림 수신 — **달성 확인** (KIS 토큰 발급 OK, 잔고 10,000,000원 조회 OK, 텔레그램 수신 OK)
 
@@ -601,3 +606,11 @@ PR6 본 PR. 코드 변경 없음 — 종합 판정 런북 (`docs/runbooks/step_f
 [x] ADR-0015 적용. `KisClient.cancel_order(order_number) -> None` 신설 + `PendingOrder.qty_filled: int` 필드 추가. `_to_pending_order` 가 PyKis 정식 필드 우선 매핑 → `qty_remaining` fallback. `execution/executor.py`: `OrderSubmitter.cancel_order` Protocol 확장 + `_resolve_fill(ticket) -> _FillOutcome` 교체 (타임아웃 시 `cancel_order` + 부분/0 체결 수습) + `_handle_entry` 부분체결 → `filled_qty` 만 기록, 0 체결 → skip + `_handle_exit` 부분/0 체결 → `ExecutorError`. 의존성 추가 없음.
 
 **Phase 3 코드 산출물 전부 완료. PASS 선언은 모의투자 환경 연속 10영업일 무중단 + 0 unhandled error + 모든 주문이 SQLite 기록 + 텔레그램 알림 100% 수신 후.**
+
+### Phase 3 PR2 — main.py 전략 wiring 교체 + RiskConfig 명시 주입 (2026-05-03, ADR-0025)
+
+[x] `src/stock_agent/main.py`: `ORBStrategy`/`StrategyConfig` import 제거 → `RSIMRStrategy`/`RSIMRConfig` import 추가. `strategy = RSIMRStrategy(RSIMRConfig(universe=tuple(universe.tickers)))` + `risk_manager = RiskManager(RiskConfig(position_pct=Decimal("0.10"), max_positions=10, daily_loss_limit_pct=Decimal("0.02"), daily_max_entries=5))` 명시 주입. docstring 갱신 — "RSIMRStrategy (ADR-0023 채택, ADR-0025 한도 적용). EOD 트리거 + 분봉 fill 추적 하이브리드 운영은 PR3 에서 도입."
+
+[x] `src/stock_agent/execution/executor.py`: `strategy` 매개변수 타입 `ORBStrategy` → `Strategy` Protocol 로 확장. `restore_session` 의 ORB 상태 복원 루프(`restore_long_position`/`mark_session_closed`/`reset_session`)를 `isinstance(strategy, ORBStrategy)` 가드로 감싸고, else 분기에서 RSIMRStrategy 등 일봉 전략은 EOD 일봉 재흐름으로 자연 복원 가정 + warning 로그.
+
+pytest **2221 passed, 4 skipped** (PR2 기준).
