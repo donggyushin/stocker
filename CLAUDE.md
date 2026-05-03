@@ -248,7 +248,11 @@ PR #18 에서 `ExitEvent.reason: str` 이 프로젝트 내 기존 `ExitReason = 
   - **C3 PASS (2026-05-03)**: `scripts/verify_069500_adjusted.py` + `data/c3_verify_069500.json`. `data/stock_agent.db` 캐시 458 행 = pykrx `adjusted=True` 458 행 close 완전 일치 (Stage 3 diff 0). ETF/KOSPI 200 (1028) 비율 점프 0건 (Stage 2). Google Finance · Wikipedia KOSPI 200 absolute level cross-check 정합 (Stage 4). pykrx 일봉 캐시는 수정주가 데이터로 확정 — PR1~PR5 절대 수익률은 데이터 보정 오류가 아닌 한국 KOSPI 200 강세장 macro 의 결과. 런북: `docs/runbooks/c3_069500_adjusted_plausibility_2026-05-03.md`.
   - **C4 통과 (2026-05-03)**: PR5 파라미터 sensitivity grid 96 조합 (5축: rsi_period 3×oversold 2×overbought 2×stop_loss 4×max_positions 2). DCA baseline +48.18% 대비 64/96 (66.67%) all_gates_pass. 현행 14/30/70/0.03/10 PASS, 1축 변동 인접 7/8 (87.5%). 게이트 1·3 100% PASS. Phase 3 진입 게이트 판정 PASS. 런북: `docs/runbooks/c4_rsi_mr_sensitivity_2026-05-03.md`.
 - **Phase 3 PR2 (2026-05-03)**: `main.py` 전략 wiring 교체 (`ORBStrategy` → `RSIMRStrategy`) + `RiskConfig` ADR-0025 확정값 명시 주입. `executor.py` — `strategy` 매개변수 타입 `ORBStrategy` → `Strategy` Protocol 확장, `restore_session` ORB 복원 루프를 `isinstance(strategy, ORBStrategy)` 가드로 감싸고 일봉 전략 EOD 자연 복원 warning 분기 추가.
-- **테스트 카운트**: pytest **2221 passed, 4 skipped** (PR2 기준).
+- **Phase 3 PR3 (2026-05-03)**: ADR-0025 결과 섹션 PR3 두 액션 완료.
+  - `main.py` `_install_jobs` — `isinstance(runtime.executor.strategy, RSIMRStrategy)` 가드 추가. RSI MR 모드면 `on_force_close` cron 미등록 + warning 로그("RSI MR 모드 — 15:00 force_close cron 미등록, ADR-0025"). ORB 등 일중 전략은 기존대로 등록.
+  - `executor.py` — `_OpenLot.stop_price: Decimal = Decimal("0")` 필드 추가(가드 비활성 마커). `_handle_entry` 가 `signal.stop_price` 를 보존. `_stop_loss_guard_signals(bar)` 헬퍼 신설 — `bar.low ≤ stop_price` 시 `ExitSignal(reason="stop_loss")` 반환. `step()` 분봉 루프에서 `strategy.on_bar` 호출 전 가드 체크 — 발동 시 strategy 호출 없이 ExitSignal 직접 처리. `Executor.strategy` 공개 프로퍼티 신설(main `_install_jobs` RSI MR 판정용).
+  - `restore_session` 및 `_handle_exit` fallback 은 `stop_price=Decimal("0")` 명시(가드 비활성 — 다음 EOD 일봉 자연 청산).
+- **테스트 카운트**: pytest **2231 passed, 4 skipped** (PR3 기준 — PR2 대비 +10: `TestInstallJobsRSIMRBranch` 4건 + `TestStepStopLossGuard` 6건).
 - **운영자 close 대기 Issue**: #51 (Phase 2 PASS 판정 FAIL → 복구 로드맵으로 대체) · #52 (`KisMinuteBarLoader` 파싱 실패 대응, 운영자 `scripts/debug_kis_minute.py` 실행 후 댓글) · #63 (공휴일 캘린더 가드, 백필 재실행으로 `date_mismatch` 0 확인 후 댓글) · #71 (장시간 hang 방지, 2026-04-24 백필 완주 확인 — 운영자 댓글만 잔여).
 
 상세한 Phase 별 산출물·결정·테스트 카운트 변화·Issue 대응 이력은 [docs/phase-history.md](./docs/phase-history.md) 참조.

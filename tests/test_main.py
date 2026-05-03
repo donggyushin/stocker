@@ -68,7 +68,7 @@ from stock_agent.storage import (
     StorageError,
     TradingRecorder,
 )
-from stock_agent.strategy import ExitReason
+from stock_agent.strategy import ExitReason, ORBStrategy, StrategyConfig
 
 # ---------------------------------------------------------------------------
 # 공통 상수 / 헬퍼
@@ -2998,3 +2998,121 @@ class TestOnSessionStartRecorderNull:
         assert events_by_stage["session_start.recorder_null"].severity == "critical"
         assert events_by_stage["session_start"].error_class == "ConnectionError"
         assert events_by_stage["session_start"].severity == "error"
+
+
+# ---------------------------------------------------------------------------
+# PR3 — _install_jobs RSI MR 분기: force_close cron 미등록 (RED)
+#
+# 검증 목표:
+#   1. runtime.executor.strategy 가 RSIMRStrategy 인스턴스이면
+#      on_force_close cron 을 등록하지 않는다 (add_job 3회).
+#   2. ORBStrategy 인스턴스이면 기존 4 cron 모두 등록 (회귀 방지).
+#   3. RSI MR 분기 진입 시 warning 로그("force_close cron" 포함 키워드)
+#      가 1회 이상 방출된다.
+#
+# GREEN 단계에서 강제되는 결정:
+#   - Executor.strategy 공개 프로퍼티 신설 (또는 Runtime.strategy 필드 추가).
+#   - _install_jobs 내부에서
+#     isinstance(runtime.executor.strategy, RSIMRStrategy) 분기.
+#   - skip 시 logger.warning 1회.
+# ---------------------------------------------------------------------------
+
+
+class TestInstallJobsRSIMRBranch:
+    """_install_jobs RSI MR 모드 force_close cron 미등록 검증 (PR3 RED)."""
+
+    @staticmethod
+    def _make_fake_executor_with_strategy(strategy: object) -> MagicMock:
+        """strategy 프로퍼티를 노출하는 Executor 더블.
+
+        GREEN 단계에서 Executor.strategy 공개 프로퍼티를 신설해야 한다.
+        """
+        fake_exc = MagicMock(spec=Executor)
+        # PropertyMock 없이 단순 attribute 로 주입.
+        # GREEN 단계에서 Executor 가 .strategy 프로퍼티를 노출하면
+        # spec=Executor 로 생성된 MagicMock 도 자동으로 attribute 를 통과시킨다.
+        fake_exc.strategy = strategy
+        return fake_exc
+
+    def test_install_jobs_rsimr_strategy면_on_force_close_cron_미등록(self) -> None:
+        """RSIMRStrategy 인스턴스인 경우 add_job 3회 (force_close 제외)."""
+        from apscheduler.schedulers.blocking import BlockingScheduler
+
+        from stock_agent.strategy.rsi_mr import RSIMRConfig, RSIMRStrategy
+
+        scheduler = MagicMock(spec=BlockingScheduler)
+        rsimr = RSIMRStrategy(RSIMRConfig(universe=("005930",)))
+        fake_exc = self._make_fake_executor_with_strategy(rsimr)
+        runtime = _make_runtime(scheduler=scheduler, executor=fake_exc)
+        args = _parse_args([])
+
+        _install_jobs(scheduler, runtime, args, clock=lambda: _kst(9, 0))
+
+        # GREEN 단계: force_close cron 미등록 → add_job 3회
+        assert scheduler.add_job.call_count == 3, (
+            f"RSIMRStrategy 모드에서 add_job 은 3회 기대, 실제={scheduler.add_job.call_count}"
+        )
+
+    def test_install_jobs_rsimr_strategy면_on_force_close_name_부재(self) -> None:
+        """등록된 job name 목록에 'on_force_close' 가 없어야 한다."""
+        from apscheduler.schedulers.blocking import BlockingScheduler
+
+        from stock_agent.strategy.rsi_mr import RSIMRConfig, RSIMRStrategy
+
+        scheduler = MagicMock(spec=BlockingScheduler)
+        rsimr = RSIMRStrategy(RSIMRConfig(universe=("005930",)))
+        fake_exc = self._make_fake_executor_with_strategy(rsimr)
+        runtime = _make_runtime(scheduler=scheduler, executor=fake_exc)
+        args = _parse_args([])
+
+        _install_jobs(scheduler, runtime, args, clock=lambda: _kst(9, 0))
+
+        registered_names = [c.kwargs.get("name") for c in scheduler.add_job.call_args_list]
+        assert "on_force_close" not in registered_names, (
+            f"RSIMRStrategy 모드에서 on_force_close 가 등록되면 안 된다. "
+            f"등록된 names={registered_names}"
+        )
+
+    def test_install_jobs_orb_strategy면_on_force_close_cron_등록(self) -> None:
+        """ORBStrategy 인스턴스이면 기존 4 cron 모두 등록 (회귀 방지)."""
+        from apscheduler.schedulers.blocking import BlockingScheduler
+
+        scheduler = MagicMock(spec=BlockingScheduler)
+        orb = ORBStrategy(StrategyConfig())
+        fake_exc = self._make_fake_executor_with_strategy(orb)
+        runtime = _make_runtime(scheduler=scheduler, executor=fake_exc)
+        args = _parse_args([])
+
+        _install_jobs(scheduler, runtime, args, clock=lambda: _kst(9, 0))
+
+        assert scheduler.add_job.call_count == 4, (
+            f"ORBStrategy 모드에서 add_job 은 4회 기대, 실제={scheduler.add_job.call_count}"
+        )
+        registered_names = [c.kwargs.get("name") for c in scheduler.add_job.call_args_list]
+        assert "on_force_close" in registered_names, (
+            f"ORBStrategy 모드에서 on_force_close 가 등록되어야 한다. "
+            f"등록된 names={registered_names}"
+        )
+
+    def test_install_jobs_rsimr_strategy_warning_로그(self, mocker: Any) -> None:
+        """RSI MR 분기 진입 시 'force_close' 키워드가 포함된 warning 로그 방출."""
+        from apscheduler.schedulers.blocking import BlockingScheduler
+
+        from stock_agent.strategy.rsi_mr import RSIMRConfig, RSIMRStrategy
+
+        mock_logger = mocker.patch("stock_agent.main.logger")
+        scheduler = MagicMock(spec=BlockingScheduler)
+        rsimr = RSIMRStrategy(RSIMRConfig(universe=("005930",)))
+        fake_exc = self._make_fake_executor_with_strategy(rsimr)
+        runtime = _make_runtime(scheduler=scheduler, executor=fake_exc)
+        args = _parse_args([])
+
+        _install_jobs(scheduler, runtime, args, clock=lambda: _kst(9, 0))
+
+        assert mock_logger.warning.call_count >= 1, (
+            "RSIMRStrategy 분기에서 logger.warning 이 1회 이상 방출되어야 한다"
+        )
+        all_args = str(mock_logger.warning.call_args_list)
+        assert "force_close" in all_args, (
+            f"warning 메시지에 'force_close' 키워드가 없다. 실제={all_args}"
+        )

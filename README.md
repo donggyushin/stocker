@@ -111,6 +111,8 @@ ORB 시절 기본값(종목당 20%, 동시 3종목, 손절 -1.5%, 익절 +3.0%, 
 
 **Phase 3 PR2 완료 (2026-05-03)**. `main.py` 전략 wiring `ORBStrategy` → `RSIMRStrategy` 교체 + `RiskConfig` ADR-0025 확정값 명시 주입. `executor.py` `strategy` 매개변수 타입을 `Strategy` Protocol 로 확장 + `restore_session` ORB/일봉 전략 분기 추가. ADR-0025 리스크 한도 운영 적용. pytest **2221 passed, 4 skipped**.
 
+**Phase 3 PR3 완료 (2026-05-03)**. `main.py` `_install_jobs` 에 RSI MR 모드 판정 가드 추가 — RSI MR 전략일 때 15:00 force_close cron 미등록(ADR-0025, 일봉 전략 강제청산 부적합). `executor.py` 분봉 stop_loss 가드 추가 — `_OpenLot.stop_price` 보존 + `bar.low ≤ stop_price` 도달 시 `strategy.on_bar` 없이 즉시 `ExitSignal(reason="stop_loss")` 처리. `Executor.strategy` 공개 프로퍼티 신설. pytest **2231 passed, 4 skipped** (+10).
+
 **Phase 3 착수 전제 통과** (2026-04-21). 실전 시세 전용 APP_KEY 3종 발급·IP 화이트리스트 등록·평일 장중 `healthcheck.py` 4종 그린(WebSocket 체결 수신 OK) 완료.
 
 **Phase 3 첫 산출물 — Executor (코드·테스트 레벨) 완료** (2026-04-21). `execution/` 패키지 신설 — `Executor` + Protocol 3종(`OrderSubmitter`/`BalanceProvider`/`BarSource`) + 어댑터 3종(`LiveOrderSubmitter`/`LiveBalanceProvider`/`DryRunOrderSubmitter`) + `StepReport`/`ReconcileReport` DTO. pytest **605건 green**.

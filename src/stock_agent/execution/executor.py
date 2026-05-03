@@ -392,10 +392,18 @@ class StepReport:
 
 @dataclass(frozen=True, slots=True)
 class _OpenLot:
-    """Executor 내부 진입 추적 — 청산 시 PnL 계산 입력으로 재사용."""
+    """Executor 내부 진입 추적 — 청산 시 PnL 계산 입력으로 재사용.
+
+    `stop_price` (PR3, ADR-0025) — EntrySignal.stop_price 원본값. 분봉 step
+    가드(`bar.low ≤ stop_price`) 가 활용. ``Decimal("0")`` 은 가드 비활성
+    마커 — 손절가 미사용 전략(DCA 등) 또는 `restore_session` 으로 복원된
+    포지션(OpenPositionInput 에 stop_price 미포함) 에서 사용. ``> 0`` 일
+    때만 가드 작동.
+    """
 
     entry_price: Decimal
     qty: int
+    stop_price: Decimal = Decimal("0")
 
 
 @dataclass(frozen=True, slots=True)
@@ -612,8 +620,16 @@ class Executor:
             )
 
         self._last_processed_bar_time.clear()
+        # PR3 (ADR-0025): OpenPositionInput Protocol 에 stop_price 가 없어
+        # 복원된 포지션은 가드 비활성(stop_price=Decimal("0")) 으로 시작.
+        # 다음 EOD 일봉이 RSIMRStrategy.on_bar 에서 stop_loss 발동 시 자연 청산.
         self._open_lots = {
-            p.symbol: _OpenLot(entry_price=p.entry_price, qty=p.qty) for p in positions
+            p.symbol: _OpenLot(
+                entry_price=p.entry_price,
+                qty=p.qty,
+                stop_price=Decimal("0"),
+            )
+            for p in positions
         }
         self._halt = False
         self._last_reconcile = None
@@ -653,6 +669,16 @@ class Executor:
             for bar in bars:
                 last_seen = self._last_processed_bar_time.get(symbol)
                 if last_seen is not None and bar.bar_time <= last_seen:
+                    continue
+                # PR3 (ADR-0025): 분봉 stop_loss 가드 — strategy 호출 없이
+                # Executor 가 독립적으로 처리. 활성 포지션의 stop_price 가 0
+                # 초과이고 bar.low 가 stop_price 이하이면 즉시 ExitSignal
+                # 직접 생성. 일봉 전략(RSIMRStrategy) 의 분봉 누적 오염 차단.
+                guard_signals = self._stop_loss_guard_signals(bar)
+                if guard_signals:
+                    processed_bars += 1
+                    self._last_processed_bar_time[symbol] = bar.bar_time
+                    orders_submitted += self._process_signals(guard_signals, now)
                     continue
                 signals = self._strategy.on_bar(bar)
                 processed_bars += 1
@@ -735,6 +761,15 @@ class Executor:
         return self._halt or self._risk_manager.is_halted
 
     @property
+    def strategy(self) -> Strategy:
+        """주입된 Strategy 인스턴스 (PR3, ADR-0025).
+
+        `main._install_jobs` 가 RSI MR 모드 판정(`isinstance(.., RSIMRStrategy)`) 에
+        사용. private `_strategy` 직접 참조 우회 경로를 제거하기 위한 공개 경계.
+        """
+        return self._strategy
+
+    @property
     def last_reconcile(self) -> ReconcileReport | None:
         """가장 최근 `reconcile()` 결과. 세션 시작 직후·호출 전에는 None.
 
@@ -767,6 +802,35 @@ class Executor:
         return tuple(self._sweep_exit_events)
 
     # ---- 시그널 처리 ---------------------------------------------------
+
+    def _stop_loss_guard_signals(self, bar: MinuteBar) -> list[Signal]:
+        """분봉 stop_loss 가드 — `bar.low ≤ lot.stop_price` 시 ExitSignal 직접 생성.
+
+        PR3 (ADR-0025) — RSI MR 일봉 전략의 분봉 운영 보호. `RSIMRStrategy.on_bar`
+        가 일봉을 소비하는 구조라 분봉 레벨 stop_loss 는 Executor 가 독립적으로
+        처리한다 (Strategy 호출 없이). `lot.stop_price == Decimal("0")` 은 가드
+        비활성 마커 — DCA 등 손절가 미사용 전략, `restore_session` 으로 복원된
+        포지션은 가드 작동 안 함.
+
+        가드 발동 시 ExitSignal(reason="stop_loss", price=lot.stop_price) 1건을
+        반환. 상위 `step()` 루프가 `_process_signals` 로 처리해 시장가 매도 +
+        ExitEvent 발행. 동일 bar 에 대한 strategy.on_bar 호출은 skip.
+        """
+        lot = self._open_lots.get(bar.symbol)
+        if lot is None:
+            return []
+        if lot.stop_price <= 0:
+            return []
+        if bar.low > lot.stop_price:
+            return []
+        return [
+            ExitSignal(
+                symbol=bar.symbol,
+                price=lot.stop_price,
+                ts=bar.bar_time,
+                reason="stop_loss",
+            )
+        ]
 
     def _process_signals(self, signals: list[Signal], now: datetime) -> int:
         count = 0
@@ -829,7 +893,15 @@ class Executor:
         filled_qty = outcome.filled_qty
         entry_fill_price = buy_fill_price(signal.price, self._config.slippage_rate)
         self._risk_manager.record_entry(signal.symbol, entry_fill_price, filled_qty, now)
-        self._open_lots[signal.symbol] = _OpenLot(entry_price=entry_fill_price, qty=filled_qty)
+        # PR3 (ADR-0025): EntrySignal.stop_price 원본을 _OpenLot 에 보존 — 분봉
+        # step 가드(`bar.low ≤ stop_price`) 가 활용. RSIMRStrategy 는 `bar.close
+        # × (1 - stop_loss_pct)` 를 stop_price 로 실어 보내고, ORBStrategy 도
+        # 동일 산식. stop_price=Decimal("0") 마커는 가드 비활성(DCA 등).
+        self._open_lots[signal.symbol] = _OpenLot(
+            entry_price=entry_fill_price,
+            qty=filled_qty,
+            stop_price=signal.stop_price,
+        )
         if outcome.status == "partial":
             logger.warning(
                 "executor.entry.partial symbol={symbol} filled_qty={f} requested={q} "
@@ -886,7 +958,13 @@ class Executor:
                 price=risk_pos.entry_price,
                 qty=risk_pos.qty,
             )
-            lot = _OpenLot(entry_price=risk_pos.entry_price, qty=risk_pos.qty)
+            # fallback 경로 — stop_price 미지정(가드 비활성). 외부 record_entry
+            # 우회 케이스라 EntrySignal 컨텍스트가 없다.
+            lot = _OpenLot(
+                entry_price=risk_pos.entry_price,
+                qty=risk_pos.qty,
+                stop_price=Decimal("0"),
+            )
 
         ticket = self._with_backoff(
             lambda: self._order_submitter.submit_sell(signal.symbol, lot.qty)
